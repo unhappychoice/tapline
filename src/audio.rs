@@ -138,6 +138,94 @@ where
     out
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn silent_bank_is_disabled() {
+        let bank = SampleBank::silent();
+        assert!(!bank.enabled);
+    }
+
+    #[test]
+    fn silent_bank_play_is_a_noop_and_does_not_panic() {
+        let bank = SampleBank::silent();
+        bank.play(1);
+        bank.play(999);
+    }
+
+    #[test]
+    fn silent_bank_play_synth_is_a_noop_and_does_not_panic() {
+        let bank = SampleBank::silent();
+        bank.play_synth(440.0, 60);
+    }
+
+    #[test]
+    fn silent_bank_play_hit_is_a_noop_across_lanes() {
+        let bank = SampleBank::silent();
+        for lane in 0..7 {
+            bank.play_hit(lane, Some(1), true);
+            bank.play_hit(lane, None, true);
+            bank.play_hit(lane, None, false);
+        }
+    }
+
+    #[test]
+    fn synth_ping_produces_expected_sample_count() {
+        let sr = 44_100;
+        let dur = 100u32;
+        let samples = synth_ping(440.0, dur, sr);
+        let expected = (sr * dur / 1000) as usize;
+        assert_eq!(samples.len(), expected);
+    }
+
+    #[test]
+    fn synth_ping_starts_near_zero_and_decays_below_a_hundredth() {
+        let sr = 44_100;
+        let samples = synth_ping(440.0, 200, sr);
+        assert_eq!(samples.len(), (sr * 200 / 1000) as usize);
+        assert!(samples[0].abs() < 0.5);
+        let tail = samples.last().copied().unwrap().abs();
+        assert!(
+            tail < 0.05,
+            "expected the tail of the exponential decay to be well below the head; got {}",
+            tail
+        );
+    }
+
+    #[test]
+    fn synth_ping_stays_within_the_headroom() {
+        let samples = synth_ping(440.0, 100, 44_100);
+        for s in samples {
+            assert!(
+                s.abs() < 1.0,
+                "synth_ping should stay in [-1, 1); got {}",
+                s
+            );
+        }
+    }
+
+    #[test]
+    fn synth_ping_zero_duration_is_empty() {
+        assert!(synth_ping(440.0, 0, 44_100).is_empty());
+    }
+
+    #[test]
+    fn lane_pitches_span_seven_lanes() {
+        assert_eq!(LANE_PITCHES.len(), 7);
+        for pair in LANE_PITCHES.windows(2) {
+            assert!(pair[1] > pair[0], "lane pitches should climb monotonically");
+        }
+    }
+
+    #[test]
+    fn decode_reports_error_for_missing_file() {
+        let missing = PathBuf::from("/nonexistent-tapline-audio-test-xyz.wav");
+        assert!(decode(&missing).is_err());
+    }
+}
+
 #[cfg(not(unix))]
 fn silence_stderr<F, R>(f: F) -> R
 where
