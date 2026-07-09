@@ -282,6 +282,59 @@ mod tests {
         assert!(charts.is_empty());
     }
 
+    #[test]
+    fn scan_stops_recursing_past_five_levels() {
+        let dir = tempdir();
+        // Build a chain deeper than the walker's cap.
+        let mut cursor = dir.clone();
+        for i in 0..8 {
+            cursor = cursor.join(format!("d{}", i));
+            std::fs::create_dir(&cursor).unwrap();
+        }
+        // Charts at various depths.
+        std::fs::write(dir.join("root.bms"), "#TITLE Root\n#BPM 130\n#00111:0100\n").unwrap();
+        std::fs::write(
+            dir.join("d0/d1/d2/d3/d4/d5/deep.bms"),
+            "#TITLE Deep\n#BPM 130\n#00111:0100\n",
+        )
+        .unwrap();
+        let charts = scan(&dir);
+        let titles: Vec<_> = charts.iter().map(|c| c.title.as_str()).collect();
+        assert!(titles.contains(&"Root"));
+        assert!(
+            !titles.contains(&"Deep"),
+            "walker should not have descended six levels: {:?}",
+            titles
+        );
+    }
+
+    #[test]
+    fn scan_skips_files_that_look_bms_but_are_unreadable_content() {
+        let dir = tempdir();
+        // A well-formed bms.
+        std::fs::write(dir.join("ok.bms"), "#TITLE Ok\n#BPM 130\n#00111:0100\n").unwrap();
+        // A binary blob renamed to .bms.
+        std::fs::write(dir.join("bad.bms"), b"\x00\x01\x02\x03\x04\x05\xff\xfe").unwrap();
+        let charts = scan(&dir);
+        // Both should show up; the binary one will just have a blank title.
+        assert_eq!(charts.len(), 2);
+    }
+
+    #[test]
+    fn format_badge_omits_both_when_playlevel_and_difficulty_missing() {
+        let mut m = meta("A");
+        m.difficulty = None;
+        m.playlevel = None;
+        assert_eq!(format_badge(&m), "[5K BPM140]");
+    }
+
+    #[test]
+    fn format_badge_rounds_bpm_to_the_nearest_integer() {
+        let mut m = meta("A");
+        m.bpm = 173.6;
+        assert_eq!(format_badge(&m), "[5K NORMAL Lv3 BPM174]");
+    }
+
     fn tempdir() -> PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
         static COUNTER: AtomicU32 = AtomicU32::new(0);
