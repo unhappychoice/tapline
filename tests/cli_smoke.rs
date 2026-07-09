@@ -82,3 +82,24 @@ fn unknown_flag_fails_with_a_helpful_stderr() {
 // one), it blocks in the result screen's `press any key to exit` loop. The
 // Linux/macOS runners fail at raw-mode setup and exit fast, but Windows
 // would hang indefinitely, so we don't spawn the interactive path here.
+
+#[test]
+fn test_tone_flag_exits_cleanly_on_ci_without_audio_backend() {
+    // On CI runners without a real sound card, `--test-tone` reports
+    // "audio backend unavailable" on stderr and exits with code 1. On a
+    // developer machine with speakers wired up the same call plays four
+    // beeps and exits 0 after ~1.3s.
+    let (code, _, stderr) = run_with(&["--test-tone"]);
+    assert!(
+        code == 0 || code == 1,
+        "expected exit code 0 or 1 from --test-tone, got {}",
+        code
+    );
+    if code == 1 {
+        assert!(
+            stderr.contains("audio backend unavailable"),
+            "expected audio-unavailable diagnostic on stderr, got: {}",
+            stderr
+        );
+    }
+}
