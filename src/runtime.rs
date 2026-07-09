@@ -235,3 +235,80 @@ pub fn lane_for_key(c: char, keys: &[Vec<char>]) -> Option<usize> {
 pub fn elapsed_ms(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chart::keys_for;
+
+    #[test]
+    fn lane_for_key_matches_case_insensitively() {
+        let keys = keys_for(4);
+        assert_eq!(lane_for_key('s', &keys), Some(0));
+        assert_eq!(lane_for_key('S', &keys), Some(0));
+        assert_eq!(lane_for_key('L', &keys), Some(3));
+        assert_eq!(lane_for_key('l', &keys), Some(3));
+    }
+
+    #[test]
+    fn lane_for_key_returns_none_for_unmapped_char() {
+        let keys = keys_for(4);
+        assert_eq!(lane_for_key('Q', &keys), None);
+        assert_eq!(lane_for_key('a', &keys), None);
+        assert_eq!(lane_for_key(' ', &keys), None);
+    }
+
+    #[test]
+    fn lane_for_key_5k_center_accepts_both_f_and_j() {
+        let keys = keys_for(5);
+        assert_eq!(lane_for_key('F', &keys), Some(2));
+        assert_eq!(lane_for_key('J', &keys), Some(2));
+        assert_eq!(lane_for_key('f', &keys), Some(2));
+        assert_eq!(lane_for_key('j', &keys), Some(2));
+    }
+
+    #[test]
+    fn lane_for_key_7k_maps_space_to_center_lane() {
+        let keys = keys_for(7);
+        assert_eq!(lane_for_key(' ', &keys), Some(3));
+        assert_eq!(lane_for_key('F', &keys), Some(2));
+        assert_eq!(lane_for_key('J', &keys), Some(4));
+    }
+
+    #[test]
+    fn lane_for_key_returns_first_matching_lane() {
+        let keys = vec![vec!['A'], vec!['A', 'B']];
+        assert_eq!(lane_for_key('A', &keys), Some(0));
+        assert_eq!(lane_for_key('B', &keys), Some(1));
+    }
+
+    #[test]
+    fn advance_deadline_bumps_forward_when_on_time() {
+        let base = Instant::now() + Duration::from_secs(60);
+        let next = advance_deadline(base);
+        assert_eq!(next, base + FRAME_DT);
+    }
+
+    #[test]
+    fn advance_deadline_clamps_to_now_when_far_behind() {
+        let long_ago = Instant::now() - Duration::from_secs(60);
+        let bumped = advance_deadline(long_ago);
+        let now = Instant::now();
+        let diff = now
+            .checked_duration_since(bumped)
+            .unwrap_or_else(|| bumped.duration_since(now));
+        assert!(
+            diff < Duration::from_secs(1),
+            "advance_deadline should re-anchor to ~now instead of staying in the past"
+        );
+    }
+
+    #[test]
+    fn elapsed_ms_grows_monotonically() {
+        let start = Instant::now();
+        let first = elapsed_ms(start);
+        std::thread::sleep(Duration::from_millis(5));
+        let second = elapsed_ms(start);
+        assert!(second > first);
+    }
+}
