@@ -1,18 +1,10 @@
-mod audio;
-mod bms;
-mod chart;
-mod cli;
-mod game;
-mod render;
-mod runtime;
-mod select;
-
 use anyhow::Result;
 use clap::Parser;
-use cli::Args;
 use crossterm::{cursor, execute, terminal};
 use std::io::{stdout, Stdout};
 use std::time::Duration;
+use tapline::cli::Args;
+use tapline::{audio, cli, runtime};
 
 fn main() -> Result<()> {
     let args = Args::parse();
