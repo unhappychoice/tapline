@@ -37,11 +37,60 @@ cargo install --path .
 ## Play
 
 ```sh
-tapline                                # built-in 120 BPM chart, 4-lane
-tapline --bpm 160                      # built-in, faster
-tapline --file song.bms                # BMS chart (auto 5-lane / 7-lane)
-tapline --file song.bms --no-audio     # BMS chart, silent
+tapline                                # open the chart selector (see "Song discovery")
+tapline --dir ~/bms                    # open selector on a specific directory
+tapline --file song.bms                # skip selector, play one chart (auto 4/5/7-lane)
+tapline --file song.bms --no-audio     # play a chart, silent
+tapline --built-in --bpm 160           # play the built-in practice chart
 ```
+
+Inside the selector: `↑ ↓` / `j k` to move, `Enter` to play, `Esc` / `q` to quit.
+
+### Fixing audio delay
+
+On high-latency backends (WSL2, PulseAudio) the per-hit beep can trail the
+visual note. Two flags:
+
+```sh
+tapline --auto-ks                          # play note sounds at their scheduled times
+tapline --auto-ks --audio-lead-ms 80       # additionally pre-play by 80 ms
+tapline --file song.bms --audio-lead-ms 60 # BGM-only pre-play
+```
+
+`--auto-ks` decouples the audio from your key press so what you hear stays
+locked to what you see. `--audio-lead-ms` shifts every scheduled sound
+(BGM + auto keysounds) that many milliseconds earlier — start around
+`50–120` on WSL2 and tune by ear.
+
+## Song discovery
+
+Without `--file` or `--built-in`, tapline scans the first directory it finds:
+
+1. `$TAPLINE_SONGS_DIR`
+2. `./songs`
+3. `./tests/fixtures`
+4. `~/.tapline/songs`
+
+If nothing is found, the built-in practice chart plays. Scanning is recursive
+(up to 5 levels deep) and picks up `.bms`, `.bml`, `.bme`, `.pms`.
+
+## Bundled sample charts
+
+The `songs/` directory ships eight hand-written charts across all three
+lane counts and difficulty tiers:
+
+| chart                        | lanes | difficulty  | BPM | flavor                                    |
+| ---------------------------- | ----- | ----------- | --- | ----------------------------------------- |
+| `01-first-steps.bms`         | 4     | BEGINNER 1  | 100 | lane recognition + first chords           |
+| `02-steady-rain.bms`         | 5     | NORMAL 4    | 130 | 8ths + 16th runs + syncopation            |
+| `03-rolling-thunder.bms`     | 7     | HYPER 8     | 155 | rolls, jacks, dense finales               |
+| `04-neon-drive.bms`          | 4     | NORMAL 3    | 128 | synthwave groove, chord shots             |
+| `05-circuit-breaker.bms`     | 5     | HYPER 7     | 148 | breakbeat runs, alternating hands         |
+| `06-blue-hour.bms`           | 7     | NORMAL 5    | 140 | gentler 7K to learn all seven keys        |
+| `07-final-cascade.bms`       | 7     | ANOTHER 11  | 175 | endgame chart: streams, jacks, staircases |
+| `08-arcade-hero.bms`         | 4     | HYPER 7     | 165 | chiptune 4K with 16th runs                |
+
+All charts play with the synth fallback — no WAV assets required.
 
 ## BMS support
 
@@ -80,11 +129,14 @@ Combo (up to +50) is added on top of every non-miss hit.
 
 ## Keys
 
-| lanes | keys              |
-| ----- | ----------------- |
-| 4     | `D F J K`         |
-| 5     | `D F G J K`       |
-| 7     | `S D F SPACE J K L` |
+DJMax-style layout. In 5K the center lane accepts either `F` or `J` — press
+whichever finger is closer.
+
+| lanes | keys                    | notes                             |
+| ----- | ----------------------- | --------------------------------- |
+| 4     | `S D       K L`         | outer 2+2, index fingers rest     |
+| 5     | `S D  F/J  K L`         | center lane bound to both F and J |
+| 7     | `S D  F SPACE J  K L`   | spacebar is the center            |
 
 ## License
 
