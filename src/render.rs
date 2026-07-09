@@ -1,3 +1,4 @@
+use crate::chart::difficulty_label;
 use crate::game::{Game, Judgment};
 use crossterm::{cursor, queue, style::{self, Color, Print, SetForegroundColor, ResetColor}, terminal};
 use std::io::{Stdout, Write};
@@ -11,6 +12,61 @@ const PALETTE: [Color; 7] = [
 ];
 
 fn lane_color(lane: usize) -> Color { PALETTE[lane % PALETTE.len()] }
+
+fn draw_judgment_flash(out: &mut Stdout, game: &Game, cols: u16, judgment_row: u16, now_ms: f64) -> anyhow::Result<()> {
+    let elapsed = now_ms - game.flash.last_judgment_at;
+    if elapsed >= 500.0 || game.flash.last_judgment.is_none() { return Ok(()); }
+    let (label, color) = match game.flash.last_judgment.unwrap() {
+        Judgment::Perfect => ("P E R F E C T", Color::Magenta),
+        Judgment::Great   => ("G R E A T",     Color::Green),
+        Judgment::Good    => ("G O O D",       Color::Yellow),
+        Judgment::Miss    => ("M I S S",       Color::Red),
+    };
+    let row = judgment_row.saturating_sub(2);
+    let width = label.chars().count() as u16;
+    let x = cols.saturating_sub(width) / 2;
+    let fade = elapsed < 120.0;
+    queue!(out, cursor::MoveTo(x, row), SetForegroundColor(color))?;
+    if fade { queue!(out, style::SetAttribute(style::Attribute::Reverse))?; }
+    queue!(out, style::SetAttribute(style::Attribute::Bold),
+        Print(label),
+        style::SetAttribute(style::Attribute::Reset), ResetColor)?;
+    Ok(())
+}
+
+fn draw_judgment_counters(out: &mut Stdout, game: &Game, cols: u16, row: u16, _now_ms: f64) -> anyhow::Result<()> {
+    let cells: [(&str, u32, Color); 4] = [
+        ("PERFECT", game.perfect, Color::Magenta),
+        ("GREAT",   game.great,   Color::Green),
+        ("GOOD",    game.good,    Color::Yellow),
+        ("MISS",    game.miss,    Color::Red),
+    ];
+    let strs: Vec<String> = cells.iter().map(|(l, n, _)| format!("{} {}", l, n)).collect();
+    let gap: usize = 4;
+    let total_len: usize = strs.iter().map(|s| s.chars().count()).sum::<usize>() + gap * (cells.len() - 1);
+    let mut x = cols.saturating_sub(total_len as u16) / 2;
+    for (i, (_, _, color)) in cells.iter().enumerate() {
+        queue!(out, cursor::MoveTo(x, row),
+            SetForegroundColor(*color), Print(&strs[i]), ResetColor)?;
+        x += strs[i].chars().count() as u16 + gap as u16;
+    }
+    Ok(())
+}
+
+fn format_difficulty_badge(game: &Game) -> String {
+    let lv = game.chart.playlevel.map(|v| format!("Lv {}", v));
+    let dif = match difficulty_label(game.chart.difficulty) {
+        "" => None,
+        s  => Some(s.to_string()),
+    };
+    let bpm = format!("BPM {:.0}", game.chart.bpm);
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(d) = dif { parts.push(d); }
+    if let Some(l) = lv  { parts.push(l); }
+    parts.push(bpm);
+    parts.push(format!("{}K", game.chart.lane_count));
+    parts.join("  ·  ")
+}
 
 pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
@@ -32,6 +88,8 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
         game.score, game.combo, game.accuracy());
     queue!(out, cursor::MoveTo(cols.saturating_sub(hud.len() as u16) / 2, 2),
         Print(hud))?;
+
+    draw_judgment_counters(out, game, cols, 3, now_ms)?;
 
     for lane in 0..lanes {
         let lx = x0 + 1 + lane * LANE_WIDTH;
@@ -75,22 +133,7 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
             Print("[==]"), ResetColor)?;
     }
 
-    let flash_slot: (&str, Color) = match game.flash.last_judgment {
-        Some(j) if now_ms - game.flash.last_judgment_at < 450.0 => match j {
-            Judgment::Perfect => ("PERFECT!", Color::Magenta),
-            Judgment::Great   => ("GREAT",    Color::Green),
-            Judgment::Good    => ("good",     Color::Yellow),
-            Judgment::Miss    => ("MISS",     Color::Red),
-        },
-        _ => ("        ", Color::Reset),
-    };
-    let (label, color) = flash_slot;
-    let x = cols.saturating_sub(8) / 2;
-    queue!(out, cursor::MoveTo(x, bottom + 3),
-        SetForegroundColor(color),
-        style::SetAttribute(style::Attribute::Bold),
-        Print(format!("{:^8}", label)),
-        style::SetAttribute(style::Attribute::Reset), ResetColor)?;
+    draw_judgment_flash(out, game, cols, judgment_row, now_ms)?;
 
     let key_hint: String = game.chart.keys.iter()
         .map(|c| if *c == ' ' { "SPACE".to_string() } else { c.to_string() })
@@ -117,6 +160,11 @@ pub fn draw_intro(out: &mut Stdout, game: &Game, countdown_ms: f64, audio_on: bo
         let art = format!("— {}", game.chart.artist);
         queue!(out, cursor::MoveTo(cols.saturating_sub(art.chars().count() as u16) / 2, rows / 2 - 2),
             SetForegroundColor(Color::DarkGrey), Print(&art), ResetColor)?;
+    }
+    let badge = format_difficulty_badge(game);
+    if !badge.is_empty() {
+        queue!(out, cursor::MoveTo(cols.saturating_sub(badge.chars().count() as u16) / 2, rows / 2 - 1),
+            SetForegroundColor(Color::Cyan), Print(&badge), ResetColor)?;
     }
     let key_hint: String = game.chart.keys.iter()
         .map(|c| if *c == ' ' { "SPACE".to_string() } else { c.to_string() })
