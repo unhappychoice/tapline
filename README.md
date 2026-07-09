@@ -1,6 +1,7 @@
 # tapline
 
 [![CI](https://github.com/unhappychoice/tapline/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/unhappychoice/tapline/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/unhappychoice/tapline/branch/main/graph/badge.svg)](https://codecov.io/gh/unhappychoice/tapline)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A simple rhythm game in your terminal. Plays a built-in chart, or loads BMS
