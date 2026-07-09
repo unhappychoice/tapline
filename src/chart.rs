@@ -151,3 +151,105 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
         wav_paths: Default::default(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_for_4k_is_dj_max_outer_2_plus_2() {
+        assert_eq!(
+            keys_for(4),
+            vec![vec!['S'], vec!['D'], vec!['K'], vec!['L']]
+        );
+    }
+
+    #[test]
+    fn keys_for_5k_center_lane_dual_binds_f_and_j() {
+        let keys = keys_for(5);
+        assert_eq!(keys.len(), 5);
+        assert_eq!(keys[0], vec!['S']);
+        assert_eq!(keys[1], vec!['D']);
+        assert_eq!(keys[2], vec!['F', 'J']);
+        assert_eq!(keys[3], vec!['K']);
+        assert_eq!(keys[4], vec!['L']);
+    }
+
+    #[test]
+    fn keys_for_7k_uses_spacebar_in_the_center() {
+        let keys = keys_for(7);
+        assert_eq!(keys.len(), 7);
+        assert_eq!(keys[3], vec![' ']);
+        assert_eq!(keys[0], vec!['S']);
+        assert_eq!(keys[6], vec!['L']);
+    }
+
+    #[test]
+    fn keys_for_unknown_lane_count_falls_back_to_4k() {
+        assert_eq!(keys_for(0), keys_for(4));
+        assert_eq!(keys_for(3), keys_for(4));
+        assert_eq!(keys_for(6), keys_for(4));
+        assert_eq!(keys_for(99), keys_for(4));
+    }
+
+    #[test]
+    fn difficulty_label_covers_the_five_tiers() {
+        assert_eq!(difficulty_label(Some(1)), "BEGINNER");
+        assert_eq!(difficulty_label(Some(2)), "NORMAL");
+        assert_eq!(difficulty_label(Some(3)), "HYPER");
+        assert_eq!(difficulty_label(Some(4)), "ANOTHER");
+        assert_eq!(difficulty_label(Some(5)), "INSANE");
+    }
+
+    #[test]
+    fn difficulty_label_is_empty_for_missing_or_out_of_range() {
+        assert_eq!(difficulty_label(None), "");
+        assert_eq!(difficulty_label(Some(0)), "");
+        assert_eq!(difficulty_label(Some(6)), "");
+        assert_eq!(difficulty_label(Some(255)), "");
+    }
+
+    #[test]
+    fn built_in_chart_is_4k_labelled_and_populated() {
+        let c = built_in(120.0, 2000.0);
+        assert_eq!(c.title, "Built-in Practice");
+        assert_eq!(c.lane_count, 4);
+        assert_eq!(c.keys.len(), 4);
+        assert!(c.bgm.is_empty());
+        assert!(c.wav_paths.is_empty());
+        assert!(!c.notes.is_empty());
+        assert!(c.notes.iter().all(|n| n.lane < 4));
+    }
+
+    #[test]
+    fn built_in_notes_are_time_sorted() {
+        let c = built_in(140.0, 0.0);
+        for pair in c.notes.windows(2) {
+            assert!(pair[0].time_ms <= pair[1].time_ms);
+        }
+    }
+
+    #[test]
+    fn built_in_bpm_scales_first_note_position() {
+        let slow = built_in(60.0, 0.0);
+        let fast = built_in(240.0, 0.0);
+        let slow_last = slow.notes.iter().last().unwrap().time_ms;
+        let fast_last = fast.notes.iter().last().unwrap().time_ms;
+        assert!(
+            slow_last > fast_last * 3.0,
+            "expected slow (BPM 60) chart to be much longer than fast (BPM 240): {} vs {}",
+            slow_last,
+            fast_last
+        );
+    }
+
+    #[test]
+    fn built_in_lead_in_shifts_the_first_note() {
+        let no_lead = built_in(120.0, 0.0);
+        let with_lead = built_in(120.0, 1500.0);
+        assert!(
+            (with_lead.notes[0].time_ms - no_lead.notes[0].time_ms - 1500.0).abs() < 1e-6,
+            "lead-in should offset every note by the given amount"
+        );
+    }
+}
