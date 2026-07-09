@@ -107,3 +107,113 @@ fn default_songs_dir() -> Option<PathBuf> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn args_parse_defaults() {
+        let a = Args::parse_from(["tapline"]);
+        assert!(a.file.is_none());
+        assert!(a.dir.is_none());
+        assert_eq!(a.bpm, 120.0);
+        assert_eq!(a.countdown_ms, 2000.0);
+        assert!(!a.built_in);
+        assert!(!a.no_audio);
+        assert!(!a.test_tone);
+        assert!(!a.synth);
+        assert!(!a.auto_ks);
+        assert_eq!(a.audio_lead_ms, 0.0);
+    }
+
+    #[test]
+    fn args_parse_all_flags() {
+        let a = Args::parse_from([
+            "tapline",
+            "--file",
+            "song.bms",
+            "--dir",
+            "/tmp/songs",
+            "--bpm",
+            "160",
+            "--countdown-ms",
+            "500",
+            "--built-in",
+            "--no-audio",
+            "--test-tone",
+            "--synth",
+            "--auto-ks",
+            "--audio-lead-ms",
+            "80",
+        ]);
+        assert_eq!(a.file.as_deref(), Some(Path::new("song.bms")));
+        assert_eq!(a.dir.as_deref(), Some(Path::new("/tmp/songs")));
+        assert_eq!(a.bpm, 160.0);
+        assert_eq!(a.countdown_ms, 500.0);
+        assert!(a.built_in);
+        assert!(a.no_audio);
+        assert!(a.test_tone);
+        assert!(a.synth);
+        assert!(a.auto_ks);
+        assert_eq!(a.audio_lead_ms, 80.0);
+    }
+
+    #[test]
+    fn args_short_flags_are_wired() {
+        let a = Args::parse_from(["tapline", "-b", "180", "-f", "song.bms", "-d", "/x"]);
+        assert_eq!(a.bpm, 180.0);
+        assert_eq!(a.file.as_deref(), Some(Path::new("song.bms")));
+        assert_eq!(a.dir.as_deref(), Some(Path::new("/x")));
+    }
+
+    fn base_args() -> Args {
+        Args::parse_from(["tapline"])
+    }
+
+    #[test]
+    fn load_chart_built_in_returns_built_in_chart() {
+        let chart = load_chart(&ChartChoice::BuiltIn, &base_args()).unwrap();
+        let chart = chart.expect("BuiltIn should always yield a chart");
+        assert_eq!(chart.title, "Built-in Practice");
+        assert_eq!(chart.lane_count, 4);
+    }
+
+    #[test]
+    fn load_chart_built_in_respects_args_bpm() {
+        let mut args = base_args();
+        args.bpm = 200.0;
+        let chart = load_chart(&ChartChoice::BuiltIn, &args).unwrap().unwrap();
+        assert_eq!(chart.bpm, 200.0);
+    }
+
+    #[test]
+    fn load_chart_cancelled_returns_none() {
+        let out = load_chart(&ChartChoice::Cancelled, &base_args()).unwrap();
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn load_chart_file_reads_bms_from_disk() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(&path, "#TITLE Loaded\n#ARTIST me\n#BPM 155\n#00111:0100\n").unwrap();
+        let chart = load_chart(&ChartChoice::File(path), &base_args())
+            .unwrap()
+            .unwrap();
+        assert_eq!(chart.title, "Loaded");
+        assert_eq!(chart.bpm, 155.0);
+    }
+
+    fn tempdir() -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("tapline-cli-test-{}-{}", pid, n));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+}
