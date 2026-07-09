@@ -40,14 +40,21 @@ pub fn play_chart(out: &mut Stdout, args: &Args, chart: chart::Chart) -> Result<
 
 const FRAME_DT: Duration = Duration::from_millis(16);
 
-fn run_game(out: &mut Stdout, game: &mut game::Game, bank: &audio::SampleBank, opts: &PlayOptions) -> Result<()> {
+fn run_game(
+    out: &mut Stdout,
+    game: &mut game::Game,
+    bank: &audio::SampleBank,
+    opts: &PlayOptions,
+) -> Result<()> {
     let start = Instant::now();
     let mut next_frame = Instant::now() + FRAME_DT;
     let mut state = LoopState::new(build_auto_notes(game, opts));
 
     while !state.quit {
         let now = elapsed_ms(start);
-        if now >= game.chart.duration_ms { break; }
+        if now >= game.chart.duration_ms {
+            break;
+        }
         draw_frame(out, game, bank, opts, &mut state, now)?;
         pump_input(out, game, bank, opts, &mut state, start, next_frame)?;
         next_frame = advance_deadline(next_frame);
@@ -65,20 +72,38 @@ struct LoopState {
 
 impl LoopState {
     fn new(auto_notes: Vec<(f64, usize, Option<u32>)>) -> Self {
-        Self { quit: false, bgm_cursor: 0, note_snd_cursor: 0, prev_mode: 0, auto_notes }
+        Self {
+            quit: false,
+            bgm_cursor: 0,
+            note_snd_cursor: 0,
+            prev_mode: 0,
+            auto_notes,
+        }
     }
 }
 
 fn build_auto_notes(game: &game::Game, opts: &PlayOptions) -> Vec<(f64, usize, Option<u32>)> {
-    if !opts.auto_ks { return Vec::new(); }
-    let mut v: Vec<_> = game.chart.notes.iter()
+    if !opts.auto_ks {
+        return Vec::new();
+    }
+    let mut v: Vec<_> = game
+        .chart
+        .notes
+        .iter()
         .map(|n| (n.time_ms, n.lane, n.keysound))
         .collect();
     v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
     v
 }
 
-fn draw_frame(out: &mut Stdout, game: &mut game::Game, bank: &audio::SampleBank, opts: &PlayOptions, state: &mut LoopState, now: f64) -> Result<()> {
+fn draw_frame(
+    out: &mut Stdout,
+    game: &mut game::Game,
+    bank: &audio::SampleBank,
+    opts: &PlayOptions,
+    state: &mut LoopState,
+    now: f64,
+) -> Result<()> {
     let mode: u8 = if now < opts.countdown_ms { 1 } else { 2 };
     if mode != state.prev_mode {
         execute!(out, terminal::Clear(terminal::ClearType::All))?;
@@ -93,32 +118,67 @@ fn draw_frame(out: &mut Stdout, game: &mut game::Game, bank: &audio::SampleBank,
     render::draw(out, game, now)
 }
 
-fn fire_scheduled_audio(bank: &audio::SampleBank, opts: &PlayOptions, state: &mut LoopState, game: &game::Game, now: f64) {
+fn fire_scheduled_audio(
+    bank: &audio::SampleBank,
+    opts: &PlayOptions,
+    state: &mut LoopState,
+    game: &game::Game,
+    now: f64,
+) {
     let horizon = now + opts.audio_lead_ms;
-    while state.bgm_cursor < game.chart.bgm.len() && game.chart.bgm[state.bgm_cursor].time_ms <= horizon {
+    while state.bgm_cursor < game.chart.bgm.len()
+        && game.chart.bgm[state.bgm_cursor].time_ms <= horizon
+    {
         bank.play(game.chart.bgm[state.bgm_cursor].keysound);
         state.bgm_cursor += 1;
     }
-    while state.note_snd_cursor < state.auto_notes.len() && state.auto_notes[state.note_snd_cursor].0 <= horizon {
+    while state.note_snd_cursor < state.auto_notes.len()
+        && state.auto_notes[state.note_snd_cursor].0 <= horizon
+    {
         let (_, lane, ks) = state.auto_notes[state.note_snd_cursor];
         bank.play_hit(lane, ks, opts.synth_mode);
         state.note_snd_cursor += 1;
     }
 }
 
-fn pump_input(out: &mut Stdout, game: &mut game::Game, bank: &audio::SampleBank, opts: &PlayOptions, state: &mut LoopState, start: Instant, next_frame: Instant) -> Result<()> {
+fn pump_input(
+    out: &mut Stdout,
+    game: &mut game::Game,
+    bank: &audio::SampleBank,
+    opts: &PlayOptions,
+    state: &mut LoopState,
+    start: Instant,
+    next_frame: Instant,
+) -> Result<()> {
     loop {
         let inst = Instant::now();
-        if inst >= next_frame { return Ok(()); }
-        if !event::poll(next_frame - inst)? { return Ok(()); }
-        let Event::Key(k) = event::read()? else { continue; };
-        if k.kind == KeyEventKind::Release { continue; }
-        if handle_key(k.code, game, bank, opts, state, start) { return Ok(()); }
+        if inst >= next_frame {
+            return Ok(());
+        }
+        if !event::poll(next_frame - inst)? {
+            return Ok(());
+        }
+        let Event::Key(k) = event::read()? else {
+            continue;
+        };
+        if k.kind == KeyEventKind::Release {
+            continue;
+        }
+        if handle_key(k.code, game, bank, opts, state, start) {
+            return Ok(());
+        }
         let _ = out;
     }
 }
 
-fn handle_key(code: KeyCode, game: &mut game::Game, bank: &audio::SampleBank, opts: &PlayOptions, state: &mut LoopState, start: Instant) -> bool {
+fn handle_key(
+    code: KeyCode,
+    game: &mut game::Game,
+    bank: &audio::SampleBank,
+    opts: &PlayOptions,
+    state: &mut LoopState,
+    start: Instant,
+) -> bool {
     match code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
             state.quit = true;
@@ -126,10 +186,16 @@ fn handle_key(code: KeyCode, game: &mut game::Game, bank: &audio::SampleBank, op
         }
         KeyCode::Char(c) => {
             let now = elapsed_ms(start);
-            if now < opts.countdown_ms { return false; }
-            let Some(lane) = lane_for_key(c, &game.chart.keys) else { return false; };
+            if now < opts.countdown_ms {
+                return false;
+            }
+            let Some(lane) = lane_for_key(c, &game.chart.keys) else {
+                return false;
+            };
             let ks = game.hit(lane, now);
-            if !opts.auto_ks { bank.play_hit(lane, ks, opts.synth_mode); }
+            if !opts.auto_ks {
+                bank.play_hit(lane, ks, opts.synth_mode);
+            }
             false
         }
         _ => false,
@@ -139,7 +205,11 @@ fn handle_key(code: KeyCode, game: &mut game::Game, bank: &audio::SampleBank, op
 fn advance_deadline(next_frame: Instant) -> Instant {
     let bumped = next_frame + FRAME_DT;
     let now = Instant::now();
-    if bumped < now { now } else { bumped }
+    if bumped < now {
+        now
+    } else {
+        bumped
+    }
 }
 
 fn show_result(out: &mut Stdout, game: &game::Game) -> Result<()> {
@@ -148,7 +218,9 @@ fn show_result(out: &mut Stdout, game: &game::Game) -> Result<()> {
     loop {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(k) = event::read()? {
-                if k.kind == KeyEventKind::Press { return Ok(()); }
+                if k.kind == KeyEventKind::Press {
+                    return Ok(());
+                }
             }
         }
     }
@@ -156,7 +228,8 @@ fn show_result(out: &mut Stdout, game: &game::Game) -> Result<()> {
 
 pub fn lane_for_key(c: char, keys: &[Vec<char>]) -> Option<usize> {
     let up = c.to_ascii_uppercase();
-    keys.iter().position(|ks| ks.iter().any(|k| k.to_ascii_uppercase() == up))
+    keys.iter()
+        .position(|ks| ks.iter().any(|k| k.to_ascii_uppercase() == up))
 }
 
 pub fn elapsed_ms(start: Instant) -> f64 {

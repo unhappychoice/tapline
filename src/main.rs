@@ -16,7 +16,9 @@ use std::time::Duration;
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    if args.test_tone { return run_test_tone(); }
+    if args.test_tone {
+        return run_test_tone();
+    }
     with_alt_screen(|out| run(out, &args))
 }
 

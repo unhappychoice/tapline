@@ -67,34 +67,72 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
     let sec = 16.0 * beat;
 
     let easy: Vec<(f64, usize)> = (0..16)
-        .map(|i| (i as f64, match i % 4 { 0 => 0, 1 => 2, 2 => 1, _ => 3 }))
+        .map(|i| {
+            (
+                i as f64,
+                match i % 4 {
+                    0 => 0,
+                    1 => 2,
+                    2 => 1,
+                    _ => 3,
+                },
+            )
+        })
         .collect();
     section(t, &easy, &mut notes);
     t += sec;
 
     let mid: Vec<(f64, usize)> = (0..32)
-        .map(|i| (i as f64 * 0.5, match i % 4 { 0 => 0, 1 => 3, 2 => 1, _ => 2 }))
+        .map(|i| {
+            (
+                i as f64 * 0.5,
+                match i % 4 {
+                    0 => 0,
+                    1 => 3,
+                    2 => 1,
+                    _ => 2,
+                },
+            )
+        })
         .collect();
     section(t, &mid, &mut notes);
     t += sec;
 
-    let syncopated: Vec<(f64, usize)> = (0..16).flat_map(|i| {
-        let base = i as f64;
-        let lane = match i % 4 { 0 => 0, 1 => 1, 2 => 2, _ => 3 };
-        vec![(base, lane), (base + 0.5, (lane + 2) % 4), (base + 0.75, (lane + 1) % 4)]
-    }).collect();
+    let syncopated: Vec<(f64, usize)> = (0..16)
+        .flat_map(|i| {
+            let base = i as f64;
+            let lane = match i % 4 {
+                0 => 0,
+                1 => 1,
+                2 => 2,
+                _ => 3,
+            };
+            vec![
+                (base, lane),
+                (base + 0.5, (lane + 2) % 4),
+                (base + 0.75, (lane + 1) % 4),
+            ]
+        })
+        .collect();
     section(t, &syncopated, &mut notes);
     t += sec;
 
-    let finale: Vec<(f64, usize)> = (0..32).flat_map(|i| {
-        let base = i as f64 * 0.5;
-        vec![(base, i % 4), (base + 0.25, (i + 2) % 4)]
-    }).collect();
+    let finale: Vec<(f64, usize)> = (0..32)
+        .flat_map(|i| {
+            let base = i as f64 * 0.5;
+            vec![(base, i % 4), (base + 0.25, (i + 2) % 4)]
+        })
+        .collect();
     section(t, &finale, &mut notes);
     t += sec;
 
     for lane in 0..4 {
-        notes.push(Note { time_ms: t, lane, hit: false, keysound: None });
+        notes.push(Note {
+            time_ms: t,
+            lane,
+            hit: false,
+            keysound: None,
+        });
     }
 
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());

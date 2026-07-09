@@ -59,23 +59,29 @@ pub enum ChartChoice {
 }
 
 pub fn choose_chart(out: &mut Stdout, args: &Args) -> Result<ChartChoice> {
-    if args.built_in { return Ok(ChartChoice::BuiltIn); }
-    if let Some(p) = &args.file { return Ok(ChartChoice::File(p.clone())); }
+    if args.built_in {
+        return Ok(ChartChoice::BuiltIn);
+    }
+    if let Some(p) = &args.file {
+        return Ok(ChartChoice::File(p.clone()));
+    }
     let Some(dir) = args.dir.clone().or_else(default_songs_dir) else {
         return Ok(ChartChoice::BuiltIn);
     };
     let charts = select::scan(&dir);
-    if charts.is_empty() { return Ok(ChartChoice::BuiltIn); }
+    if charts.is_empty() {
+        return Ok(ChartChoice::BuiltIn);
+    }
     Ok(match select::run(out, &charts)? {
         Some(p) => ChartChoice::File(p),
-        None    => ChartChoice::Cancelled,
+        None => ChartChoice::Cancelled,
     })
 }
 
 pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::chart::Chart>> {
     match choice {
-        ChartChoice::File(p)   => Ok(Some(bms::load(p, args.countdown_ms)?)),
-        ChartChoice::BuiltIn   => Ok(Some(crate::chart::built_in(args.bpm, args.countdown_ms))),
+        ChartChoice::File(p) => Ok(Some(bms::load(p, args.countdown_ms)?)),
+        ChartChoice::BuiltIn => Ok(Some(crate::chart::built_in(args.bpm, args.countdown_ms))),
         ChartChoice::Cancelled => Ok(None),
     }
 }
@@ -83,15 +89,21 @@ pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::cha
 fn default_songs_dir() -> Option<PathBuf> {
     if let Ok(v) = std::env::var("TAPLINE_SONGS_DIR") {
         let p = PathBuf::from(v);
-        if p.is_dir() { return Some(p); }
+        if p.is_dir() {
+            return Some(p);
+        }
     }
     for candidate in ["songs", "tests/fixtures"] {
         let p = PathBuf::from(candidate);
-        if p.is_dir() { return Some(p); }
+        if p.is_dir() {
+            return Some(p);
+        }
     }
     if let Some(home) = std::env::var_os("HOME") {
         let p = Path::new(&home).join(".tapline").join("songs");
-        if p.is_dir() { return Some(p); }
+        if p.is_dir() {
+            return Some(p);
+        }
     }
     None
 }
