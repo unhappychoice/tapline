@@ -512,4 +512,64 @@ mod tests {
         let g = Game::new(chart);
         assert_eq!(format_difficulty_badge(&g), "BPM 200  ·  7K");
     }
+
+    // ------------- property tests -------------
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn display_key_is_never_empty_for_any_char(c in any::<char>()) {
+            let out = display_key(&c);
+            prop_assert!(!out.is_empty());
+        }
+
+        #[test]
+        fn format_lane_key_never_panics_on_arbitrary_keys(
+            keys in prop::collection::vec(any::<char>(), 0..8)
+        ) {
+            let _ = format_lane_key(&keys);
+        }
+
+        #[test]
+        fn format_lane_key_is_at_least_three_wide_for_letter_input(
+            keys in prop::collection::vec("[A-Z]", 1..4)
+        ) {
+            let chars: Vec<char> = keys.iter().map(|s| s.chars().next().unwrap()).collect();
+            let out = format_lane_key(&chars);
+            prop_assert!(out.chars().count() >= 3, "got {:?}", out);
+        }
+
+        #[test]
+        fn format_key_hint_yields_one_group_per_lane(
+            n in 1usize..8
+        ) {
+            let lanes: Vec<Vec<char>> = (0..n).map(|_| vec!['A']).collect();
+            let out = format_key_hint(&lanes);
+            let parts: Vec<_> = out.split_whitespace().collect();
+            prop_assert_eq!(parts.len(), n);
+        }
+
+        #[test]
+        fn format_difficulty_badge_always_contains_bpm_and_lane_marker(
+            bpm in 30.0f64..300.0,
+            lane_count in prop_oneof![Just(4usize), Just(5), Just(7)],
+            playlevel in prop::option::of(1u8..=12),
+            difficulty in prop::option::of(1u8..=5),
+        ) {
+            let mut chart = base_chart(lane_count);
+            chart.bpm = bpm;
+            chart.playlevel = playlevel;
+            chart.difficulty = difficulty;
+            let g = Game::new(chart);
+            let badge = format_difficulty_badge(&g);
+            prop_assert!(badge.contains("BPM"), "expected BPM in {}", badge);
+            prop_assert!(
+                badge.contains(&format!("{}K", lane_count)),
+                "expected {}K in {}",
+                lane_count,
+                badge
+            );
+        }
+    }
 }
