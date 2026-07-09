@@ -24,6 +24,52 @@ fn lane_color(lane: usize) -> Color {
     PALETTE[lane % PALETTE.len()]
 }
 
+/// Rectangles for the play field, computed from terminal size and lane count.
+/// Extracted so the layout math is testable without a real terminal.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PlayLayout {
+    x0: u16,
+    field_width: u16,
+    top: u16,
+    bottom: u16,
+    lane_height: u16,
+}
+
+impl PlayLayout {
+    fn compute(cols: u16, rows: u16, lane_count: usize) -> Option<Self> {
+        let lanes = lane_count as u16;
+        let field_width = LANE_WIDTH * lanes + 1;
+        let x0 = cols.saturating_sub(field_width) / 2;
+        let top = 4u16;
+        let bottom = rows.saturating_sub(4);
+        if bottom <= top + 4 {
+            return None;
+        }
+        Some(Self {
+            x0,
+            field_width,
+            top,
+            bottom,
+            lane_height: bottom - top,
+        })
+    }
+
+    fn judgment_row(&self) -> u16 {
+        self.bottom - 1
+    }
+}
+
+/// Vertical screen position for a note whose time offset from now is
+/// `remain` ms. `None` if the note is outside the approach or already
+/// past the miss window.
+fn note_screen_y(remain: f64, layout: &PlayLayout) -> Option<u16> {
+    if !(-60.0..=APPROACH_MS).contains(&remain) {
+        return None;
+    }
+    let frac = (1.0 - (remain / APPROACH_MS)).clamp(0.0, 1.0);
+    Some(layout.top + (frac * (layout.lane_height - 1) as f64) as u16)
+}
+
 fn draw_judgment_flash(
     out: &mut Stdout,
     game: &Game,
@@ -142,14 +188,16 @@ fn format_difficulty_badge(game: &Game) -> String {
 pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
     let lanes = game.chart.lane_count as u16;
-    let field_width = LANE_WIDTH * lanes + 1;
-    let x0 = cols.saturating_sub(field_width) / 2;
-    let top = 4u16;
-    let bottom = rows.saturating_sub(4);
-    if bottom <= top + 4 {
+    let Some(layout) = PlayLayout::compute(cols, rows, game.chart.lane_count) else {
         return Ok(());
-    }
-    let lane_height = bottom - top;
+    };
+    let PlayLayout {
+        x0,
+        field_width,
+        top,
+        bottom,
+        lane_height: _,
+    } = layout;
 
     queue!(out, terminal::BeginSynchronizedUpdate)?;
 
@@ -194,7 +242,7 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     }
     queue!(out, ResetColor)?;
 
-    let judgment_row = bottom - 1;
+    let judgment_row = layout.judgment_row();
     for x in x0..(x0 + field_width) {
         queue!(
             out,
@@ -242,13 +290,9 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
         if note.hit {
             continue;
         }
-        let remain = note.time_ms - now_ms;
-        if !(-60.0..=APPROACH_MS).contains(&remain) {
+        let Some(y) = note_screen_y(note.time_ms - now_ms, &layout) else {
             continue;
-        }
-        let frac = 1.0 - (remain / APPROACH_MS);
-        let frac = frac.clamp(0.0, 1.0);
-        let y = top + (frac * (lane_height - 1) as f64) as u16;
+        };
         let lx = x0 + 1 + note.lane as u16 * LANE_WIDTH + 2;
         queue!(
             out,
@@ -259,7 +303,7 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
         )?;
     }
 
-    draw_judgment_flash(out, game, cols, judgment_row, now_ms)?;
+    draw_judgment_flash(out, game, cols, layout.judgment_row(), now_ms)?;
 
     let key_hint = format_key_hint(&game.chart.keys);
     let hint = format!("keys {}  ·  quit Esc / Q", key_hint);
@@ -511,6 +555,85 @@ mod tests {
         chart.bpm = 200.0;
         let g = Game::new(chart);
         assert_eq!(format_difficulty_badge(&g), "BPM 200  ·  7K");
+    }
+
+    // ---------- PlayLayout / note_screen_y ----------
+
+    #[test]
+    fn play_layout_computes_the_centered_playfield_for_4k() {
+        let l = PlayLayout::compute(80, 24, 4).unwrap();
+        assert_eq!(l.top, 4);
+        assert_eq!(l.bottom, 20);
+        assert_eq!(l.lane_height, 16);
+        assert_eq!(l.field_width, LANE_WIDTH * 4 + 1);
+        // Field is centered on 80 cols.
+        assert_eq!(l.x0, (80 - l.field_width) / 2);
+        assert_eq!(l.judgment_row(), 19);
+    }
+
+    #[test]
+    fn play_layout_returns_none_for_tiny_windows() {
+        // A window that can't fit `top + 4` rows below the header returns
+        // None, which draw() uses to bail out early instead of panicking.
+        assert!(PlayLayout::compute(80, 8, 4).is_none());
+        assert!(PlayLayout::compute(80, 6, 4).is_none());
+        assert!(PlayLayout::compute(80, 4, 4).is_none());
+    }
+
+    #[test]
+    fn play_layout_field_width_scales_with_lane_count() {
+        let four = PlayLayout::compute(80, 24, 4).unwrap();
+        let seven = PlayLayout::compute(80, 24, 7).unwrap();
+        assert!(
+            seven.field_width > four.field_width,
+            "7K should be wider than 4K"
+        );
+    }
+
+    #[test]
+    fn note_screen_y_returns_none_when_note_is_far_in_the_future() {
+        let l = PlayLayout::compute(80, 24, 4).unwrap();
+        assert!(note_screen_y(APPROACH_MS + 1.0, &l).is_none());
+    }
+
+    #[test]
+    fn note_screen_y_returns_none_when_note_is_more_than_60ms_stale() {
+        let l = PlayLayout::compute(80, 24, 4).unwrap();
+        assert!(note_screen_y(-100.0, &l).is_none());
+    }
+
+    #[test]
+    fn note_screen_y_at_approach_horizon_sits_near_the_top() {
+        let l = PlayLayout::compute(80, 24, 4).unwrap();
+        let y = note_screen_y(APPROACH_MS, &l).unwrap();
+        assert_eq!(y, l.top);
+    }
+
+    #[test]
+    fn note_screen_y_on_the_beat_sits_near_the_bottom_of_the_lane() {
+        let l = PlayLayout::compute(80, 24, 4).unwrap();
+        let y = note_screen_y(0.0, &l).unwrap();
+        assert_eq!(y, l.top + (l.lane_height - 1));
+    }
+
+    #[test]
+    fn note_screen_y_grows_monotonically_as_remain_shrinks() {
+        let l = PlayLayout::compute(80, 24, 4).unwrap();
+        let mut prev = None::<u16>;
+        for step in (0..=APPROACH_MS as u32).step_by(100) {
+            let remain = APPROACH_MS - step as f64;
+            let y = note_screen_y(remain, &l).unwrap();
+            if let Some(p) = prev {
+                assert!(
+                    y >= p,
+                    "y went backwards at remain={}: {} < {}",
+                    remain,
+                    y,
+                    p
+                );
+            }
+            prev = Some(y);
+        }
     }
 
     // ------------- property tests -------------
