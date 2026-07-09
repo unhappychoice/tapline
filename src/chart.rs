@@ -12,19 +12,31 @@ pub struct Note {
 pub struct BgmEvent {
     pub time_ms: f64,
     pub keysound: u32,
-    pub played: bool,
 }
 
 pub struct Chart {
     pub title: String,
     pub artist: String,
     pub bpm: f64,
+    pub playlevel: Option<u8>,
+    pub difficulty: Option<u8>,
     pub notes: Vec<Note>,
     pub bgm: Vec<BgmEvent>,
     pub duration_ms: f64,
     pub lane_count: usize,
     pub keys: Vec<char>,
     pub wav_paths: std::collections::HashMap<u32, PathBuf>,
+}
+
+pub fn difficulty_label(d: Option<u8>) -> &'static str {
+    match d {
+        Some(1) => "BEGINNER",
+        Some(2) => "NORMAL",
+        Some(3) => "HYPER",
+        Some(4) => "ANOTHER",
+        Some(5) => "INSANE",
+        _ => "",
+    }
 }
 
 const KEYS_4: [char; 4] = ['D', 'F', 'J', 'K'];
@@ -94,6 +106,8 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
         title: "Built-in Practice".into(),
         artist: "tapline".into(),
         bpm,
+        playlevel: Some(3),
+        difficulty: Some(2),
         notes,
         bgm: Vec::new(),
         duration_ms,
