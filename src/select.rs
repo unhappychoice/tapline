@@ -194,3 +194,102 @@ fn format_badge(m: &ChartMeta) -> String {
     let bpm = format!(" BPM{:.0}", m.bpm);
     format!("[{}{}{}{}]", lanes, dif, lv, bpm)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(title: &str) -> ChartMeta {
+        ChartMeta {
+            path: PathBuf::from(format!("/tmp/{}.bms", title)),
+            title: title.to_string(),
+            artist: "".to_string(),
+            bpm: 140.0,
+            playlevel: Some(3),
+            difficulty: Some(2),
+            lane_count: 5,
+        }
+    }
+
+    #[test]
+    fn is_bms_recognises_the_four_supported_extensions() {
+        assert!(is_bms(Path::new("song.bms")));
+        assert!(is_bms(Path::new("song.bml")));
+        assert!(is_bms(Path::new("song.bme")));
+        assert!(is_bms(Path::new("song.pms")));
+    }
+
+    #[test]
+    fn is_bms_is_case_insensitive() {
+        assert!(is_bms(Path::new("song.BMS")));
+        assert!(is_bms(Path::new("song.Pms")));
+    }
+
+    #[test]
+    fn is_bms_rejects_unrelated_files() {
+        assert!(!is_bms(Path::new("song.wav")));
+        assert!(!is_bms(Path::new("song.mp3")));
+        assert!(!is_bms(Path::new("song.txt")));
+        assert!(!is_bms(Path::new("README")));
+        assert!(!is_bms(Path::new(".hidden")));
+    }
+
+    #[test]
+    fn format_badge_includes_lanes_difficulty_level_and_bpm() {
+        let m = meta("A");
+        assert_eq!(format_badge(&m), "[5K NORMAL Lv3 BPM140]");
+    }
+
+    #[test]
+    fn format_badge_omits_difficulty_label_when_missing() {
+        let mut m = meta("A");
+        m.difficulty = None;
+        assert_eq!(format_badge(&m), "[5K Lv3 BPM140]");
+    }
+
+    #[test]
+    fn format_badge_omits_level_when_missing() {
+        let mut m = meta("A");
+        m.playlevel = None;
+        assert_eq!(format_badge(&m), "[5K NORMAL BPM140]");
+    }
+
+    #[test]
+    fn scan_finds_charts_recursively_and_sorts_by_title() {
+        let dir = tempdir();
+        std::fs::write(
+            dir.join("z.bms"),
+            "#TITLE Zebra\n#ARTIST who\n#BPM 130\n#00111:0100\n",
+        )
+        .unwrap();
+        let sub = dir.join("nested");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(
+            sub.join("a.bms"),
+            "#TITLE Alpha\n#ARTIST who\n#BPM 130\n#00111:0100\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("notes.txt"), "ignore me").unwrap();
+
+        let charts = scan(&dir);
+        let titles: Vec<_> = charts.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, vec!["Alpha", "Zebra"]);
+    }
+
+    #[test]
+    fn scan_returns_empty_for_missing_directory() {
+        let charts = scan(Path::new("/nonexistent-tapline-test-dir-xyz"));
+        assert!(charts.is_empty());
+    }
+
+    fn tempdir() -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("tapline-select-test-{}-{}", pid, n));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+}
