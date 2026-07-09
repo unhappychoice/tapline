@@ -434,4 +434,120 @@ mod tests {
         let opts = PlayOptions::from_args(&args, &chart);
         assert!(opts.auto_ks);
     }
+
+    // ---------- fire_scheduled_audio ----------
+
+    use crate::audio::SampleBank;
+    use crate::chart::BgmEvent;
+
+    fn chart_with_bgm(bgm: Vec<BgmEvent>) -> Chart {
+        Chart {
+            title: "".into(),
+            artist: "".into(),
+            bpm: 120.0,
+            playlevel: None,
+            difficulty: None,
+            notes: Vec::new(),
+            bgm,
+            duration_ms: 30_000.0,
+            lane_count: 4,
+            keys: keys_for(4),
+            wav_paths: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn fire_scheduled_audio_advances_bgm_cursor_up_to_horizon() {
+        let bgm = vec![
+            BgmEvent {
+                time_ms: 500.0,
+                keysound: 1,
+            },
+            BgmEvent {
+                time_ms: 1000.0,
+                keysound: 2,
+            },
+            BgmEvent {
+                time_ms: 1500.0,
+                keysound: 3,
+            },
+        ];
+        let game = Game::new(chart_with_bgm(bgm));
+        let bank = SampleBank::silent();
+        let mut state = LoopState::new(Vec::new());
+        fire_scheduled_audio(&bank, &opts(false), &mut state, &game, 1100.0);
+        assert_eq!(
+            state.bgm_cursor, 2,
+            "should have fired the first two BGM events"
+        );
+    }
+
+    #[test]
+    fn fire_scheduled_audio_uses_audio_lead_to_pre_play_early() {
+        let bgm = vec![
+            BgmEvent {
+                time_ms: 500.0,
+                keysound: 1,
+            },
+            BgmEvent {
+                time_ms: 1000.0,
+                keysound: 2,
+            },
+        ];
+        let game = Game::new(chart_with_bgm(bgm));
+        let bank = SampleBank::silent();
+        let mut state = LoopState::new(Vec::new());
+        let mut o = opts(false);
+        o.audio_lead_ms = 250.0;
+        // horizon = 800 + 250 = 1050 → both events fire
+        fire_scheduled_audio(&bank, &o, &mut state, &game, 800.0);
+        assert_eq!(state.bgm_cursor, 2);
+    }
+
+    #[test]
+    fn fire_scheduled_audio_advances_note_cursor_only_when_auto_ks_is_on() {
+        let notes = vec![
+            Note {
+                time_ms: 200.0,
+                lane: 0,
+                hit: false,
+                keysound: Some(1),
+            },
+            Note {
+                time_ms: 400.0,
+                lane: 1,
+                hit: false,
+                keysound: Some(2),
+            },
+        ];
+        let game = Game::new(base_chart(4, notes));
+        let bank = SampleBank::silent();
+
+        // Without auto-ks the buffer is empty, so the cursor stays at 0.
+        let mut off = LoopState::new(build_auto_notes(&game, &opts(false)));
+        fire_scheduled_audio(&bank, &opts(false), &mut off, &game, 1000.0);
+        assert_eq!(off.note_snd_cursor, 0);
+
+        // With auto-ks all notes ≤ 1000 ms fire.
+        let mut on = LoopState::new(build_auto_notes(&game, &opts(true)));
+        fire_scheduled_audio(&bank, &opts(true), &mut on, &game, 1000.0);
+        assert_eq!(on.note_snd_cursor, 2);
+    }
+
+    #[test]
+    fn fire_scheduled_audio_never_rewinds_the_cursor() {
+        let bgm = vec![BgmEvent {
+            time_ms: 500.0,
+            keysound: 1,
+        }];
+        let game = Game::new(chart_with_bgm(bgm));
+        let bank = SampleBank::silent();
+        let mut state = LoopState::new(Vec::new());
+        fire_scheduled_audio(&bank, &opts(false), &mut state, &game, 600.0);
+        assert_eq!(state.bgm_cursor, 1);
+        // A later call at an earlier `now` still doesn't rewind because the
+        // cursor is monotonic — the event has already been consumed.
+        fire_scheduled_audio(&bank, &opts(false), &mut state, &game, 100.0);
+        assert_eq!(state.bgm_cursor, 1);
+    }
 }
