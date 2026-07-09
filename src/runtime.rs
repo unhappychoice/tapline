@@ -311,4 +311,127 @@ mod tests {
         let second = elapsed_ms(start);
         assert!(second > first);
     }
+
+    // ---------- LoopState + build_auto_notes ----------
+
+    use crate::chart::{Chart, Note};
+    use crate::game::Game;
+    use std::collections::HashMap;
+
+    fn base_chart(lane_count: usize, notes: Vec<Note>) -> Chart {
+        Chart {
+            title: "t".into(),
+            artist: "".into(),
+            bpm: 120.0,
+            playlevel: None,
+            difficulty: None,
+            notes,
+            bgm: Vec::new(),
+            duration_ms: 30_000.0,
+            lane_count,
+            keys: keys_for(lane_count),
+            wav_paths: HashMap::new(),
+        }
+    }
+
+    fn opts(auto_ks: bool) -> PlayOptions {
+        PlayOptions {
+            countdown_ms: 2000.0,
+            synth_mode: true,
+            auto_ks,
+            audio_lead_ms: 0.0,
+        }
+    }
+
+    #[test]
+    fn loop_state_new_zeroes_cursors_and_flags() {
+        let s = LoopState::new(Vec::new());
+        assert!(!s.quit);
+        assert_eq!(s.bgm_cursor, 0);
+        assert_eq!(s.note_snd_cursor, 0);
+        assert_eq!(s.prev_mode, 0);
+        assert!(s.auto_notes.is_empty());
+    }
+
+    #[test]
+    fn build_auto_notes_is_empty_when_auto_ks_is_off() {
+        let notes = vec![
+            Note {
+                time_ms: 1000.0,
+                lane: 0,
+                hit: false,
+                keysound: Some(1),
+            },
+            Note {
+                time_ms: 500.0,
+                lane: 1,
+                hit: false,
+                keysound: Some(2),
+            },
+        ];
+        let game = Game::new(base_chart(4, notes));
+        let auto = build_auto_notes(&game, &opts(false));
+        assert!(auto.is_empty(), "no auto notes without --auto-ks");
+    }
+
+    #[test]
+    fn build_auto_notes_sorts_by_time_when_auto_ks_is_on() {
+        let notes = vec![
+            Note {
+                time_ms: 1000.0,
+                lane: 0,
+                hit: false,
+                keysound: Some(1),
+            },
+            Note {
+                time_ms: 500.0,
+                lane: 1,
+                hit: false,
+                keysound: Some(2),
+            },
+            Note {
+                time_ms: 800.0,
+                lane: 2,
+                hit: false,
+                keysound: Some(3),
+            },
+        ];
+        let game = Game::new(base_chart(4, notes));
+        let auto = build_auto_notes(&game, &opts(true));
+        let times: Vec<f64> = auto.iter().map(|(t, _, _)| *t).collect();
+        assert_eq!(times, vec![500.0, 800.0, 1000.0]);
+        // Lane + keysound survive the sort.
+        assert_eq!(auto[0].1, 1);
+        assert_eq!(auto[0].2, Some(2));
+    }
+
+    #[test]
+    fn play_options_from_args_forces_synth_when_no_wavs_are_loaded() {
+        use crate::cli::Args;
+        use clap::Parser;
+        let args = Args::parse_from(["tapline"]);
+        let chart = base_chart(4, vec![]);
+        let opts = PlayOptions::from_args(&args, &chart);
+        assert!(opts.synth_mode, "no WAV paths → synth mode auto-on");
+    }
+
+    #[test]
+    fn play_options_from_args_carries_over_the_audio_lead() {
+        use crate::cli::Args;
+        use clap::Parser;
+        let args = Args::parse_from(["tapline", "--audio-lead-ms", "72"]);
+        let chart = base_chart(4, vec![]);
+        let opts = PlayOptions::from_args(&args, &chart);
+        assert_eq!(opts.audio_lead_ms, 72.0);
+    }
+
+    #[test]
+    fn play_options_from_args_carries_over_the_auto_ks_flag() {
+        use crate::cli::Args;
+        use clap::Parser;
+        let args = Args::parse_from(["tapline", "--auto-ks"]);
+        let chart = base_chart(4, vec![]);
+        let opts = PlayOptions::from_args(&args, &chart);
+        assert!(opts.auto_ks);
+    }
 }
