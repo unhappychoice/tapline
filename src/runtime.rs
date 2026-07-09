@@ -550,4 +550,129 @@ mod tests {
         fire_scheduled_audio(&bank, &opts(false), &mut state, &game, 100.0);
         assert_eq!(state.bgm_cursor, 1);
     }
+
+    // ---------- handle_key ----------
+
+    fn ready_game() -> Game {
+        // Two notes on lane 0 well past the countdown window.
+        let notes = vec![
+            Note {
+                time_ms: 3000.0,
+                lane: 0,
+                hit: false,
+                keysound: Some(1),
+            },
+            Note {
+                time_ms: 3200.0,
+                lane: 0,
+                hit: false,
+                keysound: Some(2),
+            },
+        ];
+        Game::new(base_chart(4, notes))
+    }
+
+    #[test]
+    fn handle_key_esc_marks_quit_and_returns_true() {
+        let mut g = ready_game();
+        let mut s = LoopState::new(Vec::new());
+        let bank = SampleBank::silent();
+        // Give the game a start that pretends we're already past countdown.
+        let start = Instant::now() - Duration::from_millis(3000);
+        let handled = handle_key(KeyCode::Esc, &mut g, &bank, &opts(false), &mut s, start);
+        assert!(handled, "Esc should short-circuit the input loop");
+        assert!(s.quit);
+    }
+
+    #[test]
+    fn handle_key_q_uppercase_or_lowercase_both_quit() {
+        for code in [KeyCode::Char('q'), KeyCode::Char('Q')] {
+            let mut g = ready_game();
+            let mut s = LoopState::new(Vec::new());
+            let bank = SampleBank::silent();
+            let start = Instant::now();
+            let handled = handle_key(code, &mut g, &bank, &opts(false), &mut s, start);
+            assert!(handled);
+            assert!(s.quit);
+        }
+    }
+
+    #[test]
+    fn handle_key_ignores_letters_during_countdown() {
+        let mut g = ready_game();
+        let mut s = LoopState::new(Vec::new());
+        let bank = SampleBank::silent();
+        // Fresh start ⇒ elapsed_ms ≈ 0 ≪ countdown_ms (2000).
+        let start = Instant::now();
+        let handled = handle_key(
+            KeyCode::Char('S'),
+            &mut g,
+            &bank,
+            &opts(false),
+            &mut s,
+            start,
+        );
+        assert!(!handled);
+        assert!(!s.quit);
+        // No note has been consumed.
+        assert_eq!(g.perfect + g.great + g.good, 0);
+    }
+
+    #[test]
+    fn handle_key_registers_a_perfect_hit_when_pressed_on_beat() {
+        let mut g = ready_game();
+        let mut s = LoopState::new(Vec::new());
+        let bank = SampleBank::silent();
+        // Pretend we're currently at 3000 ms so 'S' (lane 0) is spot-on.
+        let start = Instant::now() - Duration::from_millis(3000);
+        let handled = handle_key(
+            KeyCode::Char('S'),
+            &mut g,
+            &bank,
+            &opts(false),
+            &mut s,
+            start,
+        );
+        assert!(!handled, "note hits should not exit the loop");
+        assert_eq!(g.perfect, 1);
+        assert_eq!(g.combo, 1);
+    }
+
+    #[test]
+    fn handle_key_treats_unbound_letters_as_noops() {
+        let mut g = ready_game();
+        let mut s = LoopState::new(Vec::new());
+        let bank = SampleBank::silent();
+        let start = Instant::now() - Duration::from_millis(3000);
+        let handled = handle_key(
+            KeyCode::Char('X'),
+            &mut g,
+            &bank,
+            &opts(false),
+            &mut s,
+            start,
+        );
+        assert!(!handled);
+        assert_eq!(g.perfect + g.great + g.good + g.miss, 0);
+    }
+
+    #[test]
+    fn handle_key_ignores_non_char_keys_like_arrows() {
+        let mut g = ready_game();
+        let mut s = LoopState::new(Vec::new());
+        let bank = SampleBank::silent();
+        let start = Instant::now() - Duration::from_millis(3000);
+        for code in [
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Enter,
+            KeyCode::Tab,
+        ] {
+            let handled = handle_key(code, &mut g, &bank, &opts(false), &mut s, start);
+            assert!(!handled);
+        }
+        assert!(!s.quit);
+    }
 }
