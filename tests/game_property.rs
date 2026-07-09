@@ -66,7 +66,7 @@ proptest! {
         }
         game.check_misses(1_000_000.0);
         let acc = game.accuracy();
-        prop_assert!(acc >= 0.0 && acc <= 100.0, "accuracy out of range: {}", acc);
+        prop_assert!((0.0..=100.0).contains(&acc), "accuracy out of range: {}", acc);
     }
 
     #[test]
