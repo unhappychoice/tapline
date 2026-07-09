@@ -416,3 +416,100 @@ pub fn draw_result(out: &mut Stdout, game: &Game) -> anyhow::Result<()> {
     out.flush()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chart::{keys_for, Chart, Note};
+    use crate::game::Game;
+    use std::collections::HashMap;
+
+    fn base_chart(lane_count: usize) -> Chart {
+        Chart {
+            title: "Song".into(),
+            artist: "Artist".into(),
+            bpm: 140.0,
+            playlevel: Some(4),
+            difficulty: Some(2),
+            notes: vec![Note {
+                time_ms: 1000.0,
+                lane: 0,
+                hit: false,
+                keysound: None,
+            }],
+            bgm: Vec::new(),
+            duration_ms: 30_000.0,
+            lane_count,
+            keys: keys_for(lane_count),
+            wav_paths: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn display_key_shows_letters_verbatim_and_expands_space() {
+        assert_eq!(display_key(&'A'), "A");
+        assert_eq!(display_key(&'S'), "S");
+        assert_eq!(display_key(&' '), "SPACE");
+    }
+
+    #[test]
+    fn format_lane_key_centers_a_single_letter_in_a_three_wide_cell() {
+        assert_eq!(format_lane_key(&['S']), " S ");
+    }
+
+    #[test]
+    fn format_lane_key_joins_multiple_bindings_with_slash() {
+        assert_eq!(format_lane_key(&['F', 'J']), "F/J");
+    }
+
+    #[test]
+    fn format_lane_key_renders_space_as_word() {
+        assert_eq!(format_lane_key(&[' ']), "SPACE");
+    }
+
+    #[test]
+    fn format_lane_key_handles_empty_bindings() {
+        assert_eq!(format_lane_key(&[]), "   ");
+    }
+
+    #[test]
+    fn format_key_hint_lists_each_lane_space_separated() {
+        let keys = keys_for(5);
+        // 5K: S D F/J K L
+        assert_eq!(format_key_hint(&keys), "S D F/J K L");
+    }
+
+    #[test]
+    fn format_key_hint_swaps_space_char_for_the_word_space() {
+        let keys = keys_for(7);
+        assert_eq!(format_key_hint(&keys), "S D F SPACE J K L");
+    }
+
+    #[test]
+    fn format_difficulty_badge_full_metadata() {
+        let g = Game::new(base_chart(5));
+        assert_eq!(
+            format_difficulty_badge(&g),
+            "NORMAL  ·  Lv 4  ·  BPM 140  ·  5K"
+        );
+    }
+
+    #[test]
+    fn format_difficulty_badge_drops_missing_pieces() {
+        let mut chart = base_chart(4);
+        chart.difficulty = None;
+        chart.playlevel = None;
+        let g = Game::new(chart);
+        assert_eq!(format_difficulty_badge(&g), "BPM 140  ·  4K");
+    }
+
+    #[test]
+    fn format_difficulty_badge_shows_only_bpm_and_lanes_for_bare_chart() {
+        let mut chart = base_chart(7);
+        chart.difficulty = None;
+        chart.playlevel = None;
+        chart.bpm = 200.0;
+        let g = Game::new(chart);
+        assert_eq!(format_difficulty_badge(&g), "BPM 200  ·  7K");
+    }
+}
