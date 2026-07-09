@@ -1,0 +1,26 @@
+[package]
+name = "tapline"
+version = "0.1.0"
+edition = "2021"
+description = "A simple 4-lane rhythm game in your terminal"
+license = "MIT"
+repository = "https://github.com/unhappychoice/tapline"
+readme = "README.md"
+
+[[bin]]
+name = "tapline"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+encoding_rs = "0.8"
+rodio = { version = "0.19", default-features = false, features = ["symphonia-wav", "symphonia-vorbis", "symphonia-mp3"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+lto = true
+strip = true
