@@ -53,6 +53,24 @@ fn draw_judgment_counters(out: &mut Stdout, game: &Game, cols: u16, row: u16, _n
     Ok(())
 }
 
+fn format_lane_key(keys: &[char]) -> String {
+    let labels: Vec<String> = keys.iter().map(display_key).collect();
+    let joined = labels.join("/");
+    let visible_width = joined.chars().count();
+    let target = 3;
+    if visible_width >= target { joined } else { format!("{:^3}", joined) }
+}
+
+fn format_key_hint(keys: &[Vec<char>]) -> String {
+    keys.iter()
+        .map(|ks| ks.iter().map(display_key).collect::<Vec<_>>().join("/"))
+        .collect::<Vec<_>>().join(" ")
+}
+
+fn display_key(c: &char) -> String {
+    if *c == ' ' { "SPACE".to_string() } else { c.to_string() }
+}
+
 fn format_difficulty_badge(game: &Game) -> String {
     let lv = game.chart.playlevel.map(|v| format!("Lv {}", v));
     let dif = match difficulty_label(game.chart.difficulty) {
@@ -112,8 +130,7 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
         let lx = x0 + 1 + lane as u16 * LANE_WIDTH + 3;
         let flash = now_ms - game.flash.last_lane_hit.get(lane).copied().unwrap_or(-9999.0) < 120.0;
         let color = if flash { Color::White } else { lane_color(lane) };
-        let key = game.chart.keys.get(lane).copied().unwrap_or('?');
-        let display = if key == ' ' { "___".to_string() } else { format!(" {} ", key) };
+        let display = format_lane_key(game.chart.keys.get(lane).map(|v| v.as_slice()).unwrap_or(&[]));
         queue!(out, cursor::MoveTo(lx.saturating_sub(1), bottom + 1),
             SetForegroundColor(color), style::SetAttribute(style::Attribute::Bold),
             Print(display),
@@ -135,9 +152,7 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
 
     draw_judgment_flash(out, game, cols, judgment_row, now_ms)?;
 
-    let key_hint: String = game.chart.keys.iter()
-        .map(|c| if *c == ' ' { "SPACE".to_string() } else { c.to_string() })
-        .collect::<Vec<_>>().join(" ");
+    let key_hint = format_key_hint(&game.chart.keys);
     let hint = format!("keys {}  ·  quit Esc / Q", key_hint);
     queue!(out, cursor::MoveTo(cols.saturating_sub(hint.chars().count() as u16) / 2, rows - 1),
         SetForegroundColor(Color::DarkGrey), Print(hint), ResetColor)?;
@@ -166,9 +181,7 @@ pub fn draw_intro(out: &mut Stdout, game: &Game, countdown_ms: f64, audio_on: bo
         queue!(out, cursor::MoveTo(cols.saturating_sub(badge.chars().count() as u16) / 2, rows / 2 - 1),
             SetForegroundColor(Color::Cyan), Print(&badge), ResetColor)?;
     }
-    let key_hint: String = game.chart.keys.iter()
-        .map(|c| if *c == ' ' { "SPACE".to_string() } else { c.to_string() })
-        .collect::<Vec<_>>().join(" ");
+    let key_hint = format_key_hint(&game.chart.keys);
     let msg = format!("hit  {}  on the line", key_hint);
     queue!(out, cursor::MoveTo(cols.saturating_sub(msg.chars().count() as u16) / 2, rows / 2),
         Print(msg))?;

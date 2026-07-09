@@ -24,7 +24,7 @@ pub struct Chart {
     pub bgm: Vec<BgmEvent>,
     pub duration_ms: f64,
     pub lane_count: usize,
-    pub keys: Vec<char>,
+    pub keys: Vec<Vec<char>>,
     pub wav_paths: std::collections::HashMap<u32, PathBuf>,
 }
 
@@ -39,16 +39,13 @@ pub fn difficulty_label(d: Option<u8>) -> &'static str {
     }
 }
 
-const KEYS_4: [char; 4] = ['D', 'F', 'J', 'K'];
-const KEYS_5: [char; 5] = ['D', 'F', 'G', 'J', 'K'];
-const KEYS_7: [char; 7] = ['S', 'D', 'F', ' ', 'J', 'K', 'L'];
-
-pub fn keys_for(lane_count: usize) -> Vec<char> {
-    match lane_count {
-        5 => KEYS_5.to_vec(),
-        7 => KEYS_7.to_vec(),
-        _ => KEYS_4.to_vec(),
-    }
+pub fn keys_for(lane_count: usize) -> Vec<Vec<char>> {
+    let raw: &[&[char]] = match lane_count {
+        5 => &[&['S'], &['D'], &['F', 'J'], &['K'], &['L']],
+        7 => &[&['S'], &['D'], &['F'], &[' '], &['J'], &['K'], &['L']],
+        _ => &[&['S'], &['D'], &['K'], &['L']],
+    };
+    raw.iter().map(|ks| ks.to_vec()).collect()
 }
 
 pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {

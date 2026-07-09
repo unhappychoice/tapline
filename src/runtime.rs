@@ -154,9 +154,9 @@ fn show_result(out: &mut Stdout, game: &game::Game) -> Result<()> {
     }
 }
 
-pub fn lane_for_key(c: char, keys: &[char]) -> Option<usize> {
+pub fn lane_for_key(c: char, keys: &[Vec<char>]) -> Option<usize> {
     let up = c.to_ascii_uppercase();
-    keys.iter().position(|k| k.to_ascii_uppercase() == up)
+    keys.iter().position(|ks| ks.iter().any(|k| k.to_ascii_uppercase() == up))
 }
 
 pub fn elapsed_ms(start: Instant) -> f64 {
