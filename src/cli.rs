@@ -216,4 +216,115 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
+
+    // ---------- default_songs_dir ----------
+    //
+    // These tests mutate the process's environment and CWD, which are
+    // global. Serialize them through a Mutex so they don't clobber each
+    // other under `cargo test`'s parallel harness.
+
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EnvSnapshot {
+        songs_dir: Option<std::ffi::OsString>,
+        home: Option<std::ffi::OsString>,
+        cwd: PathBuf,
+    }
+
+    impl EnvSnapshot {
+        fn capture() -> Self {
+            Self {
+                songs_dir: std::env::var_os("TAPLINE_SONGS_DIR"),
+                home: std::env::var_os("HOME"),
+                cwd: std::env::current_dir().unwrap(),
+            }
+        }
+        fn restore(self) {
+            match self.songs_dir {
+                Some(v) => std::env::set_var("TAPLINE_SONGS_DIR", v),
+                None => std::env::remove_var("TAPLINE_SONGS_DIR"),
+            }
+            match self.home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            let _ = std::env::set_current_dir(self.cwd);
+        }
+    }
+
+    #[test]
+    fn default_songs_dir_env_var_wins_when_it_points_at_a_real_directory() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = EnvSnapshot::capture();
+        let dir = tempdir();
+        std::env::set_var("TAPLINE_SONGS_DIR", &dir);
+        // Make sure `./songs` / `./tests/fixtures` aren't visible either.
+        let isolated = tempdir();
+        std::env::set_current_dir(&isolated).unwrap();
+        let out = default_songs_dir();
+        assert_eq!(out.as_deref(), Some(dir.as_path()));
+        snap.restore();
+    }
+
+    #[test]
+    fn default_songs_dir_env_var_is_ignored_when_missing_from_disk() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = EnvSnapshot::capture();
+        std::env::set_var(
+            "TAPLINE_SONGS_DIR",
+            "/nonexistent-tapline-cli-env-branch-xyz",
+        );
+        let isolated = tempdir();
+        std::env::set_current_dir(&isolated).unwrap();
+        std::env::remove_var("HOME");
+        assert!(
+            default_songs_dir().is_none(),
+            "env var pointing at a missing dir should not survive"
+        );
+        snap.restore();
+    }
+
+    #[test]
+    fn default_songs_dir_falls_back_to_local_songs_when_env_is_empty() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = EnvSnapshot::capture();
+        std::env::remove_var("TAPLINE_SONGS_DIR");
+        std::env::remove_var("HOME");
+        let workspace = tempdir();
+        std::fs::create_dir_all(workspace.join("songs")).unwrap();
+        std::env::set_current_dir(&workspace).unwrap();
+        let out = default_songs_dir();
+        assert_eq!(out, Some(PathBuf::from("songs")));
+        snap.restore();
+    }
+
+    #[test]
+    fn default_songs_dir_falls_back_to_home_tapline_songs_when_no_local_dir() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = EnvSnapshot::capture();
+        std::env::remove_var("TAPLINE_SONGS_DIR");
+        let isolated = tempdir();
+        std::env::set_current_dir(&isolated).unwrap();
+        let home = tempdir();
+        let songs = home.join(".tapline/songs");
+        std::fs::create_dir_all(&songs).unwrap();
+        std::env::set_var("HOME", &home);
+        let out = default_songs_dir();
+        assert_eq!(out.as_deref(), Some(songs.as_path()));
+        snap.restore();
+    }
+
+    #[test]
+    fn default_songs_dir_gives_up_when_nothing_matches() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let snap = EnvSnapshot::capture();
+        std::env::remove_var("TAPLINE_SONGS_DIR");
+        std::env::remove_var("HOME");
+        let isolated = tempdir();
+        std::env::set_current_dir(&isolated).unwrap();
+        assert!(default_songs_dir().is_none());
+        snap.restore();
+    }
 }
