@@ -21,6 +21,9 @@ rodio = { version = "0.19", default-features = false, features = ["symphonia-wav
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[dev-dependencies]
+proptest = "1"
+
 [profile.release]
 lto = true
 strip = true
