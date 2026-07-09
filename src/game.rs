@@ -9,14 +9,6 @@ pub enum Judgment {
 }
 
 impl Judgment {
-    pub fn label(self) -> &'static str {
-        match self {
-            Judgment::Perfect => "PERFECT",
-            Judgment::Great   => "GREAT",
-            Judgment::Good    => "GOOD",
-            Judgment::Miss    => "MISS",
-        }
-    }
     pub fn points(self) -> u32 {
         match self {
             Judgment::Perfect => 300,

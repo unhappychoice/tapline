@@ -15,8 +15,6 @@ pub struct SampleBank {
     _stream: Option<OutputStream>,
     handle: Option<OutputStreamHandle>,
     samples: HashMap<u32, DecodedSample>,
-    pub loaded: usize,
-    pub failed: usize,
     pub enabled: bool,
 }
 
@@ -28,24 +26,14 @@ impl SampleBank {
                 Err(_)     => (None, None, false),
             }
         });
-        let mut samples = HashMap::new();
-        let mut loaded = 0;
-        let mut failed = 0;
-        for (id, path) in wav_paths {
-            match decode(path) {
-                Ok(s) => { samples.insert(*id, s); loaded += 1; }
-                Err(_) => { failed += 1; }
-            }
-        }
-        Self { _stream: stream, handle, samples, loaded, failed, enabled }
+        let samples = wav_paths.iter()
+            .filter_map(|(id, path)| decode(path).ok().map(|s| (*id, s)))
+            .collect();
+        Self { _stream: stream, handle, samples, enabled }
     }
 
     pub fn silent() -> Self {
-        Self {
-            _stream: None, handle: None,
-            samples: HashMap::new(),
-            loaded: 0, failed: 0, enabled: false,
-        }
+        Self { _stream: None, handle: None, samples: HashMap::new(), enabled: false }
     }
 
     pub fn play(&self, id: u32) {
