@@ -4,11 +4,47 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 struct DecodedSample {
     channels: u16,
     sample_rate: u32,
-    data: Vec<f32>,
+    data: Arc<Vec<f32>>,
+}
+
+/// Zero-copy source over a shared sample buffer. Cloning it (and thus the
+/// backing Arc) is O(1), which lets us stream the same keysound to the mixer
+/// many times per song without cloning the PCM data.
+struct SharedSamples {
+    data: Arc<Vec<f32>>,
+    pos: usize,
+    channels: u16,
+    sample_rate: u32,
+}
+
+impl Iterator for SharedSamples {
+    type Item = f32;
+    fn next(&mut self) -> Option<f32> {
+        let s = *self.data.get(self.pos)?;
+        self.pos += 1;
+        Some(s)
+    }
+}
+
+impl Source for SharedSamples {
+    fn current_frame_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> u16 {
+        self.channels
+    }
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
 }
 
 pub struct SampleBank {
@@ -67,8 +103,13 @@ impl SampleBank {
         let Some(s) = self.samples.get(&id) else {
             return;
         };
-        let buf = SamplesBuffer::new(s.channels, s.sample_rate, s.data.clone());
-        let _ = handle.play_raw(buf);
+        let source = SharedSamples {
+            data: Arc::clone(&s.data),
+            pos: 0,
+            channels: s.channels,
+            sample_rate: s.sample_rate,
+        };
+        let _ = handle.play_raw(source);
     }
 
     pub fn play_synth(&self, freq: f32, duration_ms: u32) {
@@ -120,7 +161,7 @@ fn decode(path: &PathBuf) -> anyhow::Result<DecodedSample> {
     Ok(DecodedSample {
         channels,
         sample_rate,
-        data,
+        data: Arc::new(data),
     })
 }
 
