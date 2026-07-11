@@ -1,4 +1,4 @@
-use crate::chart::{keys_for, BgmEvent, Chart, Note};
+use crate::chart::{keys_for, BgmEvent, Chart, Mine, Note};
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -60,6 +60,7 @@ pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
 struct ChartAcc {
     lanes: LaneSet,
     notes: Vec<Note>,
+    mines: Vec<Mine>,
     bgm: Vec<BgmEvent>,
 }
 
@@ -78,20 +79,25 @@ fn build_chart(
     for (measure, ch, data) in &raw {
         if matches!(ch.as_str(), "02" | "03" | "08" | "09")
             || long_channel_to_lane(ch).is_some()
+            || mine_channel_to_lane(ch).is_some()
         {
             continue;
         }
         materialize_channel(&mut acc, *measure, ch, data, &timeline);
     }
     materialize_long_notes(&mut acc, &raw, &timeline);
+    materialize_mines(&mut acc, &raw, &timeline);
     let lane_count = acc.lanes.count();
     let mut notes = acc.notes;
+    let mut mines = acc.mines;
     let mut bgm = acc.bgm;
     if let Some(lnobj) = pass.lnobj {
         promote_lnobj(&mut notes, lnobj);
     }
     notes.retain(|n| n.lane < lane_count);
+    mines.retain(|n| n.lane < lane_count);
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
+    mines.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bgm.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     let duration_ms = timeline.end_time(max_measure) + 2500.0;
     Ok(Chart {
@@ -110,6 +116,7 @@ fn build_chart(
         total: pass.total,
         vol_wav: pass.vol_wav,
         notes,
+        mines,
         bgm,
         duration_ms,
         lane_count,
@@ -148,6 +155,48 @@ fn materialize_channel(
             acc.bgm.push(BgmEvent {
                 time_ms: t,
                 keysound: *slot,
+            });
+        }
+    }
+}
+
+fn mine_channel_to_lane(ch: &str) -> Option<usize> {
+    match ch {
+        "D1" => Some(0),
+        "D2" => Some(1),
+        "D3" => Some(2),
+        "D4" => Some(3),
+        "D5" => Some(4),
+        "D8" => Some(5),
+        "D9" => Some(6),
+        _ => None,
+    }
+}
+
+fn materialize_mines(
+    acc: &mut ChartAcc,
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+) {
+    for (measure, ch, data) in raw {
+        let Some(lane) = mine_channel_to_lane(ch) else {
+            continue;
+        };
+        let slots = parse_slots_hex(data);
+        let n = slots.len();
+        if n == 0 {
+            continue;
+        }
+        for (i, slot) in slots.iter().enumerate() {
+            if *slot == 0 {
+                continue;
+            }
+            let t = timeline.time_at(*measure, i as f64 / n as f64);
+            acc.lanes.observe_lane(lane);
+            acc.mines.push(Mine {
+                time_ms: t,
+                lane,
+                damage: *slot,
             });
         }
     }
@@ -1013,6 +1062,60 @@ mod tests {
         assert_eq!(p.stop_defs.get(&1), Some(&96.0));
         assert!(!p.stop_defs.contains_key(&2));
         assert_eq!(p.stop_defs.get(&1295), Some(&24.0));
+    }
+
+    #[test]
+    fn mine_channel_to_lane_mirrors_the_regular_visible_channel_map() {
+        assert_eq!(mine_channel_to_lane("D1"), Some(0));
+        assert_eq!(mine_channel_to_lane("D5"), Some(4));
+        assert_eq!(mine_channel_to_lane("D8"), Some(5));
+        assert_eq!(mine_channel_to_lane("D9"), Some(6));
+        assert_eq!(mine_channel_to_lane("D6"), None);
+        assert_eq!(mine_channel_to_lane("11"), None);
+    }
+
+    #[test]
+    fn load_extracts_mines_from_channel_d1() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        // BPM 60 → 4000ms/measure. Slot 0 (00 = no mine), slot 1 (0x64 = 100
+        // damage). Also a regular note in channel 11 so lane 0 counts.
+        std::fs::write(
+            &path,
+            "\
+#TITLE Miner
+#BPM 60
+#001D1:0064
+#00111:0100
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.mines.len(), 1);
+        assert_eq!(chart.mines[0].lane, 0);
+        assert_eq!(chart.mines[0].damage, 100);
+        assert!((chart.mines[0].time_ms - 6000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn load_drops_mines_whose_lane_is_above_the_detected_lane_count() {
+        // Only lane 0 is used by real notes, so lane_count clamps to 4.
+        // A mine on channel D9 (lane 6) should be dropped.
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "\
+#TITLE OobMine
+#BPM 60
+#00111:0100
+#001D9:0064
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        // lane_count is 4 → the mine on lane 6 is filtered.
+        assert!(chart.mines.iter().all(|m| m.lane < chart.lane_count));
     }
 
     #[test]

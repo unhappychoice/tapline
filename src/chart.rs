@@ -16,6 +16,14 @@ pub struct BgmEvent {
     pub keysound: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Mine {
+    pub time_ms: f64,
+    pub lane: usize,
+    /// Damage value from the BMS chart (0–255).
+    pub damage: u32,
+}
+
 pub struct Chart {
     pub title: String,
     pub subtitle: String,
@@ -32,6 +40,7 @@ pub struct Chart {
     pub total: Option<f64>,
     pub vol_wav: Option<u8>,
     pub notes: Vec<Note>,
+    pub mines: Vec<Mine>,
     pub bgm: Vec<BgmEvent>,
     pub duration_ms: f64,
     pub lane_count: usize,
@@ -57,6 +66,7 @@ impl Default for Chart {
             total: None,
             vol_wav: None,
             notes: Vec::new(),
+            mines: Vec::new(),
             bgm: Vec::new(),
             duration_ms: 0.0,
             lane_count: 4,
