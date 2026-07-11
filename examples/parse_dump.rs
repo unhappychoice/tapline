@@ -12,7 +12,7 @@ fn main() {
             Ok(c) => {
                 ok += 1;
                 println!(
-                    "OK  title={:?} bpm={:.0} lanes={} notes={} p2={} mines={} bgm={} bga={} dur={:.0}ms",
+                    "OK  title={:?} bpm={:.0} lanes={} notes={} p2={} mines={} bgm={} bga={} wavs={}/{} dur={:.0}ms",
                     c.title,
                     c.bpm,
                     c.lane_count,
@@ -21,6 +21,8 @@ fn main() {
                     c.mines.len(),
                     c.bgm.len(),
                     c.bga.len(),
+                    c.wav_paths.len(),
+                    c.bgm.iter().map(|b| b.keysound).chain(c.notes.iter().filter_map(|n| n.keysound)).collect::<std::collections::HashSet<_>>().len(),
                     c.duration_ms,
                 );
             }

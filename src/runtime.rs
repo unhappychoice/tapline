@@ -110,7 +110,14 @@ fn draw_frame(
         state.prev_mode = mode;
     }
     if mode == 1 {
-        render::draw_intro(out, game, opts.countdown_ms - now, bank.enabled)?;
+        render::draw_intro_full(
+            out,
+            game,
+            opts.countdown_ms - now,
+            bank.enabled,
+            bank.sample_count(),
+            bank.decode_failures,
+        )?;
         return Ok(());
     }
     game.check_misses(now);

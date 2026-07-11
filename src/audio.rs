@@ -16,6 +16,9 @@ pub struct SampleBank {
     handle: Option<OutputStreamHandle>,
     samples: HashMap<u32, DecodedSample>,
     pub enabled: bool,
+    /// Number of `wav_paths` entries that failed to decode. Surfaced on the
+    /// intro screen so charts that end up unexpectedly silent are diagnosable.
+    pub decode_failures: usize,
 }
 
 impl SampleBank {
@@ -24,15 +27,22 @@ impl SampleBank {
             Ok((s, h)) => (Some(s), Some(h), true),
             Err(_) => (None, None, false),
         });
-        let samples = wav_paths
-            .iter()
-            .filter_map(|(id, path)| decode(path).ok().map(|s| (*id, s)))
-            .collect();
+        let mut samples: HashMap<u32, DecodedSample> = HashMap::new();
+        let mut failures = 0usize;
+        for (id, path) in wav_paths {
+            match decode(path) {
+                Ok(s) => {
+                    samples.insert(*id, s);
+                }
+                Err(_) => failures += 1,
+            }
+        }
         Self {
             _stream: stream,
             handle,
             samples,
             enabled,
+            decode_failures: failures,
         }
     }
 
@@ -42,7 +52,12 @@ impl SampleBank {
             handle: None,
             samples: HashMap::new(),
             enabled: false,
+            decode_failures: 0,
         }
+    }
+
+    pub fn sample_count(&self) -> usize {
+        self.samples.len()
     }
 
     pub fn play(&self, id: u32) {

@@ -216,6 +216,17 @@ fn display_key(c: &char) -> String {
     }
 }
 
+pub fn format_audio_badge(audio_on: bool, samples: usize, failures: usize) -> String {
+    if !audio_on {
+        return "silent (audio backend unavailable)".to_string();
+    }
+    match (samples, failures) {
+        (0, 0) => "audio on · synth mode".to_string(),
+        (_, 0) => format!("audio on · {samples} samples"),
+        (_, _) => format!("audio on · {samples} samples · {failures} failed to decode"),
+    }
+}
+
 /// Return the BMP id currently active on a given BGA layer at `now_ms`, or
 /// `None` if no event on that layer has fired yet. Events must already be
 /// sorted ascending by time_ms — bms::load guarantees this.
@@ -488,6 +499,17 @@ pub fn draw_intro(
     countdown_ms: f64,
     audio_on: bool,
 ) -> anyhow::Result<()> {
+    draw_intro_full(out, game, countdown_ms, audio_on, 0, 0)
+}
+
+pub fn draw_intro_full(
+    out: &mut Stdout,
+    game: &Game,
+    countdown_ms: f64,
+    audio_on: bool,
+    samples_loaded: usize,
+    decode_failures: usize,
+) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
     queue!(out, terminal::BeginSynchronizedUpdate)?;
     let title = format_title_line(&game.chart.title, &game.chart.subtitle);
@@ -549,12 +571,12 @@ pub fn draw_intro(
         style::SetAttribute(style::Attribute::Reset),
         ResetColor
     )?;
-    let badge = if audio_on { "audio on" } else { "silent" };
+    let badge = format_audio_badge(audio_on, samples_loaded, decode_failures);
     queue!(
         out,
-        cursor::MoveTo(cols.saturating_sub(badge.len() as u16) / 2, rows - 2),
-        SetForegroundColor(Color::DarkGrey),
-        Print(badge),
+        cursor::MoveTo(cols.saturating_sub(badge.chars().count() as u16) / 2, rows - 2),
+        SetForegroundColor(if decode_failures > 0 { Color::Yellow } else { Color::DarkGrey }),
+        Print(&badge),
         ResetColor
     )?;
     queue!(out, terminal::EndSynchronizedUpdate)?;
@@ -677,6 +699,29 @@ mod tests {
     fn format_artist_line_returns_just_one_side_when_the_other_is_empty() {
         assert_eq!(format_artist_line("A", ""), Some("— A".to_string()));
         assert_eq!(format_artist_line("", "B"), Some("— B".to_string()));
+    }
+
+    #[test]
+    fn audio_badge_reports_the_backend_being_missing() {
+        assert_eq!(
+            format_audio_badge(false, 0, 0),
+            "silent (audio backend unavailable)"
+        );
+    }
+
+    #[test]
+    fn audio_badge_says_synth_when_no_samples_and_no_failures() {
+        assert_eq!(format_audio_badge(true, 0, 0), "audio on · synth mode");
+    }
+
+    #[test]
+    fn audio_badge_reports_a_healthy_sample_bank() {
+        assert_eq!(format_audio_badge(true, 12, 0), "audio on · 12 samples");
+    }
+
+    #[test]
+    fn audio_badge_calls_out_decode_failures_when_present() {
+        assert!(format_audio_badge(true, 8, 3).contains("3 failed"));
     }
 
     #[test]
