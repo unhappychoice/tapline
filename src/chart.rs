@@ -26,6 +26,9 @@ pub struct Chart {
     pub bpm: f64,
     pub playlevel: Option<u8>,
     pub difficulty: Option<u8>,
+    pub rank: Option<u8>,
+    pub total: Option<f64>,
+    pub vol_wav: Option<u8>,
     pub notes: Vec<Note>,
     pub bgm: Vec<BgmEvent>,
     pub duration_ms: f64,
@@ -48,6 +51,9 @@ impl Default for Chart {
             bpm: 130.0,
             playlevel: None,
             difficulty: None,
+            rank: None,
+            total: None,
+            vol_wav: None,
             notes: Vec::new(),
             bgm: Vec::new(),
             duration_ms: 0.0,
@@ -169,22 +175,13 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
     let duration_ms = t + 2000.0;
     Chart {
         title: "Built-in Practice".into(),
-        subtitle: String::new(),
         artist: "tapline".into(),
-        subartist: String::new(),
-        genre: String::new(),
-        stagefile: String::new(),
-        banner: String::new(),
-        maker: String::new(),
         bpm,
         playlevel: Some(3),
         difficulty: Some(2),
         notes,
-        bgm: Vec::new(),
         duration_ms,
-        lane_count: 4,
-        keys: keys_for(4),
-        wav_paths: Default::default(),
+        ..Chart::default()
     }
 }
 

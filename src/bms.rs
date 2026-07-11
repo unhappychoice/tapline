@@ -96,6 +96,9 @@ fn build_chart(
         bpm: pass.bpm,
         playlevel: pass.playlevel,
         difficulty: pass.difficulty,
+        rank: pass.rank,
+        total: pass.total,
+        vol_wav: pass.vol_wav,
         notes,
         bgm,
         duration_ms,
@@ -153,6 +156,9 @@ struct HeaderPass {
     bpm: f64,
     playlevel: Option<u8>,
     difficulty: Option<u8>,
+    rank: Option<u8>,
+    total: Option<f64>,
+    vol_wav: Option<u8>,
     wav_defs: HashMap<u32, String>,
 }
 
@@ -170,6 +176,9 @@ impl Default for HeaderPass {
             bpm: 130.0,
             playlevel: None,
             difficulty: None,
+            rank: None,
+            total: None,
+            vol_wav: None,
             wav_defs: HashMap::new(),
         }
     }
@@ -201,6 +210,27 @@ impl HeaderPass {
             "DIFFICULTY" => {
                 if let Ok(v) = val.trim().parse() {
                     self.difficulty = Some(v);
+                }
+            }
+            "RANK" => {
+                if let Ok(v) = val.trim().parse::<u8>() {
+                    if v <= 4 {
+                        self.rank = Some(v);
+                    }
+                }
+            }
+            "TOTAL" => {
+                if let Ok(v) = val.trim().parse::<f64>() {
+                    if v > 0.0 {
+                        self.total = Some(v);
+                    }
+                }
+            }
+            "VOLWAV" => {
+                if let Ok(v) = val.trim().parse::<u8>() {
+                    if v <= 100 {
+                        self.vol_wav = Some(v);
+                    }
                 }
             }
             _ => {
@@ -492,6 +522,52 @@ mod tests {
         assert_eq!(m.subtitle, "~beta~");
         assert_eq!(m.subartist, "bob");
         assert_eq!(m.genre, "electronic");
+    }
+
+    #[test]
+    fn header_pass_absorbs_rank_total_and_volwav() {
+        let mut p = HeaderPass::default();
+        p.absorb("RANK 2");
+        p.absorb("TOTAL 260");
+        p.absorb("VOLWAV 80");
+        assert_eq!(p.rank, Some(2));
+        assert_eq!(p.total, Some(260.0));
+        assert_eq!(p.vol_wav, Some(80));
+    }
+
+    #[test]
+    fn header_pass_rejects_out_of_range_rank_total_volwav() {
+        let mut p = HeaderPass::default();
+        p.absorb("RANK 9");
+        p.absorb("TOTAL 0");
+        p.absorb("TOTAL -5");
+        p.absorb("VOLWAV 250");
+        p.absorb("VOLWAV nonsense");
+        assert_eq!(p.rank, None, "RANK > 4 is not a valid difficulty tier");
+        assert_eq!(p.total, None, "TOTAL must be positive");
+        assert_eq!(p.vol_wav, None, "VOLWAV is a 0..=100 percent");
+    }
+
+    #[test]
+    fn load_populates_rank_total_and_volwav() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "\
+#TITLE Testing
+#BPM 130
+#RANK 2
+#TOTAL 260.5
+#VOLWAV 75
+#00111:0100
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.rank, Some(2));
+        assert_eq!(chart.total, Some(260.5));
+        assert_eq!(chart.vol_wav, Some(75));
     }
 
     #[test]
