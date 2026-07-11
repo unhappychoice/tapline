@@ -70,6 +70,56 @@ fn note_screen_y(remain: f64, layout: &PlayLayout) -> Option<u16> {
     Some(layout.top + (frac * (layout.lane_height - 1) as f64) as u16)
 }
 
+/// Vertical screen range (top row, bottom row) covered by a long note whose
+/// endpoints have the given `remain` offsets. Returns `None` when the note is
+/// entirely off-screen — either both endpoints past the miss window or both
+/// past the approach horizon.
+fn long_note_screen_range(
+    start_remain: f64,
+    end_remain: f64,
+    layout: &PlayLayout,
+) -> Option<(u16, u16)> {
+    if start_remain > APPROACH_MS && end_remain > APPROACH_MS {
+        return None;
+    }
+    if start_remain < -60.0 && end_remain < -60.0 {
+        return None;
+    }
+    let start_y = note_screen_y(start_remain, layout).unwrap_or(layout.judgment_row());
+    let end_y = note_screen_y(end_remain, layout).unwrap_or(layout.top);
+    Some((start_y.min(end_y), start_y.max(end_y)))
+}
+
+fn draw_long_note(
+    out: &mut Stdout,
+    start_remain: f64,
+    end_remain: f64,
+    layout: &PlayLayout,
+    lx: u16,
+    color: Color,
+) -> anyhow::Result<()> {
+    let Some((top_y, bot_y)) = long_note_screen_range(start_remain, end_remain, layout) else {
+        return Ok(());
+    };
+    for y in top_y..=bot_y {
+        let glyph = if y == bot_y {
+            "[==]"
+        } else if y == top_y {
+            "[--]"
+        } else {
+            "[||]"
+        };
+        queue!(
+            out,
+            cursor::MoveTo(lx, y),
+            SetForegroundColor(color),
+            Print(glyph),
+            ResetColor
+        )?;
+    }
+    Ok(())
+}
+
 fn draw_judgment_flash(
     out: &mut Stdout,
     game: &Game,
@@ -287,20 +337,28 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     }
 
     for note in &game.chart.notes {
-        if note.hit {
-            continue;
-        }
-        let Some(y) = note_screen_y(note.time_ms - now_ms, &layout) else {
-            continue;
-        };
         let lx = x0 + 1 + note.lane as u16 * LANE_WIDTH + 2;
-        queue!(
-            out,
-            cursor::MoveTo(lx, y),
-            SetForegroundColor(lane_color(note.lane)),
-            Print("[==]"),
-            ResetColor
-        )?;
+        let color = lane_color(note.lane);
+        match note.end_ms {
+            None => {
+                if note.hit {
+                    continue;
+                }
+                let Some(y) = note_screen_y(note.time_ms - now_ms, &layout) else {
+                    continue;
+                };
+                queue!(
+                    out,
+                    cursor::MoveTo(lx, y),
+                    SetForegroundColor(color),
+                    Print("[==]"),
+                    ResetColor
+                )?;
+            }
+            Some(end_ms) => {
+                draw_long_note(out, note.time_ms - now_ms, end_ms - now_ms, &layout, lx, color)?;
+            }
+        }
     }
 
     draw_judgment_flash(out, game, cols, layout.judgment_row(), now_ms)?;
@@ -612,6 +670,47 @@ mod tests {
         let l = PlayLayout::compute(80, 24, 4).unwrap();
         let y = note_screen_y(0.0, &l).unwrap();
         assert_eq!(y, l.top + (l.lane_height - 1));
+    }
+
+    #[test]
+    fn long_note_range_covers_the_span_between_start_and_end_when_both_visible() {
+        let l = PlayLayout::compute(80, 24, 4).unwrap();
+        // Start is on-beat, end is halfway into the approach horizon.
+        let (top_y, bot_y) = long_note_screen_range(0.0, APPROACH_MS / 2.0, &l).unwrap();
+        // Start on-beat → bottom; end mid-air → higher up.
+        assert_eq!(bot_y, l.top + (l.lane_height - 1));
+        assert!(top_y < bot_y, "start should sit below end on screen");
+        assert!(top_y > l.top, "end shouldn't clamp to the top of the field");
+    }
+
+    #[test]
+    fn long_note_range_clamps_end_to_the_top_when_far_in_the_future() {
+        let l = PlayLayout::compute(80, 24, 4).unwrap();
+        let (top_y, _) = long_note_screen_range(0.0, APPROACH_MS * 5.0, &l).unwrap();
+        assert_eq!(top_y, l.top, "off-screen end should clamp to the field top");
+    }
+
+    #[test]
+    fn long_note_range_clamps_start_to_the_judgment_row_when_already_past() {
+        let l = PlayLayout::compute(80, 24, 4).unwrap();
+        // Start has passed 200ms ago (well beyond the -60 stale window),
+        // end still 500ms in the future → we're mid-hold.
+        let (_, bot_y) = long_note_screen_range(-200.0, 500.0, &l).unwrap();
+        assert_eq!(bot_y, l.judgment_row());
+    }
+
+    #[test]
+    fn long_note_range_returns_none_when_fully_past() {
+        let l = PlayLayout::compute(80, 24, 4).unwrap();
+        assert!(long_note_screen_range(-200.0, -100.0, &l).is_none());
+    }
+
+    #[test]
+    fn long_note_range_returns_none_when_fully_in_the_future() {
+        let l = PlayLayout::compute(80, 24, 4).unwrap();
+        assert!(
+            long_note_screen_range(APPROACH_MS + 10.0, APPROACH_MS + 500.0, &l).is_none()
+        );
     }
 
     #[test]
