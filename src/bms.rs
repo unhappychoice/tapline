@@ -76,14 +76,20 @@ fn build_chart(
     let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
     let mut acc = ChartAcc::default();
     for (measure, ch, data) in &raw {
-        if matches!(ch.as_str(), "02" | "03" | "08" | "09") {
+        if matches!(ch.as_str(), "02" | "03" | "08" | "09")
+            || long_channel_to_lane(ch).is_some()
+        {
             continue;
         }
         materialize_channel(&mut acc, *measure, ch, data, &timeline);
     }
+    materialize_long_notes(&mut acc, &raw, &timeline);
     let lane_count = acc.lanes.count();
     let mut notes = acc.notes;
     let mut bgm = acc.bgm;
+    if let Some(lnobj) = pass.lnobj {
+        promote_lnobj(&mut notes, lnobj);
+    }
     notes.retain(|n| n.lane < lane_count);
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bgm.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
@@ -136,6 +142,7 @@ fn materialize_channel(
                 lane,
                 hit: false,
                 keysound: Some(*slot),
+                end_ms: None,
             });
         } else if ch == "01" {
             acc.bgm.push(BgmEvent {
@@ -144,6 +151,92 @@ fn materialize_channel(
             });
         }
     }
+}
+
+fn long_channel_to_lane(ch: &str) -> Option<usize> {
+    match ch {
+        "51" => Some(0),
+        "52" => Some(1),
+        "53" => Some(2),
+        "54" => Some(3),
+        "55" => Some(4),
+        "58" => Some(5),
+        "59" => Some(6),
+        _ => None,
+    }
+}
+
+fn materialize_long_notes(
+    acc: &mut ChartAcc,
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+) {
+    let mut per_lane: HashMap<usize, Vec<(f64, u32)>> = HashMap::new();
+    for (measure, ch, data) in raw {
+        let Some(lane) = long_channel_to_lane(ch) else {
+            continue;
+        };
+        let slots = parse_slots(data);
+        let n = slots.len();
+        if n == 0 {
+            continue;
+        }
+        for (i, slot) in slots.iter().enumerate() {
+            if *slot == 0 {
+                continue;
+            }
+            let t = timeline.time_at(*measure, i as f64 / n as f64);
+            per_lane.entry(lane).or_default().push((t, *slot));
+        }
+    }
+    for (lane, mut events) in per_lane {
+        events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        for pair in events.chunks(2) {
+            if pair.len() != 2 {
+                continue;
+            }
+            let (start_ms, ks) = pair[0];
+            let (end_ms, _) = pair[1];
+            acc.lanes.observe_lane(lane);
+            acc.notes.push(Note {
+                time_ms: start_ms,
+                lane,
+                hit: false,
+                keysound: Some(ks),
+                end_ms: Some(end_ms),
+            });
+        }
+    }
+}
+
+fn promote_lnobj(notes: &mut Vec<Note>, lnobj: u32) {
+    let mut per_lane: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut indices: Vec<usize> = (0..notes.len()).collect();
+    indices.sort_by(|&a, &b| notes[a].time_ms.partial_cmp(&notes[b].time_ms).unwrap());
+    for i in indices {
+        per_lane.entry(notes[i].lane).or_default().push(i);
+    }
+    let mut drop_set: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for lane_indices in per_lane.values() {
+        let mut prev: Option<usize> = None;
+        for &i in lane_indices {
+            if notes[i].keysound == Some(lnobj) {
+                if let Some(p) = prev {
+                    notes[p].end_ms = Some(notes[i].time_ms);
+                    drop_set.insert(i);
+                }
+                prev = None;
+            } else {
+                prev = Some(i);
+            }
+        }
+    }
+    let mut idx = 0;
+    notes.retain(|_| {
+        let keep = !drop_set.contains(&idx);
+        idx += 1;
+        keep
+    });
 }
 
 fn collect_measure_scales(raw: &[(u32, String, String)]) -> HashMap<u32, f64> {
@@ -378,6 +471,8 @@ struct HeaderPass {
     wav_defs: HashMap<u32, String>,
     bpm_defs: HashMap<u32, f64>,
     stop_defs: HashMap<u32, f64>,
+    lnobj: Option<u32>,
+    lntype: u8,
 }
 
 impl Default for HeaderPass {
@@ -400,6 +495,8 @@ impl Default for HeaderPass {
             wav_defs: HashMap::new(),
             bpm_defs: HashMap::new(),
             stop_defs: HashMap::new(),
+            lnobj: None,
+            lntype: 1,
         }
     }
 }
@@ -453,6 +550,20 @@ impl HeaderPass {
                     }
                 }
             }
+            "LNOBJ" => {
+                if let Ok(id) = u32::from_str_radix(val.trim(), 36) {
+                    if id > 0 {
+                        self.lnobj = Some(id);
+                    }
+                }
+            }
+            "LNTYPE" => {
+                if let Ok(v) = val.trim().parse::<u8>() {
+                    if (1..=2).contains(&v) {
+                        self.lntype = v;
+                    }
+                }
+            }
             _ => {
                 if let Some(rest) = up.strip_prefix("WAV") {
                     if let Ok(id) = u32::from_str_radix(rest, 36) {
@@ -492,6 +603,9 @@ impl LaneSet {
         if let Some(lane) = channel_to_lane(ch) {
             self.0.insert(lane);
         }
+    }
+    fn observe_lane(&mut self, lane: usize) {
+        self.0.insert(lane);
     }
     fn count(&self) -> usize {
         let max = self.0.iter().copied().max().unwrap_or(3);
@@ -899,6 +1013,76 @@ mod tests {
         assert_eq!(p.stop_defs.get(&1), Some(&96.0));
         assert!(!p.stop_defs.contains_key(&2));
         assert_eq!(p.stop_defs.get(&1295), Some(&24.0));
+    }
+
+    #[test]
+    fn long_channel_to_lane_mirrors_the_regular_visible_channel_map() {
+        assert_eq!(long_channel_to_lane("51"), Some(0));
+        assert_eq!(long_channel_to_lane("55"), Some(4));
+        assert_eq!(long_channel_to_lane("58"), Some(5));
+        assert_eq!(long_channel_to_lane("59"), Some(6));
+        assert_eq!(long_channel_to_lane("56"), None);
+        assert_eq!(long_channel_to_lane("11"), None);
+    }
+
+    #[test]
+    fn header_pass_absorbs_lnobj_and_lntype() {
+        let mut p = HeaderPass::default();
+        p.absorb("LNOBJ ZZ");
+        p.absorb("LNTYPE 2");
+        assert_eq!(p.lnobj, Some(1295));
+        assert_eq!(p.lntype, 2);
+    }
+
+    #[test]
+    fn header_pass_clamps_lntype_to_supported_variants() {
+        let mut p = HeaderPass::default();
+        p.absorb("LNTYPE 9");
+        assert_eq!(p.lntype, 1, "unsupported LN types fall back to the default");
+    }
+
+    #[test]
+    fn load_pairs_channel_51_slots_into_long_notes() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        // BPM 60 → 4000ms/measure. On channel 51 (LN lane 0), slot 0 (start)
+        // and slot 2 (end) of measure 1: LN from 4000ms to 6000ms.
+        std::fs::write(
+            &path,
+            "\
+#TITLE LNPair
+#BPM 60
+#00151:01000100
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.notes.len(), 1);
+        assert_eq!(chart.notes[0].lane, 0);
+        assert!((chart.notes[0].time_ms - 4000.0).abs() < 1e-6);
+        assert_eq!(chart.notes[0].end_ms, Some(6000.0));
+    }
+
+    #[test]
+    fn load_promotes_lnobj_terminator_into_an_ln_end() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        // BPM 60 → 4000ms/measure. Slot 0 uses WAV01 (LN start), slot 2 uses
+        // WAV ZZ which matches #LNOBJ → LN terminator. Result: one LN.
+        std::fs::write(
+            &path,
+            "\
+#TITLE LNObj
+#BPM 60
+#LNOBJ ZZ
+#00111:010000ZZ
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.notes.len(), 1);
+        assert!((chart.notes[0].time_ms - 4000.0).abs() < 1e-6);
+        assert_eq!(chart.notes[0].end_ms, Some(7000.0));
     }
 
     #[test]

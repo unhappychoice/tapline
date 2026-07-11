@@ -356,13 +356,13 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: Some(1),
-            },
+                end_ms: None,            },
             Note {
                 time_ms: 500.0,
                 lane: 1,
                 hit: false,
                 keysound: Some(2),
-            },
+                end_ms: None,            },
         ];
         let game = Game::new(base_chart(4, notes));
         let auto = build_auto_notes(&game, &opts(false));
@@ -377,19 +377,19 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: Some(1),
-            },
+                end_ms: None,            },
             Note {
                 time_ms: 500.0,
                 lane: 1,
                 hit: false,
                 keysound: Some(2),
-            },
+                end_ms: None,            },
             Note {
                 time_ms: 800.0,
                 lane: 2,
                 hit: false,
                 keysound: Some(3),
-            },
+                end_ms: None,            },
         ];
         let game = Game::new(base_chart(4, notes));
         let auto = build_auto_notes(&game, &opts(true));
@@ -500,13 +500,13 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: Some(1),
-            },
+                end_ms: None,            },
             Note {
                 time_ms: 400.0,
                 lane: 1,
                 hit: false,
                 keysound: Some(2),
-            },
+                end_ms: None,            },
         ];
         let game = Game::new(base_chart(4, notes));
         let bank = SampleBank::silent();
@@ -549,13 +549,13 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: Some(1),
-            },
+                end_ms: None,            },
             Note {
                 time_ms: 3200.0,
                 lane: 0,
                 hit: false,
                 keysound: Some(2),
-            },
+                end_ms: None,            },
         ];
         Game::new(base_chart(4, notes))
     }

@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Note {
     pub time_ms: f64,
     pub lane: usize,
     pub hit: bool,
     pub keysound: Option<u32>,
+    /// For long notes, the end time of the hold in ms. `None` for taps.
+    pub end_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -95,7 +97,7 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
                 lane: *lane,
                 hit: false,
                 keysound: None,
-            });
+                end_ms: None,            });
         }
     };
 
@@ -168,7 +170,7 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
             lane,
             hit: false,
             keysound: None,
-        });
+            end_ms: None,        });
     }
 
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());

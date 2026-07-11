@@ -20,7 +20,7 @@ fn note(time_ms: f64, lane: usize) -> Note {
         lane,
         hit: false,
         keysound: Some(1),
-    }
+        end_ms: None,    }
 }
 
 proptest! {

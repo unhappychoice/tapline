@@ -163,7 +163,7 @@ mod tests {
             lane,
             hit: false,
             keysound: Some(1),
-        }
+            end_ms: None,        }
     }
 
     #[test]

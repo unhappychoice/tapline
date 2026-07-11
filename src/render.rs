@@ -479,7 +479,7 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: None,
-            }],
+                end_ms: None,            }],
             duration_ms: 30_000.0,
             lane_count,
             keys: keys_for(lane_count),
