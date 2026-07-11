@@ -18,12 +18,12 @@ fn lane_key_color(game: &Game, lane: usize) -> Color {
     key_label_color(keys)
 }
 
-/// Highlight `S`, `K`, and Space in blue (they're the anchor keys the player
+/// Highlight `D`, `K`, and Space in blue (they're the anchor keys the player
 /// uses to orient their hands); every other key label stays white.
 fn key_label_color(keys: &[char]) -> Color {
     if keys.iter().any(|c| {
         let up = c.to_ascii_uppercase();
-        up == 'S' || up == 'K' || *c == ' '
+        up == 'D' || up == 'K' || *c == ' '
     }) {
         Color::Blue
     } else {
@@ -819,16 +819,16 @@ mod tests {
 
     #[test]
     fn key_label_color_paints_anchor_keys_blue() {
-        assert_eq!(key_label_color(&['S']), Color::Blue);
+        assert_eq!(key_label_color(&['D']), Color::Blue);
         assert_eq!(key_label_color(&['K']), Color::Blue);
         assert_eq!(key_label_color(&[' ']), Color::Blue);
         // Case-insensitive anchor detection.
-        assert_eq!(key_label_color(&['s']), Color::Blue);
+        assert_eq!(key_label_color(&['d']), Color::Blue);
     }
 
     #[test]
     fn key_label_color_paints_the_other_lanes_white() {
-        for k in ['D', 'F', 'J', 'L', 'A', 'H'] {
+        for k in ['S', 'F', 'J', 'L', 'A', 'H'] {
             assert_eq!(
                 key_label_color(&[k]),
                 Color::White,
@@ -841,8 +841,8 @@ mod tests {
     fn key_label_color_treats_multi_bind_lanes_as_anchor_if_any_key_matches() {
         // The 5K center lane binds both F and J → neither is an anchor.
         assert_eq!(key_label_color(&['F', 'J']), Color::White);
-        // A synthetic lane that happens to include S is still an anchor.
-        assert_eq!(key_label_color(&['S', 'A']), Color::Blue);
+        // A synthetic lane that happens to include D is still an anchor.
+        assert_eq!(key_label_color(&['D', 'A']), Color::Blue);
     }
 
     #[test]
