@@ -109,12 +109,13 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 | lane modes    | 4-key, 5-key (`11–15`), 7-key (`11–15 + 18/19`) auto-detect |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
+| control flow  | `#RANDOM`, `#SETRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF` (nesting supported) |
 
 ### Not yet supported (v1)
 
 - Long-note release scoring (LN starts are hittable but the release edge is not judged yet)
 - Landmine judgment / damage (mines are parsed and stored on `Chart.mines` but do not affect play yet)
-- `#RANDOM` / `#IF` / `#SWITCH`
+- `#SWITCH` / `#CASE` (the `#IF`-style variants are supported)
 - BGA (channels `04`, `06`, `07`)
 - Double-play (channels `21–29` etc.)
 

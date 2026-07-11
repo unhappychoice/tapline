@@ -19,6 +19,7 @@ pub struct ChartMeta {
 
 pub fn read_meta(path: &Path) -> Result<ChartMeta> {
     let text = read_text(path)?;
+    let text = resolve_control_flow(&text, random_seed_for(path));
     let mut pass = HeaderPass::default();
     let mut lanes = LaneSet::default();
     for line in header_lines(&text) {
@@ -44,6 +45,7 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
 
 pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
     let text = read_text(path)?;
+    let text = resolve_control_flow(&text, random_seed_for(path));
     let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut pass = HeaderPass::default();
     let mut raw: Vec<(u32, String, String)> = Vec::new();
@@ -668,6 +670,118 @@ impl LaneSet {
     }
 }
 
+fn random_seed_for(path: &Path) -> u64 {
+    if let Ok(v) = std::env::var("TAPLINE_RANDOM_SEED") {
+        if let Ok(n) = v.parse::<u64>() {
+            return n;
+        }
+    }
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.to_string_lossy().hash(&mut hasher);
+    hasher.finish()
+}
+
+fn resolve_control_flow(text: &str, seed: u64) -> String {
+    #[derive(Clone, Copy)]
+    struct IfLevel {
+        matched_yet: bool,
+        included: bool,
+    }
+    let mut rng = seed.wrapping_add(0x9E3779B97F4A7C15);
+    let mut current_pick: Option<u32> = None;
+    let mut if_stack: Vec<IfLevel> = Vec::new();
+    let is_active = |stack: &[IfLevel]| stack.iter().all(|l| l.included);
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let trimmed = line
+            .trim()
+            .trim_start_matches('\u{feff}');
+        if let Some(body) = trimmed.strip_prefix('#') {
+            let (head, rest) = split_first_word(body);
+            let up = head.to_ascii_uppercase();
+            match up.as_str() {
+                "RANDOM" => {
+                    if is_active(&if_stack) {
+                        if let Ok(n) = rest.trim().parse::<u32>() {
+                            if n > 0 {
+                                current_pick = Some(xorshift_pick(&mut rng, n));
+                            }
+                        }
+                    }
+                    continue;
+                }
+                "SETRANDOM" => {
+                    if is_active(&if_stack) {
+                        if let Ok(n) = rest.trim().parse::<u32>() {
+                            current_pick = Some(n);
+                        }
+                    }
+                    continue;
+                }
+                "IF" => {
+                    let ok = current_pick
+                        .is_some_and(|p| rest.trim().parse::<u32>().ok() == Some(p));
+                    if_stack.push(IfLevel {
+                        matched_yet: ok,
+                        included: ok,
+                    });
+                    continue;
+                }
+                "ELSEIF" => {
+                    if let Some(top) = if_stack.last_mut() {
+                        if top.matched_yet {
+                            top.included = false;
+                        } else {
+                            let ok = current_pick
+                                .is_some_and(|p| rest.trim().parse::<u32>().ok() == Some(p));
+                            top.included = ok;
+                            top.matched_yet = ok;
+                        }
+                    }
+                    continue;
+                }
+                "ELSE" => {
+                    if let Some(top) = if_stack.last_mut() {
+                        top.included = !top.matched_yet;
+                        top.matched_yet = true;
+                    }
+                    continue;
+                }
+                "ENDIF" | "END" => {
+                    if_stack.pop();
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        if is_active(&if_stack) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn xorshift_pick(state: &mut u64, n: u32) -> u32 {
+    let mut x = *state;
+    if x == 0 {
+        x = 0xdeadbeef;
+    }
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    (x % n as u64) as u32 + 1
+}
+
+fn split_first_word(s: &str) -> (&str, &str) {
+    match s.find(char::is_whitespace) {
+        Some(i) => (&s[..i], &s[i..]),
+        None => (s, ""),
+    }
+}
+
 fn read_text(path: &Path) -> Result<String> {
     let bytes = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
     Ok(decode_text(&bytes))
@@ -1062,6 +1176,86 @@ mod tests {
         assert_eq!(p.stop_defs.get(&1), Some(&96.0));
         assert!(!p.stop_defs.contains_key(&2));
         assert_eq!(p.stop_defs.get(&1295), Some(&24.0));
+    }
+
+    #[test]
+    fn resolve_control_flow_passes_through_when_no_directives() {
+        let text = "#TITLE Plain\n#BPM 130\n";
+        assert_eq!(resolve_control_flow(text, 0), "#TITLE Plain\n#BPM 130\n");
+    }
+
+    #[test]
+    fn resolve_control_flow_keeps_the_matching_setrandom_branch() {
+        let text = "\
+#SETRANDOM 2
+#IF 1
+#TITLE Never
+#ENDIF
+#IF 2
+#TITLE Chosen
+#ENDIF
+";
+        let out = resolve_control_flow(text, 0);
+        assert!(out.contains("#TITLE Chosen"));
+        assert!(!out.contains("#TITLE Never"));
+    }
+
+    #[test]
+    fn resolve_control_flow_else_fires_when_no_prior_branch_matched() {
+        let text = "\
+#SETRANDOM 5
+#IF 1
+#TITLE A
+#ELSEIF 2
+#TITLE B
+#ELSE
+#TITLE Default
+#ENDIF
+";
+        let out = resolve_control_flow(text, 0);
+        assert!(out.contains("#TITLE Default"));
+        assert!(!out.contains("#TITLE A"));
+        assert!(!out.contains("#TITLE B"));
+    }
+
+    #[test]
+    fn resolve_control_flow_drops_if_blocks_when_random_never_ran() {
+        let text = "\
+#IF 1
+#TITLE Should not be included
+#ENDIF
+#TITLE Always
+";
+        let out = resolve_control_flow(text, 0);
+        assert!(!out.contains("Should not be included"));
+        assert!(out.contains("#TITLE Always"));
+    }
+
+    #[test]
+    fn resolve_control_flow_supports_nested_ifs() {
+        let text = "\
+#SETRANDOM 1
+#IF 1
+#SETRANDOM 3
+#IF 3
+#TITLE Inner
+#ENDIF
+#ENDIF
+";
+        let out = resolve_control_flow(text, 0);
+        assert!(out.contains("#TITLE Inner"));
+    }
+
+    #[test]
+    fn xorshift_pick_stays_in_range_and_is_deterministic_for_a_seed() {
+        let mut a = 12345u64;
+        let mut b = 12345u64;
+        for _ in 0..50 {
+            let x = xorshift_pick(&mut a, 10);
+            let y = xorshift_pick(&mut b, 10);
+            assert_eq!(x, y);
+            assert!((1..=10).contains(&x));
+        }
     }
 
     #[test]
