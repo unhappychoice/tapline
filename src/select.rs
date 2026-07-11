@@ -144,8 +144,10 @@ fn draw(out: &mut Stdout, charts: &[ChartMeta], cursor_i: usize, scroll: &mut us
                 .and_then(|s| s.to_str())
                 .unwrap_or("(untitled)")
                 .to_string()
-        } else {
+        } else if m.subtitle.is_empty() {
             m.title.clone()
+        } else {
+            format!("{}  ~{}~", m.title, m.subtitle)
         };
         let artist = if m.artist.is_empty() {
             "".to_string()
@@ -212,6 +214,19 @@ mod tests {
             difficulty: Some(2),
             lane_count: 5,
         }
+    }
+
+    #[test]
+    fn scan_returns_subtitle_alongside_title_when_present() {
+        let dir = tempdir();
+        std::fs::write(
+            dir.join("s.bms"),
+            "#TITLE Song\n#SUBTITLE ~ext~\n#BPM 130\n#00111:0100\n",
+        )
+        .unwrap();
+        let charts = scan(&dir);
+        assert_eq!(charts.len(), 1);
+        assert_eq!(charts[0].subtitle, "~ext~");
     }
 
     #[test]

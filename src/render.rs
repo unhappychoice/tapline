@@ -216,6 +216,33 @@ fn display_key(c: &char) -> String {
     }
 }
 
+/// Appends the subtitle in `~…~` after the title when present.
+pub fn format_title_line(title: &str, subtitle: &str) -> String {
+    let t = if title.is_empty() {
+        "TAPLINE"
+    } else {
+        title
+    };
+    if subtitle.is_empty() {
+        t.to_string()
+    } else {
+        format!("{}  ~{}~", t, subtitle)
+    }
+}
+
+/// Formats the artist line (with optional subartist) as `— artist / subartist`.
+pub fn format_artist_line(artist: &str, subartist: &str) -> Option<String> {
+    if artist.is_empty() && subartist.is_empty() {
+        return None;
+    }
+    let core = match (artist.is_empty(), subartist.is_empty()) {
+        (true, _) => subartist.to_string(),
+        (_, true) => artist.to_string(),
+        _ => format!("{} / {}", artist, subartist),
+    };
+    Some(format!("— {}", core))
+}
+
 fn format_difficulty_badge(game: &Game) -> String {
     let lv = game.chart.playlevel.map(|v| format!("Lv {}", v));
     let dif = match difficulty_label(game.chart.difficulty) {
@@ -232,6 +259,9 @@ fn format_difficulty_badge(game: &Game) -> String {
     }
     parts.push(bpm);
     parts.push(format!("{}K", game.chart.lane_count));
+    if !game.chart.genre.is_empty() {
+        parts.push(game.chart.genre.clone());
+    }
     parts.join("  ·  ")
 }
 
@@ -251,11 +281,7 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
 
     queue!(out, terminal::BeginSynchronizedUpdate)?;
 
-    let title = if game.chart.title.is_empty() {
-        "TAPLINE".to_string()
-    } else {
-        game.chart.title.clone()
-    };
+    let title = format_title_line(&game.chart.title, &game.chart.subtitle);
     queue!(
         out,
         cursor::MoveTo(cols.saturating_sub(title.chars().count() as u16) / 2, 1),
@@ -414,11 +440,7 @@ pub fn draw_intro(
 ) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
     queue!(out, terminal::BeginSynchronizedUpdate)?;
-    let title = if game.chart.title.is_empty() {
-        "T A P L I N E".to_string()
-    } else {
-        game.chart.title.clone()
-    };
+    let title = format_title_line(&game.chart.title, &game.chart.subtitle);
     queue!(
         out,
         cursor::MoveTo(
@@ -431,8 +453,7 @@ pub fn draw_intro(
         style::SetAttribute(style::Attribute::Reset),
         ResetColor
     )?;
-    if !game.chart.artist.is_empty() {
-        let art = format!("— {}", game.chart.artist);
+    if let Some(art) = format_artist_line(&game.chart.artist, &game.chart.subartist) {
         queue!(
             out,
             cursor::MoveTo(
@@ -537,6 +558,10 @@ pub fn draw_result(out: &mut Stdout, game: &Game) -> anyhow::Result<()> {
         Color::DarkGrey,
         y,
     )?;
+    if !game.chart.maker.is_empty() {
+        y += 2;
+        line(out, format!("chart by {}", game.chart.maker), Color::DarkGrey, y)?;
+    }
     y += 2;
     line(out, "press any key to exit".to_string(), Color::DarkGrey, y)?;
     queue!(out, terminal::EndSynchronizedUpdate)?;
@@ -568,6 +593,48 @@ mod tests {
             keys: keys_for(lane_count),
             ..Chart::default()
         }
+    }
+
+    #[test]
+    fn format_title_line_falls_back_to_tapline_when_title_is_blank() {
+        assert_eq!(format_title_line("", ""), "TAPLINE");
+    }
+
+    #[test]
+    fn format_title_line_appends_subtitle_in_tildes_when_present() {
+        assert_eq!(format_title_line("Song", "hard mix"), "Song  ~hard mix~");
+    }
+
+    #[test]
+    fn format_title_line_omits_the_tilde_wrapper_when_subtitle_is_empty() {
+        assert_eq!(format_title_line("Song", ""), "Song");
+    }
+
+    #[test]
+    fn format_artist_line_returns_none_when_both_fields_are_blank() {
+        assert!(format_artist_line("", "").is_none());
+    }
+
+    #[test]
+    fn format_artist_line_joins_artist_and_subartist_with_a_slash() {
+        assert_eq!(
+            format_artist_line("A", "B"),
+            Some("— A / B".to_string())
+        );
+    }
+
+    #[test]
+    fn format_artist_line_returns_just_one_side_when_the_other_is_empty() {
+        assert_eq!(format_artist_line("A", ""), Some("— A".to_string()));
+        assert_eq!(format_artist_line("", "B"), Some("— B".to_string()));
+    }
+
+    #[test]
+    fn difficulty_badge_appends_genre_when_present() {
+        let mut c = base_chart(5);
+        c.genre = "hardcore".into();
+        let g = Game::new(c);
+        assert!(format_difficulty_badge(&g).contains("hardcore"));
     }
 
     #[test]
