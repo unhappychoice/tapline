@@ -105,7 +105,7 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
 | headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx` |
-| channels      | `01` (BGM auto-play), `11–19` (P1 visible notes)            |
+| channels      | `01` (BGM auto-play), `02` (measure-length change), `11–19` (P1 visible notes) |
 | lane modes    | 4-key, 5-key (`11–15`), 7-key (`11–15 + 18/19`) auto-detect |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
@@ -113,7 +113,7 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 ### Not yet supported (v1)
 
 - BPM changes (channels `03`, `08`)
-- STOP (`09`) and measure-length change (`02`)
+- STOP (`09`)
 - Long notes (`51–59`, `LNOBJ`, `LNTYPE`)
 - Landmines (`D1–D9`)
 - `#RANDOM` / `#IF` / `#SWITCH`

@@ -70,12 +70,16 @@ fn build_chart(
     lead_in_ms: f64,
 ) -> Result<Chart> {
     let wav_paths = resolve_wavs(&dir, &pass.wav_defs);
-    let measure_ms = 4.0 * 60_000.0 / pass.bpm;
+    let base_measure_ms = 4.0 * 60_000.0 / pass.bpm;
+    let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
+    let scales = collect_measure_scales(&raw);
+    let timeline = MeasureTimeline::build(base_measure_ms, lead_in_ms, &scales, max_measure);
     let mut acc = ChartAcc::default();
-    let mut max_measure: u32 = 0;
     for (measure, ch, data) in &raw {
-        max_measure = max_measure.max(*measure);
-        materialize_channel(&mut acc, *measure, ch, data, measure_ms, lead_in_ms);
+        if ch == "02" {
+            continue;
+        }
+        materialize_channel(&mut acc, *measure, ch, data, &timeline);
     }
     let lane_count = acc.lanes.count();
     let mut notes = acc.notes;
@@ -83,7 +87,7 @@ fn build_chart(
     notes.retain(|n| n.lane < lane_count);
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bgm.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
-    let duration_ms = (max_measure + 1) as f64 * measure_ms + lead_in_ms + 2500.0;
+    let duration_ms = timeline.end_time(max_measure) + 2500.0;
     Ok(Chart {
         title: pass.title,
         subtitle: pass.subtitle,
@@ -113,15 +117,14 @@ fn materialize_channel(
     measure: u32,
     ch: &str,
     data: &str,
-    measure_ms: f64,
-    lead_in_ms: f64,
+    timeline: &MeasureTimeline,
 ) {
     let slots = parse_slots(data);
     if slots.is_empty() {
         return;
     }
-    let base = measure as f64 * measure_ms + lead_in_ms;
-    let step = measure_ms / slots.len() as f64;
+    let base = timeline.measure_start(measure);
+    let step = timeline.measure_len(measure) / slots.len() as f64;
     for (i, slot) in slots.iter().enumerate() {
         if *slot == 0 {
             continue;
@@ -141,6 +144,67 @@ fn materialize_channel(
                 keysound: *slot,
             });
         }
+    }
+}
+
+fn collect_measure_scales(raw: &[(u32, String, String)]) -> HashMap<u32, f64> {
+    let mut out: HashMap<u32, f64> = HashMap::new();
+    for (measure, ch, data) in raw {
+        if ch != "02" {
+            continue;
+        }
+        if let Ok(v) = data.trim().parse::<f64>() {
+            if v > 0.0 {
+                out.insert(*measure, v);
+            }
+        }
+    }
+    out
+}
+
+struct MeasureTimeline {
+    starts: Vec<f64>,
+    lens: Vec<f64>,
+    base_len: f64,
+}
+
+impl MeasureTimeline {
+    fn build(base_len: f64, lead_in_ms: f64, scales: &HashMap<u32, f64>, max_measure: u32) -> Self {
+        let n = (max_measure as usize).saturating_add(2);
+        let lens: Vec<f64> = (0..n)
+            .map(|i| scales.get(&(i as u32)).copied().unwrap_or(1.0) * base_len)
+            .collect();
+        let mut starts = Vec::with_capacity(n);
+        let mut acc = lead_in_ms;
+        for &len in &lens {
+            starts.push(acc);
+            acc += len;
+        }
+        Self {
+            starts,
+            lens,
+            base_len,
+        }
+    }
+
+    fn measure_start(&self, m: u32) -> f64 {
+        let i = m as usize;
+        if let Some(&s) = self.starts.get(i) {
+            return s;
+        }
+        let last = self.starts.len() - 1;
+        self.starts[last] + (i - last) as f64 * self.base_len
+    }
+
+    fn measure_len(&self, m: u32) -> f64 {
+        self.lens
+            .get(m as usize)
+            .copied()
+            .unwrap_or(self.base_len)
+    }
+
+    fn end_time(&self, max_measure: u32) -> f64 {
+        self.measure_start(max_measure) + self.measure_len(max_measure)
     }
 }
 
@@ -546,6 +610,74 @@ mod tests {
         assert_eq!(p.rank, None, "RANK > 4 is not a valid difficulty tier");
         assert_eq!(p.total, None, "TOTAL must be positive");
         assert_eq!(p.vol_wav, None, "VOLWAV is a 0..=100 percent");
+    }
+
+    #[test]
+    fn measure_timeline_defaults_every_measure_to_base_length() {
+        let t = MeasureTimeline::build(1000.0, 0.0, &HashMap::new(), 3);
+        assert_eq!(t.measure_start(0), 0.0);
+        assert_eq!(t.measure_start(1), 1000.0);
+        assert_eq!(t.measure_start(2), 2000.0);
+        assert_eq!(t.measure_len(0), 1000.0);
+        assert_eq!(t.end_time(2), 3000.0);
+    }
+
+    #[test]
+    fn measure_timeline_scales_a_single_measure_and_shifts_the_rest() {
+        // Measure 1 is half length → measure 2 starts 500ms earlier than in the flat case.
+        let scales: HashMap<u32, f64> = [(1u32, 0.5)].into();
+        let t = MeasureTimeline::build(1000.0, 100.0, &scales, 3);
+        assert_eq!(t.measure_start(0), 100.0);
+        assert_eq!(t.measure_start(1), 1100.0);
+        assert_eq!(t.measure_len(1), 500.0);
+        assert_eq!(t.measure_start(2), 1600.0);
+    }
+
+    #[test]
+    fn measure_timeline_extrapolates_past_the_max_measure() {
+        let t = MeasureTimeline::build(1000.0, 0.0, &HashMap::new(), 1);
+        assert_eq!(t.measure_start(5), 5000.0);
+    }
+
+    #[test]
+    fn collect_measure_scales_reads_channel_02_floats_and_drops_others() {
+        let raw = vec![
+            (0u32, "02".to_string(), "0.5".to_string()),
+            (1u32, "11".to_string(), "0100".to_string()),
+            (2u32, "02".to_string(), "1.25".to_string()),
+            (3u32, "02".to_string(), "not a number".to_string()),
+            (4u32, "02".to_string(), "-1".to_string()),
+        ];
+        let out = collect_measure_scales(&raw);
+        assert_eq!(out.get(&0), Some(&0.5));
+        assert_eq!(out.get(&2), Some(&1.25));
+        assert!(!out.contains_key(&1));
+        assert!(!out.contains_key(&3), "unparseable data is skipped");
+        assert!(!out.contains_key(&4), "non-positive scale is skipped");
+    }
+
+    #[test]
+    fn load_applies_measure_length_change_to_note_timing() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        // BPM 60 → base measure = 4000ms. Measure 1 is halved to 2000ms,
+        // so the measure-2 note should land 2000ms after the measure-1 note
+        // instead of the usual 4000ms.
+        std::fs::write(
+            &path,
+            "\
+#TITLE MeasureLen
+#BPM 60
+#00102:0.5
+#00111:0100
+#00211:0100
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.notes.len(), 2);
+        assert!((chart.notes[0].time_ms - 4000.0).abs() < 1e-6);
+        assert!((chart.notes[1].time_ms - 6000.0).abs() < 1e-6);
     }
 
     #[test]
