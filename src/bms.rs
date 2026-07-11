@@ -72,11 +72,11 @@ fn build_chart(
     let wav_paths = resolve_wavs(&dir, &pass.wav_defs);
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let scales = collect_measure_scales(&raw);
-    let bpm_events = collect_bpm_events(&raw, &pass.bpm_defs);
-    let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &bpm_events, max_measure);
+    let events = collect_timing_events(&raw, &pass.bpm_defs, &pass.stop_defs);
+    let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
     let mut acc = ChartAcc::default();
     for (measure, ch, data) in &raw {
-        if matches!(ch.as_str(), "02" | "03" | "08") {
+        if matches!(ch.as_str(), "02" | "03" | "08" | "09") {
             continue;
         }
         materialize_channel(&mut acc, *measure, ch, data, &timeline);
@@ -162,23 +162,50 @@ fn collect_measure_scales(raw: &[(u32, String, String)]) -> HashMap<u32, f64> {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct BpmEvent {
-    measure: u32,
-    frac: f64,
-    bpm: f64,
+enum TimingEventKind {
+    Bpm(f64),
+    Stop(f64),
 }
 
-fn collect_bpm_events(
+#[derive(Debug, Clone, Copy)]
+struct TimingEvent {
+    measure: u32,
+    frac: f64,
+    kind: TimingEventKind,
+}
+
+impl TimingEvent {
+    fn sort_bucket(&self) -> u8 {
+        match self.kind {
+            TimingEventKind::Bpm(_) => 0,
+            TimingEventKind::Stop(_) => 1,
+        }
+    }
+}
+
+fn collect_timing_events(
     raw: &[(u32, String, String)],
     bpm_defs: &HashMap<u32, f64>,
-) -> Vec<BpmEvent> {
-    let mut out: Vec<BpmEvent> = Vec::new();
+    stop_defs: &HashMap<u32, f64>,
+) -> Vec<TimingEvent> {
+    let mut out: Vec<TimingEvent> = Vec::new();
     for (measure, ch, data) in raw {
-        let (slots, is_ref) = match ch.as_str() {
-            "03" => (parse_slots_hex(data), false),
-            "08" => (parse_slots(data), true),
-            _ => continue,
-        };
+        let (slots, resolve): (Vec<u32>, Box<dyn Fn(u32) -> Option<TimingEventKind>>) =
+            match ch.as_str() {
+                "03" => (
+                    parse_slots_hex(data),
+                    Box::new(|v| Some(TimingEventKind::Bpm(v as f64))),
+                ),
+                "08" => (
+                    parse_slots(data),
+                    Box::new(|v| bpm_defs.get(&v).copied().map(TimingEventKind::Bpm)),
+                ),
+                "09" => (
+                    parse_slots(data),
+                    Box::new(|v| stop_defs.get(&v).copied().map(TimingEventKind::Stop)),
+                ),
+                _ => continue,
+            };
         let n = slots.len();
         if n == 0 {
             continue;
@@ -187,17 +214,12 @@ fn collect_bpm_events(
             if *slot == 0 {
                 continue;
             }
-            let bpm = if is_ref {
-                bpm_defs.get(slot).copied()
-            } else {
-                Some(*slot as f64)
-            };
-            if let Some(bpm) = bpm {
-                if bpm > 0.0 {
-                    out.push(BpmEvent {
+            if let Some(kind) = resolve(*slot) {
+                if kind_is_positive(&kind) {
+                    out.push(TimingEvent {
                         measure: *measure,
                         frac: i as f64 / n as f64,
-                        bpm,
+                        kind,
                     });
                 }
             }
@@ -207,8 +229,15 @@ fn collect_bpm_events(
         a.measure
             .cmp(&b.measure)
             .then_with(|| a.frac.partial_cmp(&b.frac).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.sort_bucket().cmp(&b.sort_bucket()))
     });
     out
+}
+
+fn kind_is_positive(kind: &TimingEventKind) -> bool {
+    match *kind {
+        TimingEventKind::Bpm(v) | TimingEventKind::Stop(v) => v > 0.0,
+    }
 }
 
 fn parse_slots_hex(data: &str) -> Vec<u32> {
@@ -249,7 +278,7 @@ impl Timeline {
         lead_in_ms: f64,
         default_bpm: f64,
         scales: &HashMap<u32, f64>,
-        events: &[BpmEvent],
+        events: &[TimingEvent],
         max_measure: u32,
     ) -> Self {
         let n = (max_measure as usize).saturating_add(2);
@@ -274,16 +303,28 @@ impl Timeline {
                 let last = *segments.last().unwrap();
                 let ms_here =
                     last.ms_at_start + (frac - last.frac_start) * beats * 60_000.0 / last.bpm;
-                if (frac - last.frac_start).abs() < f64::EPSILON {
-                    segments.last_mut().unwrap().bpm = ev.bpm;
-                } else {
-                    segments.push(Segment {
-                        frac_start: frac,
-                        ms_at_start: ms_here,
-                        bpm: ev.bpm,
-                    });
+                match ev.kind {
+                    TimingEventKind::Bpm(new_bpm) => {
+                        if (frac - last.frac_start).abs() < f64::EPSILON {
+                            segments.last_mut().unwrap().bpm = new_bpm;
+                        } else {
+                            segments.push(Segment {
+                                frac_start: frac,
+                                ms_at_start: ms_here,
+                                bpm: new_bpm,
+                            });
+                        }
+                        current_bpm = new_bpm;
+                    }
+                    TimingEventKind::Stop(ticks) => {
+                        let pause_ms = ticks / 48.0 * 60_000.0 / last.bpm;
+                        segments.push(Segment {
+                            frac_start: frac,
+                            ms_at_start: ms_here + pause_ms,
+                            bpm: last.bpm,
+                        });
+                    }
                 }
-                current_bpm = ev.bpm;
             }
             let last = *segments.last().unwrap();
             let end_ms = last.ms_at_start + (1.0 - last.frac_start) * beats * 60_000.0 / last.bpm;
@@ -336,6 +377,7 @@ struct HeaderPass {
     vol_wav: Option<u8>,
     wav_defs: HashMap<u32, String>,
     bpm_defs: HashMap<u32, f64>,
+    stop_defs: HashMap<u32, f64>,
 }
 
 impl Default for HeaderPass {
@@ -357,6 +399,7 @@ impl Default for HeaderPass {
             vol_wav: None,
             wav_defs: HashMap::new(),
             bpm_defs: HashMap::new(),
+            stop_defs: HashMap::new(),
         }
     }
 }
@@ -422,6 +465,16 @@ impl HeaderPass {
                         {
                             if v > 0.0 {
                                 self.bpm_defs.insert(id, v);
+                            }
+                        }
+                    }
+                } else if let Some(rest) = up.strip_prefix("STOP") {
+                    if !rest.is_empty() {
+                        if let (Ok(id), Ok(v)) =
+                            (u32::from_str_radix(rest, 36), val.trim().parse::<f64>())
+                        {
+                            if v > 0.0 {
+                                self.stop_defs.insert(id, v);
                             }
                         }
                     }
@@ -766,10 +819,10 @@ mod tests {
         // 120 BPM → 2 seconds per measure. Halfway through measure 0 the BPM
         // doubles to 240 → the second half plays in 500ms instead of 1000ms,
         // and measure 1 starts at 1500ms not 2000ms.
-        let evs = vec![BpmEvent {
+        let evs = vec![TimingEvent {
             measure: 0,
             frac: 0.5,
-            bpm: 240.0,
+            kind: TimingEventKind::Bpm(240.0),
         }];
         let t = Timeline::build(0.0, 120.0, &HashMap::new(), &evs, 1);
         assert!((t.time_at(0, 0.5) - 1000.0).abs() < 1e-6);
@@ -779,15 +832,30 @@ mod tests {
     #[test]
     fn timeline_bpm_change_persists_into_later_measures() {
         // Change BPM at start of measure 1, ensure measure 2 uses the new tempo.
-        let evs = vec![BpmEvent {
+        let evs = vec![TimingEvent {
             measure: 1,
             frac: 0.0,
-            bpm: 240.0,
+            kind: TimingEventKind::Bpm(240.0),
         }];
         let t = Timeline::build(0.0, 120.0, &HashMap::new(), &evs, 3);
         assert!((t.time_at(1, 0.0) - 2000.0).abs() < 1e-6);
         assert!((t.time_at(2, 0.0) - 3000.0).abs() < 1e-6);
         assert!((t.time_at(3, 0.0) - 4000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn timeline_stop_delays_everything_after_the_stop_frac() {
+        // 120 BPM → 2 seconds per measure. STOP of 48 ticks = 1 beat at 120 BPM = 500ms.
+        // Halfway through measure 0 we pause 500ms. Then the second half of the
+        // measure still plays at 120 BPM = 1000ms. Measure 1 starts at 2500ms.
+        let evs = vec![TimingEvent {
+            measure: 0,
+            frac: 0.5,
+            kind: TimingEventKind::Stop(48.0),
+        }];
+        let t = Timeline::build(0.0, 120.0, &HashMap::new(), &evs, 1);
+        assert!((t.time_at(0, 0.5) - 1500.0).abs() < 1e-6);
+        assert!((t.time_at(1, 0.0) - 2500.0).abs() < 1e-6);
     }
 
     #[test]
@@ -797,25 +865,63 @@ mod tests {
     }
 
     #[test]
-    fn collect_bpm_events_reads_channel_03_hex_and_channel_08_defs() {
+    fn collect_timing_events_reads_bpm_and_stop_channels() {
         let raw = vec![
             (1u32, "03".to_string(), "0078".to_string()),
             (2u32, "08".to_string(), "0001".to_string()),
+            (3u32, "09".to_string(), "0001".to_string()),
         ];
-        let defs: HashMap<u32, f64> = [(1u32, 175.5)].into();
-        let evs = collect_bpm_events(&raw, &defs);
-        assert_eq!(evs.len(), 2);
-        assert_eq!(evs[0].measure, 1);
-        assert!((evs[0].bpm - 120.0).abs() < 1e-6);
-        assert_eq!(evs[1].measure, 2);
-        assert!((evs[1].bpm - 175.5).abs() < 1e-6);
+        let bpm_defs: HashMap<u32, f64> = [(1u32, 175.5)].into();
+        let stop_defs: HashMap<u32, f64> = [(1u32, 96.0)].into();
+        let evs = collect_timing_events(&raw, &bpm_defs, &stop_defs);
+        assert_eq!(evs.len(), 3);
+        assert!(matches!(evs[0].kind, TimingEventKind::Bpm(v) if (v - 120.0).abs() < 1e-6));
+        assert!(matches!(evs[1].kind, TimingEventKind::Bpm(v) if (v - 175.5).abs() < 1e-6));
+        assert!(matches!(evs[2].kind, TimingEventKind::Stop(v) if (v - 96.0).abs() < 1e-6));
     }
 
     #[test]
-    fn collect_bpm_events_ignores_channel_08_references_that_have_no_def() {
-        let raw = vec![(1u32, "08".to_string(), "0099".to_string())];
-        let defs: HashMap<u32, f64> = HashMap::new();
-        assert!(collect_bpm_events(&raw, &defs).is_empty());
+    fn collect_timing_events_ignores_references_without_definitions() {
+        let raw = vec![
+            (1u32, "08".to_string(), "0099".to_string()),
+            (2u32, "09".to_string(), "0099".to_string()),
+        ];
+        let empty: HashMap<u32, f64> = HashMap::new();
+        assert!(collect_timing_events(&raw, &empty, &empty).is_empty());
+    }
+
+    #[test]
+    fn header_pass_absorbs_stop_definitions() {
+        let mut p = HeaderPass::default();
+        p.absorb("STOP01 96");
+        p.absorb("STOP02 -1");
+        p.absorb("STOPZZ 24");
+        assert_eq!(p.stop_defs.get(&1), Some(&96.0));
+        assert!(!p.stop_defs.contains_key(&2));
+        assert_eq!(p.stop_defs.get(&1295), Some(&24.0));
+    }
+
+    #[test]
+    fn load_applies_channel_09_stop_to_note_timing() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        // BPM 120 → 2000ms/measure. STOP 96 = 2 beats = 1000ms at 120 BPM.
+        // Note in measure 2 should be shifted by 1000ms compared to no-stop.
+        std::fs::write(
+            &path,
+            "\
+#TITLE Stopper
+#BPM 120
+#STOP01 96
+#00109:01
+#00211:0100
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.notes.len(), 1);
+        // No stop would put the note at 4000ms; with a 1000ms stop it lands at 5000ms.
+        assert!((chart.notes[0].time_ms - 5000.0).abs() < 1e-6);
     }
 
     #[test]
