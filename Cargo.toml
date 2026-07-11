@@ -16,6 +16,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 encoding_rs = "0.8"
+rayon = "1"
 rodio = { version = "0.19", default-features = false, features = ["wav", "vorbis", "mp3"] }
 
 [target.'cfg(unix)'.dependencies]

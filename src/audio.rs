@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Source};
 use std::collections::HashMap;
@@ -63,16 +64,7 @@ impl SampleBank {
             Ok((s, h)) => (Some(s), Some(h), true),
             Err(_) => (None, None, false),
         });
-        let mut samples: HashMap<u32, DecodedSample> = HashMap::new();
-        let mut failures = 0usize;
-        for (id, path) in wav_paths {
-            match decode(path) {
-                Ok(s) => {
-                    samples.insert(*id, s);
-                }
-                Err(_) => failures += 1,
-            }
-        }
+        let (samples, failures) = decode_all(wav_paths);
         Self {
             _stream: stream,
             handle,
@@ -134,6 +126,24 @@ impl SampleBank {
             self.play_synth(f, 80);
         }
     }
+}
+
+fn decode_all(wav_paths: &HashMap<u32, PathBuf>) -> (HashMap<u32, DecodedSample>, usize) {
+    wav_paths
+        .par_iter()
+        .map(|(&id, path)| (id, decode(path)))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .fold(
+            (HashMap::new(), 0),
+            |(mut samples, failures), (id, result)| match result {
+                Ok(sample) => {
+                    samples.insert(id, sample);
+                    (samples, failures)
+                }
+                Err(_) => (samples, failures + 1),
+            },
+        )
 }
 
 const LANE_PITCHES: [f32; 7] = [261.63, 329.63, 392.00, 523.25, 659.25, 783.99, 1046.50];
