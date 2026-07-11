@@ -100,7 +100,7 @@ fn build_chart(
     let p2_acc = accumulate_side(&raw, &timeline, P2_LANES, /*collect_bgm=*/ false);
     let mut bga = collect_bga_events(&raw, &timeline);
     let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
-    let lane_count = acc.lanes.count();
+    let mut lane_count = acc.lanes.count();
     let p2_lane_count = p2_acc.lanes.count();
     let mut notes = acc.notes;
     let mut mines = acc.mines;
@@ -115,6 +115,20 @@ fn build_chart(
     mines.retain(|n| n.lane < lane_count);
     p2_notes.retain(|n| n.lane < p2_lane_count);
     p2_mines.retain(|n| n.lane < p2_lane_count);
+    // Fold canonical 14K double-play into the primary pool: P2 notes/mines
+    // shift into lanes 7..=13 and lane_count expands to 14. Non-canonical DP
+    // (e.g. 5K+5K) is left split — the runtime plays P1 only.
+    if lane_count == 7 && p2_lane_count == 7 && !p2_notes.is_empty() {
+        for mut n in p2_notes.drain(..) {
+            n.lane += 7;
+            notes.push(n);
+        }
+        for mut m in p2_mines.drain(..) {
+            m.lane += 7;
+            mines.push(m);
+        }
+        lane_count = 14;
+    }
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     mines.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     p2_notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
@@ -212,7 +226,7 @@ fn accumulate_side(
 fn push_normal_slots(
     acc: &mut ChartAcc,
     lane: usize,
-    ch: &str,
+    _ch: &str,
     measure: u32,
     data: &str,
     timeline: &Timeline,
@@ -227,14 +241,15 @@ fn push_normal_slots(
             continue;
         }
         let t = timeline.time_at(measure, i as f64 / n as f64);
-        acc.lanes.observe(ch);
+        acc.lanes.observe_lane(lane);
         acc.notes.push(Note {
             time_ms: t,
             lane,
             hit: false,
             keysound: Some(*slot),
             end_ms: None,
-            held_since: None,        });
+            held_since: None,
+        });
     }
 }
 
@@ -1390,6 +1405,42 @@ mod tests {
         assert_eq!(chart.p2_mines.len(), 1);
         assert_eq!(chart.p2_mines[0].lane, 0);
         assert_eq!(chart.p2_mines[0].damage, 100);
+    }
+
+    #[test]
+    fn load_folds_canonical_7k_double_play_into_a_single_14_lane_chart() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        // Force 7-lane inference on both sides by touching the scratch/high
+        // lanes: P1 channels 15/18/19 and P2 channels 25/28/29.
+        std::fs::write(
+            &path,
+            "\
+#TITLE DP-14K
+#BPM 60
+#00111:0100
+#00115:0100
+#00118:0100
+#00119:0100
+#00121:0100
+#00125:0100
+#00128:0100
+#00129:0100
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.lane_count, 14, "P1 7K + P2 7K → single 14K chart");
+        assert!(
+            chart.p2_notes.is_empty(),
+            "P2 pool is drained into the main pool"
+        );
+        // The lane-0 P2 note should be relocated to lane 7 (P1 lane_count offset).
+        assert!(
+            chart.notes.iter().any(|n| n.lane == 7),
+            "P2 lane 0 should live at merged lane 7"
+        );
+        assert!(chart.notes.iter().any(|n| n.lane == 13));
     }
 
     #[test]

@@ -122,6 +122,12 @@ pub fn keys_for(lane_count: usize) -> Vec<Vec<char>> {
     let raw: &[&[char]] = match lane_count {
         5 => &[&['S'], &['D'], &['F', 'J'], &['K'], &['L']],
         7 => &[&['S'], &['D'], &['F'], &[' '], &['J'], &['K'], &['L']],
+        // Double-play 14K: P1 hands on the home-row style layout,
+        // P2 hands on the row below.
+        14 => &[
+            &['S'], &['D'], &['F'], &[' '], &['J'], &['K'], &['L'],
+            &['Z'], &['X'], &['C'], &['V'], &['B'], &['N'], &['M'],
+        ],
         _ => &[&['S'], &['D'], &['K'], &['L']],
     };
     raw.iter().map(|ks| ks.to_vec()).collect()
