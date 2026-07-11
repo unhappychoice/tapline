@@ -10,18 +10,12 @@ use std::io::{Stdout, Write};
 pub const APPROACH_MS: f64 = 1500.0;
 pub const LANE_WIDTH: u16 = 7;
 
-const PALETTE: [Color; 7] = [
-    Color::Red,
-    Color::Yellow,
-    Color::Green,
-    Color::White,
-    Color::Cyan,
-    Color::Blue,
-    Color::Magenta,
-];
-
-fn lane_color(lane: usize) -> Color {
-    PALETTE[lane % PALETTE.len()]
+/// Look up the lane's anchor-key color scheme: S / K / Space are painted blue,
+/// every other key stays white. Applied to both key labels and the notes
+/// falling in that lane so the two are always in sync.
+fn lane_key_color(game: &Game, lane: usize) -> Color {
+    let keys = game.chart.keys.get(lane).map(|v| v.as_slice()).unwrap_or(&[]);
+    key_label_color(keys)
 }
 
 /// Highlight `S`, `K`, and Space in blue (they're the anchor keys the player
@@ -422,7 +416,7 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
         let color = if flash {
             Color::Yellow
         } else {
-            key_label_color(keys)
+            lane_key_color(game, lane)
         };
         let display = format_lane_key(keys);
         queue!(
@@ -460,7 +454,7 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
             continue;
         }
         let lx = x0 + 1 + note.lane as u16 * LANE_WIDTH + 2;
-        let base = lane_color(note.lane);
+        let base = lane_key_color(game, note.lane);
         match note.end_ms {
             None => {
                 let Some(y) = note_screen_y(note.time_ms - now_ms, &layout) else {
@@ -475,9 +469,9 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
                 )?;
             }
             Some(end_ms) => {
-                // Held LNs light up white so the player sees the hold registering.
+                // Held LNs flash yellow so the player sees the hold registering.
                 let color = if note.held_since.is_some() {
-                    Color::White
+                    Color::Yellow
                 } else {
                     base
                 };
