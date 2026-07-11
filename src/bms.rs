@@ -1,4 +1,4 @@
-use crate::chart::{keys_for, BgmEvent, Chart, Mine, Note};
+use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, Mine, Note};
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -79,7 +79,7 @@ fn build_chart(
     let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
     let mut acc = ChartAcc::default();
     for (measure, ch, data) in &raw {
-        if matches!(ch.as_str(), "02" | "03" | "08" | "09")
+        if matches!(ch.as_str(), "02" | "03" | "08" | "09" | "04" | "06" | "07")
             || long_channel_to_lane(ch).is_some()
             || mine_channel_to_lane(ch).is_some()
         {
@@ -89,6 +89,8 @@ fn build_chart(
     }
     materialize_long_notes(&mut acc, &raw, &timeline);
     materialize_mines(&mut acc, &raw, &timeline);
+    let mut bga = collect_bga_events(&raw, &timeline);
+    let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
     let lane_count = acc.lanes.count();
     let mut notes = acc.notes;
     let mut mines = acc.mines;
@@ -101,6 +103,7 @@ fn build_chart(
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     mines.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bgm.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
+    bga.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     let duration_ms = timeline.end_time(max_measure) + 2500.0;
     Ok(Chart {
         title: pass.title,
@@ -120,6 +123,8 @@ fn build_chart(
         notes,
         mines,
         bgm,
+        bga,
+        bmp_paths,
         duration_ms,
         lane_count,
         keys: keys_for(lane_count),
@@ -160,6 +165,64 @@ fn materialize_channel(
             });
         }
     }
+}
+
+fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
+    match ch {
+        "04" => Some(BgaLayer::Base),
+        "06" => Some(BgaLayer::Poor),
+        "07" => Some(BgaLayer::Overlay),
+        _ => None,
+    }
+}
+
+fn collect_bga_events(
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+) -> Vec<BgaEvent> {
+    let mut out: Vec<BgaEvent> = Vec::new();
+    for (measure, ch, data) in raw {
+        let Some(layer) = bga_channel_to_layer(ch) else {
+            continue;
+        };
+        let slots = parse_slots(data);
+        let n = slots.len();
+        if n == 0 {
+            continue;
+        }
+        for (i, slot) in slots.iter().enumerate() {
+            if *slot == 0 {
+                continue;
+            }
+            let t = timeline.time_at(*measure, i as f64 / n as f64);
+            out.push(BgaEvent {
+                time_ms: t,
+                layer,
+                bmp_id: *slot,
+            });
+        }
+    }
+    out
+}
+
+fn resolve_bmp_paths(dir: &Path, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
+    defs.iter()
+        .filter_map(|(id, name)| {
+            let direct = dir.join(name);
+            if direct.exists() {
+                return Some((*id, direct));
+            }
+            let stem = Path::new(name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(name);
+            ["png", "bmp", "jpg", "jpeg", "gif", "mp4", "webm"]
+                .iter()
+                .map(|ext| dir.join(format!("{stem}.{ext}")))
+                .find(|p| p.exists())
+                .map(|p| (*id, p))
+        })
+        .collect()
 }
 
 fn mine_channel_to_lane(ch: &str) -> Option<usize> {
@@ -522,6 +585,7 @@ struct HeaderPass {
     wav_defs: HashMap<u32, String>,
     bpm_defs: HashMap<u32, f64>,
     stop_defs: HashMap<u32, f64>,
+    bmp_defs: HashMap<u32, String>,
     lnobj: Option<u32>,
     lntype: u8,
 }
@@ -546,6 +610,7 @@ impl Default for HeaderPass {
             wav_defs: HashMap::new(),
             bpm_defs: HashMap::new(),
             stop_defs: HashMap::new(),
+            bmp_defs: HashMap::new(),
             lnobj: None,
             lntype: 1,
         }
@@ -638,6 +703,12 @@ impl HeaderPass {
                             if v > 0.0 {
                                 self.stop_defs.insert(id, v);
                             }
+                        }
+                    }
+                } else if let Some(rest) = up.strip_prefix("BMP") {
+                    if !rest.is_empty() {
+                        if let Ok(id) = u32::from_str_radix(rest, 36) {
+                            self.bmp_defs.insert(id, val.trim().to_string());
                         }
                     }
                 }
@@ -1176,6 +1247,60 @@ mod tests {
         assert_eq!(p.stop_defs.get(&1), Some(&96.0));
         assert!(!p.stop_defs.contains_key(&2));
         assert_eq!(p.stop_defs.get(&1295), Some(&24.0));
+    }
+
+    #[test]
+    fn bga_channel_to_layer_covers_the_documented_channels() {
+        assert_eq!(bga_channel_to_layer("04"), Some(BgaLayer::Base));
+        assert_eq!(bga_channel_to_layer("06"), Some(BgaLayer::Poor));
+        assert_eq!(bga_channel_to_layer("07"), Some(BgaLayer::Overlay));
+        assert_eq!(bga_channel_to_layer("05"), None);
+        assert_eq!(bga_channel_to_layer("11"), None);
+    }
+
+    #[test]
+    fn header_pass_absorbs_bmp_definitions() {
+        let mut p = HeaderPass::default();
+        p.absorb("BMP01 cover.png");
+        p.absorb("BMPZZ  scene.mp4  ");
+        assert_eq!(p.bmp_defs.get(&1).unwrap(), "cover.png");
+        assert_eq!(p.bmp_defs.get(&1295).unwrap(), "scene.mp4");
+    }
+
+    #[test]
+    fn load_records_bga_events_from_channels_04_06_07() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "\
+#TITLE Bga
+#BPM 60
+#BMP01 cover.png
+#BMP02 poor.png
+#BMP03 layer.png
+#00104:01
+#00106:02
+#00107:03
+#00111:0100
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.bga.len(), 3);
+        let layers: Vec<_> = chart.bga.iter().map(|e| e.layer).collect();
+        assert!(layers.contains(&BgaLayer::Base));
+        assert!(layers.contains(&BgaLayer::Poor));
+        assert!(layers.contains(&BgaLayer::Overlay));
+    }
+
+    #[test]
+    fn resolve_bmp_paths_falls_back_to_alternate_extensions() {
+        let dir = tempdir();
+        std::fs::write(dir.join("cover.jpg"), b"").unwrap();
+        let defs: HashMap<u32, String> = [(1u32, "cover.png".to_string())].into();
+        let out = resolve_bmp_paths(&dir, &defs);
+        assert_eq!(out.get(&1).unwrap(), &dir.join("cover.jpg"));
     }
 
     #[test]

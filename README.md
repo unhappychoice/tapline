@@ -104,8 +104,8 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx`, `#STOPxx`, `#LNOBJ`, `#LNTYPE` |
-| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `09` (STOP), `11–19` (P1 visible notes), `51–59` (P1 long notes), `D1–D9` (P1 landmines) |
+| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
+| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `11–19` (P1 visible notes), `51–59` (P1 long notes), `D1–D9` (P1 landmines) |
 | lane modes    | 4-key, 5-key (`11–15`), 7-key (`11–15 + 18/19`) auto-detect |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
@@ -116,7 +116,7 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 - Long-note release scoring (LN starts are hittable but the release edge is not judged yet)
 - Landmine judgment / damage (mines are parsed and stored on `Chart.mines` but do not affect play yet)
 - `#SWITCH` / `#CASE` (the `#IF`-style variants are supported)
-- BGA (channels `04`, `06`, `07`)
+- BGA rendering (channels `04` / `06` / `07` and `#BMPxx` are parsed and stored on `Chart.bga` / `Chart.bmp_paths`, but the terminal renderer does not draw them yet)
 - Double-play (channels `21–29` etc.)
 
 ## Judgment windows

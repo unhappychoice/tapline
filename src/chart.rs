@@ -24,6 +24,24 @@ pub struct Mine {
     pub damage: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BgaLayer {
+    /// Channel 04 — the base background image.
+    Base,
+    /// Channel 06 — the "POOR" (miss) background image.
+    Poor,
+    /// Channel 07 — the overlay image that composites on top of the base.
+    Overlay,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BgaEvent {
+    pub time_ms: f64,
+    pub layer: BgaLayer,
+    /// #BMPxx id whose image file should be swapped in at `time_ms`.
+    pub bmp_id: u32,
+}
+
 pub struct Chart {
     pub title: String,
     pub subtitle: String,
@@ -42,6 +60,8 @@ pub struct Chart {
     pub notes: Vec<Note>,
     pub mines: Vec<Mine>,
     pub bgm: Vec<BgmEvent>,
+    pub bga: Vec<BgaEvent>,
+    pub bmp_paths: std::collections::HashMap<u32, PathBuf>,
     pub duration_ms: f64,
     pub lane_count: usize,
     pub keys: Vec<Vec<char>>,
@@ -68,6 +88,8 @@ impl Default for Chart {
             notes: Vec::new(),
             mines: Vec::new(),
             bgm: Vec::new(),
+            bga: Vec::new(),
+            bmp_paths: std::collections::HashMap::new(),
             duration_ms: 0.0,
             lane_count: 4,
             keys: keys_for(4),
