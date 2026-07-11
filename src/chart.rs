@@ -16,7 +16,13 @@ pub struct BgmEvent {
 
 pub struct Chart {
     pub title: String,
+    pub subtitle: String,
     pub artist: String,
+    pub subartist: String,
+    pub genre: String,
+    pub stagefile: String,
+    pub banner: String,
+    pub maker: String,
     pub bpm: f64,
     pub playlevel: Option<u8>,
     pub difficulty: Option<u8>,
@@ -26,6 +32,30 @@ pub struct Chart {
     pub lane_count: usize,
     pub keys: Vec<Vec<char>>,
     pub wav_paths: std::collections::HashMap<u32, PathBuf>,
+}
+
+impl Default for Chart {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            subtitle: String::new(),
+            artist: String::new(),
+            subartist: String::new(),
+            genre: String::new(),
+            stagefile: String::new(),
+            banner: String::new(),
+            maker: String::new(),
+            bpm: 130.0,
+            playlevel: None,
+            difficulty: None,
+            notes: Vec::new(),
+            bgm: Vec::new(),
+            duration_ms: 0.0,
+            lane_count: 4,
+            keys: keys_for(4),
+            wav_paths: std::collections::HashMap::new(),
+        }
+    }
 }
 
 pub fn difficulty_label(d: Option<u8>) -> &'static str {
@@ -139,7 +169,13 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
     let duration_ms = t + 2000.0;
     Chart {
         title: "Built-in Practice".into(),
+        subtitle: String::new(),
         artist: "tapline".into(),
+        subartist: String::new(),
+        genre: String::new(),
+        stagefile: String::new(),
+        banner: String::new(),
+        maker: String::new(),
         bpm,
         playlevel: Some(3),
         difficulty: Some(2),

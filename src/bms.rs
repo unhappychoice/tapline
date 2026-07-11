@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 pub struct ChartMeta {
     pub path: PathBuf,
     pub title: String,
+    pub subtitle: String,
     pub artist: String,
+    pub subartist: String,
+    pub genre: String,
     pub bpm: f64,
     pub playlevel: Option<u8>,
     pub difficulty: Option<u8>,
@@ -28,7 +31,10 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
     Ok(ChartMeta {
         path: path.to_path_buf(),
         title: pass.title,
+        subtitle: pass.subtitle,
         artist: pass.artist,
+        subartist: pass.subartist,
+        genre: pass.genre,
         bpm: pass.bpm,
         playlevel: pass.playlevel,
         difficulty: pass.difficulty,
@@ -80,7 +86,13 @@ fn build_chart(
     let duration_ms = (max_measure + 1) as f64 * measure_ms + lead_in_ms + 2500.0;
     Ok(Chart {
         title: pass.title,
+        subtitle: pass.subtitle,
         artist: pass.artist,
+        subartist: pass.subartist,
+        genre: pass.genre,
+        stagefile: pass.stagefile,
+        banner: pass.banner,
+        maker: pass.maker,
         bpm: pass.bpm,
         playlevel: pass.playlevel,
         difficulty: pass.difficulty,
@@ -131,7 +143,13 @@ fn materialize_channel(
 
 struct HeaderPass {
     title: String,
+    subtitle: String,
     artist: String,
+    subartist: String,
+    genre: String,
+    stagefile: String,
+    banner: String,
+    maker: String,
     bpm: f64,
     playlevel: Option<u8>,
     difficulty: Option<u8>,
@@ -142,7 +160,13 @@ impl Default for HeaderPass {
     fn default() -> Self {
         Self {
             title: String::new(),
+            subtitle: String::new(),
             artist: String::new(),
+            subartist: String::new(),
+            genre: String::new(),
+            stagefile: String::new(),
+            banner: String::new(),
+            maker: String::new(),
             bpm: 130.0,
             playlevel: None,
             difficulty: None,
@@ -157,7 +181,13 @@ impl HeaderPass {
         let up = cmd.to_ascii_uppercase();
         match up.as_str() {
             "TITLE" => self.title = val.to_string(),
+            "SUBTITLE" => self.subtitle = val.to_string(),
             "ARTIST" => self.artist = val.to_string(),
+            "SUBARTIST" => self.subartist = val.to_string(),
+            "GENRE" => self.genre = val.to_string(),
+            "STAGEFILE" => self.stagefile = val.trim().to_string(),
+            "BANNER" => self.banner = val.trim().to_string(),
+            "MAKER" => self.maker = val.to_string(),
             "BPM" => {
                 if let Ok(v) = val.trim().parse() {
                     self.bpm = v;
@@ -422,6 +452,75 @@ mod tests {
         assert_eq!(p.difficulty, Some(3));
         assert_eq!(p.wav_defs.get(&1).unwrap(), "kick.wav");
         assert_eq!(p.wav_defs.get(&1295).unwrap(), "hihat.ogg");
+    }
+
+    #[test]
+    fn header_pass_absorbs_optional_metadata_headers() {
+        let mut p = HeaderPass::default();
+        p.absorb("SUBTITLE ~an interlude~");
+        p.absorb("SUBARTIST arr. someone");
+        p.absorb("GENRE electronic");
+        p.absorb("STAGEFILE  cover.png ");
+        p.absorb("BANNER  banner.png ");
+        p.absorb("MAKER unhappychoice");
+        assert_eq!(p.subtitle, "~an interlude~");
+        assert_eq!(p.subartist, "arr. someone");
+        assert_eq!(p.genre, "electronic");
+        assert_eq!(p.stagefile, "cover.png");
+        assert_eq!(p.banner, "banner.png");
+        assert_eq!(p.maker, "unhappychoice");
+    }
+
+    #[test]
+    fn read_meta_surfaces_genre_subtitle_and_subartist() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "\
+#TITLE Testing
+#SUBTITLE ~beta~
+#ARTIST alice
+#SUBARTIST bob
+#GENRE electronic
+#BPM 130
+#00111:0100
+",
+        )
+        .unwrap();
+        let m = read_meta(&path).unwrap();
+        assert_eq!(m.subtitle, "~beta~");
+        assert_eq!(m.subartist, "bob");
+        assert_eq!(m.genre, "electronic");
+    }
+
+    #[test]
+    fn load_populates_optional_metadata_on_chart() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "\
+#TITLE Testing
+#SUBTITLE ~beta~
+#ARTIST alice
+#SUBARTIST bob
+#GENRE electronic
+#STAGEFILE cover.png
+#BANNER banner.png
+#MAKER unhappychoice
+#BPM 130
+#00111:0100
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.subtitle, "~beta~");
+        assert_eq!(chart.subartist, "bob");
+        assert_eq!(chart.genre, "electronic");
+        assert_eq!(chart.stagefile, "cover.png");
+        assert_eq!(chart.banner, "banner.png");
+        assert_eq!(chart.maker, "unhappychoice");
     }
 
     #[test]

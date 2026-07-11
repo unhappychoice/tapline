@@ -104,7 +104,7 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#TITLE`, `#ARTIST`, `#GENRE`, `#BPM`, `#PLAYLEVEL`, `#WAVxx` |
+| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#WAVxx` |
 | channels      | `01` (BGM auto-play), `11–19` (P1 visible notes)            |
 | lane modes    | 4-key, 5-key (`11–15`), 7-key (`11–15 + 18/19`) auto-detect |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |

@@ -316,21 +316,16 @@ mod tests {
 
     use crate::chart::{Chart, Note};
     use crate::game::Game;
-    use std::collections::HashMap;
 
     fn base_chart(lane_count: usize, notes: Vec<Note>) -> Chart {
         Chart {
             title: "t".into(),
-            artist: "".into(),
             bpm: 120.0,
-            playlevel: None,
-            difficulty: None,
             notes,
-            bgm: Vec::new(),
             duration_ms: 30_000.0,
             lane_count,
             keys: keys_for(lane_count),
-            wav_paths: HashMap::new(),
+            ..Chart::default()
         }
     }
 
@@ -442,17 +437,10 @@ mod tests {
 
     fn chart_with_bgm(bgm: Vec<BgmEvent>) -> Chart {
         Chart {
-            title: "".into(),
-            artist: "".into(),
             bpm: 120.0,
-            playlevel: None,
-            difficulty: None,
-            notes: Vec::new(),
             bgm,
             duration_ms: 30_000.0,
-            lane_count: 4,
-            keys: keys_for(4),
-            wav_paths: HashMap::new(),
+            ..Chart::default()
         }
     }
 

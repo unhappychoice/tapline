@@ -203,7 +203,10 @@ mod tests {
         ChartMeta {
             path: PathBuf::from(format!("/tmp/{}.bms", title)),
             title: title.to_string(),
-            artist: "".to_string(),
+            subtitle: String::new(),
+            artist: String::new(),
+            subartist: String::new(),
+            genre: String::new(),
             bpm: 140.0,
             playlevel: Some(3),
             difficulty: Some(2),

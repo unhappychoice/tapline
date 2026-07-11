@@ -1,21 +1,16 @@
 use proptest::prelude::*;
-use std::collections::HashMap;
 use tapline::chart::{keys_for, Chart, Note};
 use tapline::game::{Game, MISS_AFTER, WINDOW_GOOD, WINDOW_GREAT, WINDOW_PERFECT};
 
 fn chart_with(notes: Vec<Note>, lane_count: usize) -> Chart {
     Chart {
         title: "prop".into(),
-        artist: "".into(),
         bpm: 120.0,
-        playlevel: None,
-        difficulty: None,
         notes,
-        bgm: Vec::new(),
         duration_ms: 60_000.0,
         lane_count,
         keys: keys_for(lane_count),
-        wav_paths: HashMap::new(),
+        ..Chart::default()
     }
 }
 

@@ -466,7 +466,6 @@ mod tests {
     use super::*;
     use crate::chart::{keys_for, Chart, Note};
     use crate::game::Game;
-    use std::collections::HashMap;
 
     fn base_chart(lane_count: usize) -> Chart {
         Chart {
@@ -481,11 +480,10 @@ mod tests {
                 hit: false,
                 keysound: None,
             }],
-            bgm: Vec::new(),
             duration_ms: 30_000.0,
             lane_count,
             keys: keys_for(lane_count),
-            wav_paths: HashMap::new(),
+            ..Chart::default()
         }
     }
 
