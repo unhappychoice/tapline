@@ -325,6 +325,7 @@ fn materialize_mines_with(
                 time_ms: t,
                 lane,
                 damage: *slot,
+                exploded: false,
             });
         }
     }

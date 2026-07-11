@@ -41,6 +41,10 @@ pub const WINDOW_PERFECT: f64 = 45.0;
 pub const WINDOW_GREAT: f64 = 90.0;
 pub const WINDOW_GOOD: f64 = 140.0;
 pub const MISS_AFTER: f64 = 160.0;
+/// A mine detonates only if the player presses its lane within this many ms
+/// of the mine's own timestamp. Kept tight so hitting a legitimate note that
+/// happens to sit close to a mine doesn't accidentally punish the player.
+pub const MINE_WINDOW: f64 = 40.0;
 
 impl Game {
     pub fn new(chart: Chart) -> Self {
@@ -66,6 +70,7 @@ impl Game {
         if lane >= self.flash.last_lane_hit.len() {
             return None;
         }
+        self.trigger_mines(lane, now_ms);
         let mut best: Option<(usize, f64)> = None;
         for (i, n) in self.chart.notes.iter().enumerate() {
             if n.hit || n.held_since.is_some() || n.lane != lane {
@@ -99,6 +104,23 @@ impl Game {
             return keysound;
         }
         None
+    }
+
+    fn trigger_mines(&mut self, lane: usize, now_ms: f64) {
+        let ids: Vec<usize> = self
+            .chart
+            .mines
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                !m.exploded && m.lane == lane && (m.time_ms - now_ms).abs() <= MINE_WINDOW
+            })
+            .map(|(i, _)| i)
+            .collect();
+        for i in ids {
+            self.chart.mines[i].exploded = true;
+            self.apply(Judgment::Miss, now_ms);
+        }
     }
 
     /// Release the LN currently held on `lane`, judging against its end_ms.
@@ -380,6 +402,77 @@ mod tests {
             keysound: Some(1),
             ..Default::default()
         }
+    }
+
+    use crate::chart::Mine;
+
+    fn chart_with_mines(mines: Vec<Mine>, lane_count: usize) -> Chart {
+        Chart {
+            title: "mine".into(),
+            bpm: 120.0,
+            mines,
+            duration_ms: 60_000.0,
+            lane_count,
+            keys: keys_for(lane_count),
+            ..Chart::default()
+        }
+    }
+
+    #[test]
+    fn pressing_a_lane_within_mine_window_detonates_the_mine_as_miss() {
+        let mines = vec![Mine {
+            time_ms: 1000.0,
+            lane: 0,
+            damage: 40,
+            exploded: false,
+        }];
+        let mut g = Game::new(chart_with_mines(mines, 4));
+        g.hit(0, 1000.0);
+        assert_eq!(g.miss, 1, "mine detonation is scored as a Miss");
+        assert!(g.chart.mines[0].exploded);
+        assert_eq!(g.combo, 0);
+    }
+
+    #[test]
+    fn pressing_a_lane_outside_mine_window_leaves_the_mine_armed() {
+        let mines = vec![Mine {
+            time_ms: 1000.0,
+            lane: 0,
+            damage: 40,
+            exploded: false,
+        }];
+        let mut g = Game::new(chart_with_mines(mines, 4));
+        g.hit(0, 1000.0 + MINE_WINDOW + 10.0);
+        assert_eq!(g.miss, 0);
+        assert!(!g.chart.mines[0].exploded);
+    }
+
+    #[test]
+    fn pressing_the_wrong_lane_never_triggers_a_mine() {
+        let mines = vec![Mine {
+            time_ms: 1000.0,
+            lane: 0,
+            damage: 40,
+            exploded: false,
+        }];
+        let mut g = Game::new(chart_with_mines(mines, 4));
+        g.hit(1, 1000.0);
+        assert_eq!(g.miss, 0);
+        assert!(!g.chart.mines[0].exploded);
+    }
+
+    #[test]
+    fn a_mine_only_detonates_once_even_on_repeated_presses() {
+        let mines = vec![Mine {
+            time_ms: 1000.0,
+            lane: 0,
+            damage: 40,
+            exploded: false,
+        }];
+        let mut g = Game::new(chart_with_mines(mines, 4));
+        g.hit(0, 1000.0);
+        g.hit(0, 1010.0);
+        assert_eq!(g.miss, 1, "the same mine can only punish once");
     }
 
     #[test]

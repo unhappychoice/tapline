@@ -19,12 +19,14 @@ pub struct BgmEvent {
     pub keysound: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Mine {
     pub time_ms: f64,
     pub lane: usize,
     /// Damage value from the BMS chart (0–255).
     pub damage: u32,
+    /// Set once the player triggers the mine so it isn't punished twice.
+    pub exploded: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

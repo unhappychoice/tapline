@@ -336,6 +336,25 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
         )?;
     }
 
+    for mine in &game.chart.mines {
+        if mine.exploded {
+            continue;
+        }
+        let Some(y) = note_screen_y(mine.time_ms - now_ms, &layout) else {
+            continue;
+        };
+        let lx = x0 + 1 + mine.lane as u16 * LANE_WIDTH + 2;
+        queue!(
+            out,
+            cursor::MoveTo(lx, y),
+            SetForegroundColor(Color::Red),
+            style::SetAttribute(style::Attribute::Bold),
+            Print("[><]"),
+            style::SetAttribute(style::Attribute::Reset),
+            ResetColor
+        )?;
+    }
+
     for note in &game.chart.notes {
         if note.hit {
             continue;
