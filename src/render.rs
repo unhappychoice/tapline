@@ -7,7 +7,7 @@ use crossterm::{
 };
 use std::io::{Stdout, Write};
 
-pub const APPROACH_MS: f64 = 1500.0;
+pub const APPROACH_MS: f64 = 1000.0;
 pub const LANE_WIDTH: u16 = 7;
 
 /// Look up the lane's anchor-key color scheme: S / K / Space are painted blue,
