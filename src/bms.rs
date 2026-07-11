@@ -70,13 +70,13 @@ fn build_chart(
     lead_in_ms: f64,
 ) -> Result<Chart> {
     let wav_paths = resolve_wavs(&dir, &pass.wav_defs);
-    let base_measure_ms = 4.0 * 60_000.0 / pass.bpm;
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let scales = collect_measure_scales(&raw);
-    let timeline = MeasureTimeline::build(base_measure_ms, lead_in_ms, &scales, max_measure);
+    let bpm_events = collect_bpm_events(&raw, &pass.bpm_defs);
+    let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &bpm_events, max_measure);
     let mut acc = ChartAcc::default();
     for (measure, ch, data) in &raw {
-        if ch == "02" {
+        if matches!(ch.as_str(), "02" | "03" | "08") {
             continue;
         }
         materialize_channel(&mut acc, *measure, ch, data, &timeline);
@@ -117,19 +117,18 @@ fn materialize_channel(
     measure: u32,
     ch: &str,
     data: &str,
-    timeline: &MeasureTimeline,
+    timeline: &Timeline,
 ) {
     let slots = parse_slots(data);
     if slots.is_empty() {
         return;
     }
-    let base = timeline.measure_start(measure);
-    let step = timeline.measure_len(measure) / slots.len() as f64;
+    let n = slots.len() as f64;
     for (i, slot) in slots.iter().enumerate() {
         if *slot == 0 {
             continue;
         }
-        let t = base + i as f64 * step;
+        let t = timeline.time_at(measure, i as f64 / n);
         if let Some(lane) = channel_to_lane(ch) {
             acc.lanes.observe(ch);
             acc.notes.push(Note {
@@ -162,49 +161,161 @@ fn collect_measure_scales(raw: &[(u32, String, String)]) -> HashMap<u32, f64> {
     out
 }
 
-struct MeasureTimeline {
-    starts: Vec<f64>,
-    lens: Vec<f64>,
-    base_len: f64,
+#[derive(Debug, Clone, Copy)]
+struct BpmEvent {
+    measure: u32,
+    frac: f64,
+    bpm: f64,
 }
 
-impl MeasureTimeline {
-    fn build(base_len: f64, lead_in_ms: f64, scales: &HashMap<u32, f64>, max_measure: u32) -> Self {
+fn collect_bpm_events(
+    raw: &[(u32, String, String)],
+    bpm_defs: &HashMap<u32, f64>,
+) -> Vec<BpmEvent> {
+    let mut out: Vec<BpmEvent> = Vec::new();
+    for (measure, ch, data) in raw {
+        let (slots, is_ref) = match ch.as_str() {
+            "03" => (parse_slots_hex(data), false),
+            "08" => (parse_slots(data), true),
+            _ => continue,
+        };
+        let n = slots.len();
+        if n == 0 {
+            continue;
+        }
+        for (i, slot) in slots.iter().enumerate() {
+            if *slot == 0 {
+                continue;
+            }
+            let bpm = if is_ref {
+                bpm_defs.get(slot).copied()
+            } else {
+                Some(*slot as f64)
+            };
+            if let Some(bpm) = bpm {
+                if bpm > 0.0 {
+                    out.push(BpmEvent {
+                        measure: *measure,
+                        frac: i as f64 / n as f64,
+                        bpm,
+                    });
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| {
+        a.measure
+            .cmp(&b.measure)
+            .then_with(|| a.frac.partial_cmp(&b.frac).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    out
+}
+
+fn parse_slots_hex(data: &str) -> Vec<u32> {
+    let bytes = data.as_bytes();
+    let take = bytes.len() - (bytes.len() % 2);
+    (0..take)
+        .step_by(2)
+        .map(|i| {
+            std::str::from_utf8(&bytes[i..i + 2])
+                .ok()
+                .and_then(|s| u32::from_str_radix(s, 16).ok())
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Segment {
+    frac_start: f64,
+    ms_at_start: f64,
+    bpm: f64,
+}
+
+struct MeasureSlice {
+    beats: f64,
+    segments: Vec<Segment>,
+}
+
+struct Timeline {
+    measures: Vec<MeasureSlice>,
+    tail_ms: f64,
+    tail_bpm: f64,
+    default_beats: f64,
+}
+
+impl Timeline {
+    fn build(
+        lead_in_ms: f64,
+        default_bpm: f64,
+        scales: &HashMap<u32, f64>,
+        events: &[BpmEvent],
+        max_measure: u32,
+    ) -> Self {
         let n = (max_measure as usize).saturating_add(2);
-        let lens: Vec<f64> = (0..n)
-            .map(|i| scales.get(&(i as u32)).copied().unwrap_or(1.0) * base_len)
-            .collect();
-        let mut starts = Vec::with_capacity(n);
-        let mut acc = lead_in_ms;
-        for &len in &lens {
-            starts.push(acc);
-            acc += len;
+        let mut measures: Vec<MeasureSlice> = Vec::with_capacity(n);
+        let mut current_ms = lead_in_ms;
+        let mut current_bpm = default_bpm.max(f64::MIN_POSITIVE);
+        let mut ev_idx = 0;
+        for m in 0..n {
+            let beats = 4.0 * scales.get(&(m as u32)).copied().unwrap_or(1.0);
+            let mut segments: Vec<Segment> = vec![Segment {
+                frac_start: 0.0,
+                ms_at_start: current_ms,
+                bpm: current_bpm,
+            }];
+            while ev_idx < events.len() && events[ev_idx].measure as usize == m {
+                let ev = events[ev_idx];
+                ev_idx += 1;
+                let frac = ev.frac.clamp(0.0, 1.0);
+                if frac >= 1.0 {
+                    continue;
+                }
+                let last = *segments.last().unwrap();
+                let ms_here =
+                    last.ms_at_start + (frac - last.frac_start) * beats * 60_000.0 / last.bpm;
+                if (frac - last.frac_start).abs() < f64::EPSILON {
+                    segments.last_mut().unwrap().bpm = ev.bpm;
+                } else {
+                    segments.push(Segment {
+                        frac_start: frac,
+                        ms_at_start: ms_here,
+                        bpm: ev.bpm,
+                    });
+                }
+                current_bpm = ev.bpm;
+            }
+            let last = *segments.last().unwrap();
+            let end_ms = last.ms_at_start + (1.0 - last.frac_start) * beats * 60_000.0 / last.bpm;
+            measures.push(MeasureSlice { beats, segments });
+            current_ms = end_ms;
         }
         Self {
-            starts,
-            lens,
-            base_len,
+            measures,
+            tail_ms: current_ms,
+            tail_bpm: current_bpm,
+            default_beats: 4.0,
         }
     }
 
-    fn measure_start(&self, m: u32) -> f64 {
-        let i = m as usize;
-        if let Some(&s) = self.starts.get(i) {
-            return s;
+    fn time_at(&self, measure: u32, frac: f64) -> f64 {
+        let m = measure as usize;
+        if let Some(slice) = self.measures.get(m) {
+            let segs = &slice.segments;
+            let idx = segs
+                .partition_point(|s| s.frac_start <= frac)
+                .saturating_sub(1);
+            let seg = segs[idx];
+            seg.ms_at_start + (frac - seg.frac_start) * slice.beats * 60_000.0 / seg.bpm
+        } else {
+            let extra = m - self.measures.len();
+            let step = self.default_beats * 60_000.0 / self.tail_bpm;
+            self.tail_ms + extra as f64 * step + frac * step
         }
-        let last = self.starts.len() - 1;
-        self.starts[last] + (i - last) as f64 * self.base_len
-    }
-
-    fn measure_len(&self, m: u32) -> f64 {
-        self.lens
-            .get(m as usize)
-            .copied()
-            .unwrap_or(self.base_len)
     }
 
     fn end_time(&self, max_measure: u32) -> f64 {
-        self.measure_start(max_measure) + self.measure_len(max_measure)
+        self.time_at(max_measure, 1.0)
     }
 }
 
@@ -224,6 +335,7 @@ struct HeaderPass {
     total: Option<f64>,
     vol_wav: Option<u8>,
     wav_defs: HashMap<u32, String>,
+    bpm_defs: HashMap<u32, f64>,
 }
 
 impl Default for HeaderPass {
@@ -244,6 +356,7 @@ impl Default for HeaderPass {
             total: None,
             vol_wav: None,
             wav_defs: HashMap::new(),
+            bpm_defs: HashMap::new(),
         }
     }
 }
@@ -301,6 +414,16 @@ impl HeaderPass {
                 if let Some(rest) = up.strip_prefix("WAV") {
                     if let Ok(id) = u32::from_str_radix(rest, 36) {
                         self.wav_defs.insert(id, val.trim().to_string());
+                    }
+                } else if let Some(rest) = up.strip_prefix("BPM") {
+                    if !rest.is_empty() {
+                        if let (Ok(id), Ok(v)) =
+                            (u32::from_str_radix(rest, 36), val.trim().parse::<f64>())
+                        {
+                            if v > 0.0 {
+                                self.bpm_defs.insert(id, v);
+                            }
+                        }
                     }
                 }
             }
@@ -613,30 +736,120 @@ mod tests {
     }
 
     #[test]
-    fn measure_timeline_defaults_every_measure_to_base_length() {
-        let t = MeasureTimeline::build(1000.0, 0.0, &HashMap::new(), 3);
-        assert_eq!(t.measure_start(0), 0.0);
-        assert_eq!(t.measure_start(1), 1000.0);
-        assert_eq!(t.measure_start(2), 2000.0);
-        assert_eq!(t.measure_len(0), 1000.0);
+    fn timeline_defaults_every_measure_to_base_length() {
+        // 240 BPM → 4 beats / (240/60) = 1 second per measure.
+        let t = Timeline::build(0.0, 240.0, &HashMap::new(), &[], 3);
+        assert_eq!(t.time_at(0, 0.0), 0.0);
+        assert_eq!(t.time_at(1, 0.0), 1000.0);
+        assert_eq!(t.time_at(2, 0.0), 2000.0);
         assert_eq!(t.end_time(2), 3000.0);
     }
 
     #[test]
-    fn measure_timeline_scales_a_single_measure_and_shifts_the_rest() {
-        // Measure 1 is half length → measure 2 starts 500ms earlier than in the flat case.
+    fn timeline_scales_a_single_measure_and_shifts_the_rest() {
         let scales: HashMap<u32, f64> = [(1u32, 0.5)].into();
-        let t = MeasureTimeline::build(1000.0, 100.0, &scales, 3);
-        assert_eq!(t.measure_start(0), 100.0);
-        assert_eq!(t.measure_start(1), 1100.0);
-        assert_eq!(t.measure_len(1), 500.0);
-        assert_eq!(t.measure_start(2), 1600.0);
+        let t = Timeline::build(100.0, 240.0, &scales, &[], 3);
+        assert_eq!(t.time_at(0, 0.0), 100.0);
+        assert_eq!(t.time_at(1, 0.0), 1100.0);
+        assert!((t.time_at(1, 1.0) - 1600.0).abs() < 1e-6);
+        assert_eq!(t.time_at(2, 0.0), 1600.0);
     }
 
     #[test]
-    fn measure_timeline_extrapolates_past_the_max_measure() {
-        let t = MeasureTimeline::build(1000.0, 0.0, &HashMap::new(), 1);
-        assert_eq!(t.measure_start(5), 5000.0);
+    fn timeline_extrapolates_past_the_max_measure() {
+        let t = Timeline::build(0.0, 240.0, &HashMap::new(), &[], 1);
+        assert!((t.time_at(5, 0.0) - 5000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn timeline_applies_a_mid_measure_bpm_change() {
+        // 120 BPM → 2 seconds per measure. Halfway through measure 0 the BPM
+        // doubles to 240 → the second half plays in 500ms instead of 1000ms,
+        // and measure 1 starts at 1500ms not 2000ms.
+        let evs = vec![BpmEvent {
+            measure: 0,
+            frac: 0.5,
+            bpm: 240.0,
+        }];
+        let t = Timeline::build(0.0, 120.0, &HashMap::new(), &evs, 1);
+        assert!((t.time_at(0, 0.5) - 1000.0).abs() < 1e-6);
+        assert!((t.time_at(1, 0.0) - 1500.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn timeline_bpm_change_persists_into_later_measures() {
+        // Change BPM at start of measure 1, ensure measure 2 uses the new tempo.
+        let evs = vec![BpmEvent {
+            measure: 1,
+            frac: 0.0,
+            bpm: 240.0,
+        }];
+        let t = Timeline::build(0.0, 120.0, &HashMap::new(), &evs, 3);
+        assert!((t.time_at(1, 0.0) - 2000.0).abs() < 1e-6);
+        assert!((t.time_at(2, 0.0) - 3000.0).abs() < 1e-6);
+        assert!((t.time_at(3, 0.0) - 4000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_slots_hex_reads_two_digit_hex_bpm_slots() {
+        // 0x78 = 120, 0x64 = 100. Pairs: 00 78 64 00.
+        assert_eq!(parse_slots_hex("00786400"), vec![0, 120, 100, 0]);
+    }
+
+    #[test]
+    fn collect_bpm_events_reads_channel_03_hex_and_channel_08_defs() {
+        let raw = vec![
+            (1u32, "03".to_string(), "0078".to_string()),
+            (2u32, "08".to_string(), "0001".to_string()),
+        ];
+        let defs: HashMap<u32, f64> = [(1u32, 175.5)].into();
+        let evs = collect_bpm_events(&raw, &defs);
+        assert_eq!(evs.len(), 2);
+        assert_eq!(evs[0].measure, 1);
+        assert!((evs[0].bpm - 120.0).abs() < 1e-6);
+        assert_eq!(evs[1].measure, 2);
+        assert!((evs[1].bpm - 175.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn collect_bpm_events_ignores_channel_08_references_that_have_no_def() {
+        let raw = vec![(1u32, "08".to_string(), "0099".to_string())];
+        let defs: HashMap<u32, f64> = HashMap::new();
+        assert!(collect_bpm_events(&raw, &defs).is_empty());
+    }
+
+    #[test]
+    fn header_pass_absorbs_bpm_definitions() {
+        let mut p = HeaderPass::default();
+        p.absorb("BPM01 175.5");
+        p.absorb("BPMZZ 60");
+        p.absorb("BPM02 -20");
+        assert_eq!(p.bpm_defs.get(&1), Some(&175.5));
+        assert_eq!(p.bpm_defs.get(&1295), Some(&60.0));
+        assert!(!p.bpm_defs.contains_key(&2), "non-positive BPM is rejected");
+    }
+
+    #[test]
+    fn load_honors_a_channel_08_bpm_change_mid_song() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        // BPM starts at 120 (2000ms/measure). At the top of measure 1 we
+        // switch to 240 via #BPM01. Note at measure 2 should therefore be at
+        // 2000 (measure 0) + 1000 (measure 1 at 240) + 0 = 3000ms.
+        std::fs::write(
+            &path,
+            "\
+#TITLE BpmSwap
+#BPM 120
+#BPM01 240
+#00108:01
+#00211:0100
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.notes.len(), 1);
+        assert!((chart.notes[0].time_ms - 3000.0).abs() < 1e-6);
     }
 
     #[test]
