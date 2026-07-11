@@ -337,25 +337,31 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     }
 
     for note in &game.chart.notes {
+        if note.hit {
+            continue;
+        }
         let lx = x0 + 1 + note.lane as u16 * LANE_WIDTH + 2;
-        let color = lane_color(note.lane);
+        let base = lane_color(note.lane);
         match note.end_ms {
             None => {
-                if note.hit {
-                    continue;
-                }
                 let Some(y) = note_screen_y(note.time_ms - now_ms, &layout) else {
                     continue;
                 };
                 queue!(
                     out,
                     cursor::MoveTo(lx, y),
-                    SetForegroundColor(color),
+                    SetForegroundColor(base),
                     Print("[==]"),
                     ResetColor
                 )?;
             }
             Some(end_ms) => {
+                // Held LNs light up white so the player sees the hold registering.
+                let color = if note.held_since.is_some() {
+                    Color::White
+                } else {
+                    base
+                };
                 draw_long_note(out, note.time_ms - now_ms, end_ms - now_ms, &layout, lx, color)?;
             }
         }
@@ -537,7 +543,7 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: None,
-                end_ms: None,            }],
+                end_ms: None, held_since: None,            }],
             duration_ms: 30_000.0,
             lane_count,
             keys: keys_for(lane_count),

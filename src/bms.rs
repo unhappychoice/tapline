@@ -234,7 +234,7 @@ fn push_normal_slots(
             hit: false,
             keysound: Some(*slot),
             end_ms: None,
-        });
+            held_since: None,        });
     }
 }
 
@@ -295,7 +295,7 @@ fn materialize_long_notes_with(
                 hit: false,
                 keysound: Some(ks),
                 end_ms: Some(end_ms),
-            });
+                held_since: None,            });
         }
     }
 }

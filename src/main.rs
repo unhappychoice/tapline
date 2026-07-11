@@ -1,6 +1,10 @@
 use anyhow::Result;
 use clap::Parser;
-use crossterm::{cursor, execute, terminal};
+use crossterm::{
+    cursor,
+    event::{KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags},
+    execute, terminal,
+};
 use std::io::{stdout, Stdout};
 use std::time::Duration;
 use tapline::cli::Args;
@@ -45,7 +49,19 @@ fn with_alt_screen<F: FnOnce(&mut Stdout) -> Result<()>>(f: F) -> Result<()> {
     let mut out = stdout();
     terminal::enable_raw_mode()?;
     execute!(out, terminal::EnterAlternateScreen, cursor::Hide)?;
+    // Best-effort: ask the terminal to report key up events so long-note
+    // releases can be judged. Terminals that don't understand the kitty
+    // keyboard protocol will ignore this — the runtime falls back to
+    // auto-releasing LNs when they cross the miss window.
+    let pushed = execute!(
+        out,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
+    )
+    .is_ok();
     let result = f(&mut out);
+    if pushed {
+        let _ = execute!(out, PopKeyboardEnhancementFlags);
+    }
     execute!(out, cursor::Show, terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     result

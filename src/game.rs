@@ -68,7 +68,7 @@ impl Game {
         }
         let mut best: Option<(usize, f64)> = None;
         for (i, n) in self.chart.notes.iter().enumerate() {
-            if n.hit || n.lane != lane {
+            if n.hit || n.held_since.is_some() || n.lane != lane {
                 continue;
             }
             let dt = (n.time_ms - now_ms).abs();
@@ -81,8 +81,8 @@ impl Game {
         }
         self.flash.last_lane_hit[lane] = now_ms;
         if let Some((i, dt)) = best {
-            self.chart.notes[i].hit = true;
             let keysound = self.chart.notes[i].keysound;
+            let is_ln = self.chart.notes[i].end_ms.is_some();
             let j = if dt <= WINDOW_PERFECT {
                 Judgment::Perfect
             } else if dt <= WINDOW_GREAT {
@@ -90,24 +90,83 @@ impl Game {
             } else {
                 Judgment::Good
             };
+            if is_ln {
+                self.chart.notes[i].held_since = Some(now_ms);
+            } else {
+                self.chart.notes[i].hit = true;
+            }
             self.apply(j, now_ms);
             return keysound;
         }
         None
     }
 
+    /// Release the LN currently held on `lane`, judging against its end_ms.
+    /// No-op if the lane isn't holding anything.
+    pub fn release(&mut self, lane: usize, now_ms: f64) {
+        if lane >= self.flash.last_lane_hit.len() {
+            return;
+        }
+        let held = self
+            .chart
+            .notes
+            .iter()
+            .position(|n| n.lane == lane && n.held_since.is_some() && !n.hit);
+        let Some(i) = held else {
+            return;
+        };
+        let Some(end_ms) = self.chart.notes[i].end_ms else {
+            return;
+        };
+        let dt = (end_ms - now_ms).abs();
+        let j = if dt <= WINDOW_PERFECT {
+            Judgment::Perfect
+        } else if dt <= WINDOW_GREAT {
+            Judgment::Great
+        } else if dt <= WINDOW_GOOD {
+            Judgment::Good
+        } else {
+            Judgment::Miss
+        };
+        self.chart.notes[i].hit = true;
+        self.chart.notes[i].held_since = None;
+        self.apply(j, now_ms);
+    }
+
     pub fn check_misses(&mut self, now_ms: f64) {
-        let ids: Vec<usize> = self
+        let missed: Vec<usize> = self
             .chart
             .notes
             .iter()
             .enumerate()
-            .filter(|(_, n)| !n.hit && n.time_ms + MISS_AFTER < now_ms)
+            .filter(|(_, n)| {
+                !n.hit && n.held_since.is_none() && n.time_ms + MISS_AFTER < now_ms
+            })
             .map(|(i, _)| i)
             .collect();
-        for i in ids {
+        for i in missed {
             self.chart.notes[i].hit = true;
             self.apply(Judgment::Miss, now_ms);
+        }
+        // Long notes still held past their end + miss window → auto-release
+        // as Perfect (the player did hold long enough).
+        let auto: Vec<usize> = self
+            .chart
+            .notes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                if n.hit || n.held_since.is_none() {
+                    return None;
+                }
+                let end = n.end_ms?;
+                (end + MISS_AFTER < now_ms).then_some(i)
+            })
+            .collect();
+        for i in auto {
+            self.chart.notes[i].hit = true;
+            self.chart.notes[i].held_since = None;
+            self.apply(Judgment::Perfect, now_ms);
         }
     }
 
@@ -163,7 +222,7 @@ mod tests {
             lane,
             hit: false,
             keysound: Some(1),
-            end_ms: None,        }
+            end_ms: None, held_since: None,        }
     }
 
     #[test]
@@ -311,6 +370,78 @@ mod tests {
         g.check_misses(4000.0 + MISS_AFTER + 1.0);
         let expected = (1.0 + 0.65 + 0.3) / 4.0 * 100.0;
         assert!((g.accuracy() - expected).abs() < 1e-9);
+    }
+
+    fn ln(time_ms: f64, end_ms: f64, lane: usize) -> Note {
+        Note {
+            time_ms,
+            lane,
+            end_ms: Some(end_ms),
+            keysound: Some(1),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ln_start_press_marks_it_held_but_not_hit() {
+        let mut g = Game::new(chart_with(vec![ln(1000.0, 2000.0, 0)], 4));
+        g.hit(0, 1000.0);
+        assert_eq!(g.perfect, 1, "start still scores like a tap");
+        assert!(!g.chart.notes[0].hit, "hit stays false until release");
+        assert!(g.chart.notes[0].held_since.is_some());
+    }
+
+    #[test]
+    fn ln_release_within_window_scores_and_marks_hit() {
+        let mut g = Game::new(chart_with(vec![ln(1000.0, 2000.0, 0)], 4));
+        g.hit(0, 1000.0);
+        g.release(0, 2000.0);
+        assert_eq!(g.perfect, 2, "start + release both perfect");
+        assert!(g.chart.notes[0].hit);
+        assert!(g.chart.notes[0].held_since.is_none());
+    }
+
+    #[test]
+    fn ln_release_far_from_end_is_a_miss() {
+        let mut g = Game::new(chart_with(vec![ln(1000.0, 2000.0, 0)], 4));
+        g.hit(0, 1000.0);
+        // Release ~500ms early, well outside WINDOW_GOOD.
+        g.release(0, 1500.0);
+        assert_eq!(g.miss, 1);
+        assert_eq!(g.combo, 0);
+    }
+
+    #[test]
+    fn hit_will_not_repick_a_held_ln() {
+        let mut g = Game::new(chart_with(vec![ln(1000.0, 2000.0, 0)], 4));
+        g.hit(0, 1000.0);
+        let ks = g.hit(0, 1010.0);
+        assert!(ks.is_none(), "second press must not re-trigger the LN start");
+        assert_eq!(g.perfect, 1, "no second Perfect awarded");
+    }
+
+    #[test]
+    fn check_misses_auto_releases_held_ln_past_end_window_as_perfect() {
+        let mut g = Game::new(chart_with(vec![ln(1000.0, 2000.0, 0)], 4));
+        g.hit(0, 1000.0);
+        g.check_misses(2000.0 + MISS_AFTER + 1.0);
+        assert_eq!(g.perfect, 2, "auto-release keeps the perfect tier");
+        assert!(g.chart.notes[0].hit);
+    }
+
+    #[test]
+    fn check_misses_flags_ln_whose_start_was_never_hit_as_miss() {
+        let mut g = Game::new(chart_with(vec![ln(1000.0, 2000.0, 0)], 4));
+        g.check_misses(1000.0 + MISS_AFTER + 1.0);
+        assert_eq!(g.miss, 1);
+        assert!(g.chart.notes[0].hit);
+    }
+
+    #[test]
+    fn release_on_lane_that_isnt_holding_is_a_noop() {
+        let mut g = Game::new(chart_with(vec![note(1000.0, 0)], 4));
+        g.release(0, 1000.0);
+        assert_eq!(g.perfect + g.great + g.good + g.miss, 0);
     }
 
     #[test]

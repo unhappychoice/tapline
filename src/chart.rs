@@ -8,6 +8,9 @@ pub struct Note {
     pub keysound: Option<u32>,
     /// For long notes, the end time of the hold in ms. `None` for taps.
     pub end_ms: Option<f64>,
+    /// Timestamp of the frame that started holding this long note. `None` for
+    /// taps and for LNs that haven't been pressed yet.
+    pub held_since: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -133,7 +136,7 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
                 lane: *lane,
                 hit: false,
                 keysound: None,
-                end_ms: None,            });
+                end_ms: None, held_since: None,            });
         }
     };
 
@@ -206,7 +209,7 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
             lane,
             hit: false,
             keysound: None,
-            end_ms: None,        });
+            end_ms: None, held_since: None,        });
     }
 
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());

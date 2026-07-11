@@ -161,10 +161,10 @@ fn pump_input(
         let Event::Key(k) = event::read()? else {
             continue;
         };
-        if k.kind == KeyEventKind::Release {
+        if k.kind == KeyEventKind::Repeat {
             continue;
         }
-        if handle_key(k.code, game, bank, opts, state, start) {
+        if handle_key(k.code, k.kind, game, bank, opts, state, start) {
             return Ok(());
         }
         let _ = out;
@@ -173,6 +173,7 @@ fn pump_input(
 
 fn handle_key(
     code: KeyCode,
+    kind: KeyEventKind,
     game: &mut game::Game,
     bank: &audio::SampleBank,
     opts: &PlayOptions,
@@ -180,7 +181,7 @@ fn handle_key(
     start: Instant,
 ) -> bool {
     match code {
-        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') if kind == KeyEventKind::Press => {
             state.quit = true;
             true
         }
@@ -192,9 +193,17 @@ fn handle_key(
             let Some(lane) = lane_for_key(c, &game.chart.keys) else {
                 return false;
             };
-            let ks = game.hit(lane, now);
-            if !opts.auto_ks {
-                bank.play_hit(lane, ks, opts.synth_mode);
+            match kind {
+                KeyEventKind::Press => {
+                    let ks = game.hit(lane, now);
+                    if !opts.auto_ks {
+                        bank.play_hit(lane, ks, opts.synth_mode);
+                    }
+                }
+                KeyEventKind::Release => {
+                    game.release(lane, now);
+                }
+                _ => {}
             }
             false
         }
@@ -356,13 +365,13 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: Some(1),
-                end_ms: None,            },
+                end_ms: None, held_since: None,            },
             Note {
                 time_ms: 500.0,
                 lane: 1,
                 hit: false,
                 keysound: Some(2),
-                end_ms: None,            },
+                end_ms: None, held_since: None,            },
         ];
         let game = Game::new(base_chart(4, notes));
         let auto = build_auto_notes(&game, &opts(false));
@@ -377,19 +386,19 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: Some(1),
-                end_ms: None,            },
+                end_ms: None, held_since: None,            },
             Note {
                 time_ms: 500.0,
                 lane: 1,
                 hit: false,
                 keysound: Some(2),
-                end_ms: None,            },
+                end_ms: None, held_since: None,            },
             Note {
                 time_ms: 800.0,
                 lane: 2,
                 hit: false,
                 keysound: Some(3),
-                end_ms: None,            },
+                end_ms: None, held_since: None,            },
         ];
         let game = Game::new(base_chart(4, notes));
         let auto = build_auto_notes(&game, &opts(true));
@@ -500,13 +509,13 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: Some(1),
-                end_ms: None,            },
+                end_ms: None, held_since: None,            },
             Note {
                 time_ms: 400.0,
                 lane: 1,
                 hit: false,
                 keysound: Some(2),
-                end_ms: None,            },
+                end_ms: None, held_since: None,            },
         ];
         let game = Game::new(base_chart(4, notes));
         let bank = SampleBank::silent();
@@ -549,13 +558,13 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: Some(1),
-                end_ms: None,            },
+                end_ms: None, held_since: None,            },
             Note {
                 time_ms: 3200.0,
                 lane: 0,
                 hit: false,
                 keysound: Some(2),
-                end_ms: None,            },
+                end_ms: None, held_since: None,            },
         ];
         Game::new(base_chart(4, notes))
     }
@@ -567,7 +576,7 @@ mod tests {
         let bank = SampleBank::silent();
         // Give the game a start that pretends we're already past countdown.
         let start = Instant::now() - Duration::from_millis(3000);
-        let handled = handle_key(KeyCode::Esc, &mut g, &bank, &opts(false), &mut s, start);
+        let handled = handle_key(KeyCode::Esc, KeyEventKind::Press, &mut g, &bank, &opts(false), &mut s, start);
         assert!(handled, "Esc should short-circuit the input loop");
         assert!(s.quit);
     }
@@ -579,7 +588,7 @@ mod tests {
             let mut s = LoopState::new(Vec::new());
             let bank = SampleBank::silent();
             let start = Instant::now();
-            let handled = handle_key(code, &mut g, &bank, &opts(false), &mut s, start);
+            let handled = handle_key(code, KeyEventKind::Press, &mut g, &bank, &opts(false), &mut s, start);
             assert!(handled);
             assert!(s.quit);
         }
@@ -594,6 +603,7 @@ mod tests {
         let start = Instant::now();
         let handled = handle_key(
             KeyCode::Char('S'),
+            KeyEventKind::Press,
             &mut g,
             &bank,
             &opts(false),
@@ -615,6 +625,7 @@ mod tests {
         let start = Instant::now() - Duration::from_millis(3000);
         let handled = handle_key(
             KeyCode::Char('S'),
+            KeyEventKind::Press,
             &mut g,
             &bank,
             &opts(false),
@@ -634,6 +645,7 @@ mod tests {
         let start = Instant::now() - Duration::from_millis(3000);
         let handled = handle_key(
             KeyCode::Char('X'),
+            KeyEventKind::Press,
             &mut g,
             &bank,
             &opts(false),
@@ -658,7 +670,7 @@ mod tests {
             KeyCode::Enter,
             KeyCode::Tab,
         ] {
-            let handled = handle_key(code, &mut g, &bank, &opts(false), &mut s, start);
+            let handled = handle_key(code, KeyEventKind::Press, &mut g, &bank, &opts(false), &mut s, start);
             assert!(!handled);
         }
         assert!(!s.quit);
