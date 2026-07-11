@@ -66,6 +66,25 @@ struct ChartAcc {
     bgm: Vec<BgmEvent>,
 }
 
+#[derive(Copy, Clone)]
+struct LaneMap {
+    normal: fn(&str) -> Option<usize>,
+    long: fn(&str) -> Option<usize>,
+    mine: fn(&str) -> Option<usize>,
+}
+
+const P1_LANES: LaneMap = LaneMap {
+    normal: channel_to_lane,
+    long: long_channel_to_lane,
+    mine: mine_channel_to_lane,
+};
+
+const P2_LANES: LaneMap = LaneMap {
+    normal: p2_channel_to_lane,
+    long: p2_long_channel_to_lane,
+    mine: p2_mine_channel_to_lane,
+};
+
 fn build_chart(
     pass: HeaderPass,
     raw: Vec<(u32, String, String)>,
@@ -77,31 +96,29 @@ fn build_chart(
     let scales = collect_measure_scales(&raw);
     let events = collect_timing_events(&raw, &pass.bpm_defs, &pass.stop_defs);
     let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
-    let mut acc = ChartAcc::default();
-    for (measure, ch, data) in &raw {
-        if matches!(ch.as_str(), "02" | "03" | "08" | "09" | "04" | "06" | "07")
-            || long_channel_to_lane(ch).is_some()
-            || mine_channel_to_lane(ch).is_some()
-        {
-            continue;
-        }
-        materialize_channel(&mut acc, *measure, ch, data, &timeline);
-    }
-    materialize_long_notes(&mut acc, &raw, &timeline);
-    materialize_mines(&mut acc, &raw, &timeline);
+    let acc = accumulate_side(&raw, &timeline, P1_LANES, /*collect_bgm=*/ true);
+    let p2_acc = accumulate_side(&raw, &timeline, P2_LANES, /*collect_bgm=*/ false);
     let mut bga = collect_bga_events(&raw, &timeline);
     let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
     let lane_count = acc.lanes.count();
+    let p2_lane_count = p2_acc.lanes.count();
     let mut notes = acc.notes;
     let mut mines = acc.mines;
     let mut bgm = acc.bgm;
+    let mut p2_notes = p2_acc.notes;
+    let mut p2_mines = p2_acc.mines;
     if let Some(lnobj) = pass.lnobj {
         promote_lnobj(&mut notes, lnobj);
+        promote_lnobj(&mut p2_notes, lnobj);
     }
     notes.retain(|n| n.lane < lane_count);
     mines.retain(|n| n.lane < lane_count);
+    p2_notes.retain(|n| n.lane < p2_lane_count);
+    p2_mines.retain(|n| n.lane < p2_lane_count);
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     mines.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
+    p2_notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
+    p2_mines.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bgm.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bga.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     let duration_ms = timeline.end_time(max_measure) + 2500.0;
@@ -122,6 +139,8 @@ fn build_chart(
         vol_wav: pass.vol_wav,
         notes,
         mines,
+        p2_notes,
+        p2_mines,
         bgm,
         bga,
         bmp_paths,
@@ -132,36 +151,180 @@ fn build_chart(
     })
 }
 
-fn materialize_channel(
+fn p2_channel_to_lane(ch: &str) -> Option<usize> {
+    match ch {
+        "21" => Some(0),
+        "22" => Some(1),
+        "23" => Some(2),
+        "24" => Some(3),
+        "25" => Some(4),
+        "28" => Some(5),
+        "29" => Some(6),
+        _ => None,
+    }
+}
+
+fn p2_long_channel_to_lane(ch: &str) -> Option<usize> {
+    match ch {
+        "61" => Some(0),
+        "62" => Some(1),
+        "63" => Some(2),
+        "64" => Some(3),
+        "65" => Some(4),
+        "68" => Some(5),
+        "69" => Some(6),
+        _ => None,
+    }
+}
+
+fn p2_mine_channel_to_lane(ch: &str) -> Option<usize> {
+    match ch {
+        "E1" => Some(0),
+        "E2" => Some(1),
+        "E3" => Some(2),
+        "E4" => Some(3),
+        "E5" => Some(4),
+        "E8" => Some(5),
+        "E9" => Some(6),
+        _ => None,
+    }
+}
+
+fn accumulate_side(
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    lanes: LaneMap,
+    collect_bgm: bool,
+) -> ChartAcc {
+    let mut acc = ChartAcc::default();
+    for (measure, ch, data) in raw {
+        if let Some(lane) = (lanes.normal)(ch) {
+            push_normal_slots(&mut acc, lane, ch, *measure, data, timeline);
+        } else if collect_bgm && ch == "01" {
+            push_bgm_slots(&mut acc, *measure, data, timeline);
+        }
+    }
+    materialize_long_notes_with(&mut acc, raw, timeline, lanes.long);
+    materialize_mines_with(&mut acc, raw, timeline, lanes.mine);
+    acc
+}
+
+fn push_normal_slots(
     acc: &mut ChartAcc,
-    measure: u32,
+    lane: usize,
     ch: &str,
+    measure: u32,
     data: &str,
     timeline: &Timeline,
 ) {
     let slots = parse_slots(data);
-    if slots.is_empty() {
+    let n = slots.len();
+    if n == 0 {
         return;
     }
-    let n = slots.len() as f64;
     for (i, slot) in slots.iter().enumerate() {
         if *slot == 0 {
             continue;
         }
-        let t = timeline.time_at(measure, i as f64 / n);
-        if let Some(lane) = channel_to_lane(ch) {
-            acc.lanes.observe(ch);
+        let t = timeline.time_at(measure, i as f64 / n as f64);
+        acc.lanes.observe(ch);
+        acc.notes.push(Note {
+            time_ms: t,
+            lane,
+            hit: false,
+            keysound: Some(*slot),
+            end_ms: None,
+        });
+    }
+}
+
+fn push_bgm_slots(acc: &mut ChartAcc, measure: u32, data: &str, timeline: &Timeline) {
+    let slots = parse_slots(data);
+    let n = slots.len();
+    if n == 0 {
+        return;
+    }
+    for (i, slot) in slots.iter().enumerate() {
+        if *slot == 0 {
+            continue;
+        }
+        let t = timeline.time_at(measure, i as f64 / n as f64);
+        acc.bgm.push(BgmEvent {
+            time_ms: t,
+            keysound: *slot,
+        });
+    }
+}
+
+fn materialize_long_notes_with(
+    acc: &mut ChartAcc,
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    lane_of: fn(&str) -> Option<usize>,
+) {
+    let mut per_lane: HashMap<usize, Vec<(f64, u32)>> = HashMap::new();
+    for (measure, ch, data) in raw {
+        let Some(lane) = lane_of(ch) else {
+            continue;
+        };
+        let slots = parse_slots(data);
+        let n = slots.len();
+        if n == 0 {
+            continue;
+        }
+        for (i, slot) in slots.iter().enumerate() {
+            if *slot == 0 {
+                continue;
+            }
+            let t = timeline.time_at(*measure, i as f64 / n as f64);
+            per_lane.entry(lane).or_default().push((t, *slot));
+        }
+    }
+    for (lane, mut events) in per_lane {
+        events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        for pair in events.chunks(2) {
+            if pair.len() != 2 {
+                continue;
+            }
+            let (start_ms, ks) = pair[0];
+            let (end_ms, _) = pair[1];
+            acc.lanes.observe_lane(lane);
             acc.notes.push(Note {
-                time_ms: t,
+                time_ms: start_ms,
                 lane,
                 hit: false,
-                keysound: Some(*slot),
-                end_ms: None,
+                keysound: Some(ks),
+                end_ms: Some(end_ms),
             });
-        } else if ch == "01" {
-            acc.bgm.push(BgmEvent {
+        }
+    }
+}
+
+fn materialize_mines_with(
+    acc: &mut ChartAcc,
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    lane_of: fn(&str) -> Option<usize>,
+) {
+    for (measure, ch, data) in raw {
+        let Some(lane) = lane_of(ch) else {
+            continue;
+        };
+        let slots = parse_slots_hex(data);
+        let n = slots.len();
+        if n == 0 {
+            continue;
+        }
+        for (i, slot) in slots.iter().enumerate() {
+            if *slot == 0 {
+                continue;
+            }
+            let t = timeline.time_at(*measure, i as f64 / n as f64);
+            acc.lanes.observe_lane(lane);
+            acc.mines.push(Mine {
                 time_ms: t,
-                keysound: *slot,
+                lane,
+                damage: *slot,
             });
         }
     }
@@ -238,35 +401,6 @@ fn mine_channel_to_lane(ch: &str) -> Option<usize> {
     }
 }
 
-fn materialize_mines(
-    acc: &mut ChartAcc,
-    raw: &[(u32, String, String)],
-    timeline: &Timeline,
-) {
-    for (measure, ch, data) in raw {
-        let Some(lane) = mine_channel_to_lane(ch) else {
-            continue;
-        };
-        let slots = parse_slots_hex(data);
-        let n = slots.len();
-        if n == 0 {
-            continue;
-        }
-        for (i, slot) in slots.iter().enumerate() {
-            if *slot == 0 {
-                continue;
-            }
-            let t = timeline.time_at(*measure, i as f64 / n as f64);
-            acc.lanes.observe_lane(lane);
-            acc.mines.push(Mine {
-                time_ms: t,
-                lane,
-                damage: *slot,
-            });
-        }
-    }
-}
-
 fn long_channel_to_lane(ch: &str) -> Option<usize> {
     match ch {
         "51" => Some(0),
@@ -277,49 +411,6 @@ fn long_channel_to_lane(ch: &str) -> Option<usize> {
         "58" => Some(5),
         "59" => Some(6),
         _ => None,
-    }
-}
-
-fn materialize_long_notes(
-    acc: &mut ChartAcc,
-    raw: &[(u32, String, String)],
-    timeline: &Timeline,
-) {
-    let mut per_lane: HashMap<usize, Vec<(f64, u32)>> = HashMap::new();
-    for (measure, ch, data) in raw {
-        let Some(lane) = long_channel_to_lane(ch) else {
-            continue;
-        };
-        let slots = parse_slots(data);
-        let n = slots.len();
-        if n == 0 {
-            continue;
-        }
-        for (i, slot) in slots.iter().enumerate() {
-            if *slot == 0 {
-                continue;
-            }
-            let t = timeline.time_at(*measure, i as f64 / n as f64);
-            per_lane.entry(lane).or_default().push((t, *slot));
-        }
-    }
-    for (lane, mut events) in per_lane {
-        events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        for pair in events.chunks(2) {
-            if pair.len() != 2 {
-                continue;
-            }
-            let (start_ms, ks) = pair[0];
-            let (end_ms, _) = pair[1];
-            acc.lanes.observe_lane(lane);
-            acc.notes.push(Note {
-                time_ms: start_ms,
-                lane,
-                hit: false,
-                keysound: Some(ks),
-                end_ms: Some(end_ms),
-            });
-        }
     }
 }
 
@@ -1247,6 +1338,71 @@ mod tests {
         assert_eq!(p.stop_defs.get(&1), Some(&96.0));
         assert!(!p.stop_defs.contains_key(&2));
         assert_eq!(p.stop_defs.get(&1295), Some(&24.0));
+    }
+
+    #[test]
+    fn p2_channel_to_lane_mirrors_the_p1_map_on_2x_prefix() {
+        assert_eq!(p2_channel_to_lane("21"), Some(0));
+        assert_eq!(p2_channel_to_lane("25"), Some(4));
+        assert_eq!(p2_channel_to_lane("28"), Some(5));
+        assert_eq!(p2_channel_to_lane("29"), Some(6));
+        assert_eq!(p2_channel_to_lane("26"), None);
+        assert_eq!(p2_channel_to_lane("11"), None);
+    }
+
+    #[test]
+    fn p2_long_and_mine_channels_map_to_the_same_lanes_as_p2_normal() {
+        assert_eq!(p2_long_channel_to_lane("61"), Some(0));
+        assert_eq!(p2_long_channel_to_lane("69"), Some(6));
+        assert_eq!(p2_mine_channel_to_lane("E1"), Some(0));
+        assert_eq!(p2_mine_channel_to_lane("E9"), Some(6));
+    }
+
+    #[test]
+    fn load_captures_p2_notes_mines_and_long_notes_into_the_p2_pools() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        // Populate: a P1 note (11), a P2 note (21), a P2 LN pair (61), a P2
+        // mine (E9). The P1 side has to have at least one note or lane_count
+        // clamps everything down.
+        std::fs::write(
+            &path,
+            "\
+#TITLE DP
+#BPM 60
+#00111:0100
+#00121:0100
+#00161:01000100
+#001E1:0064
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.notes.len(), 1, "one visible P1 note");
+        // P2 side: one 21 note + one paired LN start on 61 = 2 notes.
+        assert_eq!(chart.p2_notes.len(), 2);
+        assert!(chart.p2_notes.iter().any(|n| n.end_ms.is_some()));
+        assert_eq!(chart.p2_mines.len(), 1);
+        assert_eq!(chart.p2_mines[0].lane, 0);
+        assert_eq!(chart.p2_mines[0].damage, 100);
+    }
+
+    #[test]
+    fn load_leaves_p2_pools_empty_for_single_play_charts() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "\
+#TITLE SP
+#BPM 60
+#00111:0100
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert!(chart.p2_notes.is_empty());
+        assert!(chart.p2_mines.is_empty());
     }
 
     #[test]
