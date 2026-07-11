@@ -451,7 +451,11 @@ fn collect_measure_scales(raw: &[(u32, String, String)]) -> HashMap<u32, f64> {
             continue;
         }
         if let Ok(v) = data.trim().parse::<f64>() {
-            if v > 0.0 {
+            // A sane BMS measure scales the standard 4/4 bar by roughly
+            // 0.001..=100. Non-standard extensions abuse channel 02 to encode
+            // BPM references as fat integers; those blow up the timeline into
+            // hours of silence. Drop anything that clearly isn't a scale.
+            if (0.001..=100.0).contains(&v) {
                 out.insert(*measure, v);
             }
         }
@@ -1728,6 +1732,7 @@ mod tests {
             (2u32, "02".to_string(), "1.25".to_string()),
             (3u32, "02".to_string(), "not a number".to_string()),
             (4u32, "02".to_string(), "-1".to_string()),
+            (5u32, "02".to_string(), "150000".to_string()),
         ];
         let out = collect_measure_scales(&raw);
         assert_eq!(out.get(&0), Some(&0.5));
@@ -1735,6 +1740,10 @@ mod tests {
         assert!(!out.contains_key(&1));
         assert!(!out.contains_key(&3), "unparseable data is skipped");
         assert!(!out.contains_key(&4), "non-positive scale is skipped");
+        assert!(
+            !out.contains_key(&5),
+            "wildly out-of-range values (non-standard extensions) are dropped"
+        );
     }
 
     #[test]
