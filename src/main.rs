@@ -28,6 +28,10 @@ fn run_test_tone() -> Result<()> {
         eprintln!("audio backend unavailable");
         std::process::exit(1);
     }
+    if std::env::var_os("TAPLINE_TEST_TONE_QUIET").is_some() {
+        eprintln!("audio backend ready (quiet mode, skipping tone)");
+        return Ok(());
+    }
     eprintln!("audio backend ready, playing test tone...");
     for freq in [261.63f32, 329.63, 392.00, 523.25] {
         bank.play_synth(freq, 200);

@@ -8,6 +8,7 @@ fn tapline_bin() -> PathBuf {
 fn run_with(args: &[&str]) -> (i32, String, String) {
     let out = Command::new(tapline_bin())
         .args(args)
+        .env("TAPLINE_TEST_TONE_QUIET", "1")
         .output()
         .expect("failed to spawn tapline binary");
     (
