@@ -1,4 +1,4 @@
-use crate::chart::difficulty_label;
+use crate::chart::{difficulty_label, BgaEvent, BgaLayer};
 use crate::game::{Game, Judgment};
 use crossterm::{
     cursor, queue,
@@ -216,6 +216,46 @@ fn display_key(c: &char) -> String {
     }
 }
 
+/// Return the BMP id currently active on a given BGA layer at `now_ms`, or
+/// `None` if no event on that layer has fired yet. Events must already be
+/// sorted ascending by time_ms — bms::load guarantees this.
+pub fn active_bga_id(bga: &[BgaEvent], layer: BgaLayer, now_ms: f64) -> Option<u32> {
+    bga.iter()
+        .rev()
+        .find(|e| e.layer == layer && e.time_ms <= now_ms)
+        .map(|e| e.bmp_id)
+}
+
+/// Compact HUD tag summarising the base/overlay/poor BGA slots the way a
+/// real player would care about — one line, base36 IDs, dashes where a slot
+/// hasn't fired yet.
+pub fn format_bga_badge(bga: &[BgaEvent], now_ms: f64) -> Option<String> {
+    if bga.is_empty() {
+        return None;
+    }
+    let fmt = |layer: BgaLayer| -> String {
+        active_bga_id(bga, layer, now_ms)
+            .map(|id| bmp_id_label(id))
+            .unwrap_or_else(|| "--".to_string())
+    };
+    Some(format!(
+        "BGA {}·{}·{}",
+        fmt(BgaLayer::Base),
+        fmt(BgaLayer::Overlay),
+        fmt(BgaLayer::Poor)
+    ))
+}
+
+fn bmp_id_label(id: u32) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    if id >= 36 * 36 {
+        return format!("{:2X}", id.min(0xFF));
+    }
+    let a = (id / 36) as usize;
+    let b = (id % 36) as usize;
+    format!("{}{}", DIGITS[a] as char, DIGITS[b] as char)
+}
+
 /// Appends the subtitle in `~…~` after the title when present.
 pub fn format_title_line(title: &str, subtitle: &str) -> String {
     let t = if title.is_empty() {
@@ -303,6 +343,16 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     )?;
 
     draw_judgment_counters(out, game, cols, 3, now_ms)?;
+
+    if let Some(tag) = format_bga_badge(&game.chart.bga, now_ms) {
+        queue!(
+            out,
+            cursor::MoveTo(cols.saturating_sub(tag.chars().count() as u16 + 2), 2),
+            SetForegroundColor(Color::Blue),
+            Print(&tag),
+            ResetColor
+        )?;
+    }
 
     for lane in 0..lanes {
         let lx = x0 + 1 + lane * LANE_WIDTH;
@@ -627,6 +677,84 @@ mod tests {
     fn format_artist_line_returns_just_one_side_when_the_other_is_empty() {
         assert_eq!(format_artist_line("A", ""), Some("— A".to_string()));
         assert_eq!(format_artist_line("", "B"), Some("— B".to_string()));
+    }
+
+    #[test]
+    fn bmp_id_label_uses_base36_with_two_digits() {
+        assert_eq!(bmp_id_label(0), "00");
+        assert_eq!(bmp_id_label(1), "01");
+        assert_eq!(bmp_id_label(35), "0Z");
+        assert_eq!(bmp_id_label(36), "10");
+        assert_eq!(bmp_id_label(36 * 36 - 1), "ZZ");
+    }
+
+    #[test]
+    fn active_bga_id_returns_none_when_no_event_has_passed_yet() {
+        let evs = vec![BgaEvent {
+            time_ms: 1000.0,
+            layer: BgaLayer::Base,
+            bmp_id: 1,
+        }];
+        assert!(active_bga_id(&evs, BgaLayer::Base, 500.0).is_none());
+    }
+
+    #[test]
+    fn active_bga_id_returns_the_last_matching_event_before_now() {
+        let evs = vec![
+            BgaEvent {
+                time_ms: 500.0,
+                layer: BgaLayer::Base,
+                bmp_id: 1,
+            },
+            BgaEvent {
+                time_ms: 1500.0,
+                layer: BgaLayer::Base,
+                bmp_id: 2,
+            },
+            BgaEvent {
+                time_ms: 3000.0,
+                layer: BgaLayer::Base,
+                bmp_id: 3,
+            },
+        ];
+        assert_eq!(active_bga_id(&evs, BgaLayer::Base, 2000.0), Some(2));
+    }
+
+    #[test]
+    fn active_bga_id_ignores_events_on_other_layers() {
+        let evs = vec![
+            BgaEvent {
+                time_ms: 500.0,
+                layer: BgaLayer::Base,
+                bmp_id: 1,
+            },
+            BgaEvent {
+                time_ms: 1000.0,
+                layer: BgaLayer::Overlay,
+                bmp_id: 7,
+            },
+        ];
+        assert_eq!(active_bga_id(&evs, BgaLayer::Base, 2000.0), Some(1));
+        assert_eq!(active_bga_id(&evs, BgaLayer::Overlay, 2000.0), Some(7));
+        assert_eq!(active_bga_id(&evs, BgaLayer::Poor, 2000.0), None);
+    }
+
+    #[test]
+    fn format_bga_badge_returns_none_when_the_chart_has_no_bga() {
+        assert!(format_bga_badge(&[], 0.0).is_none());
+    }
+
+    #[test]
+    fn format_bga_badge_shows_dashes_for_layers_that_havent_fired() {
+        let evs = vec![BgaEvent {
+            time_ms: 100.0,
+            layer: BgaLayer::Base,
+            bmp_id: 1,
+        }];
+        assert_eq!(
+            format_bga_badge(&evs, 200.0).unwrap(),
+            "BGA 01·--·--"
+        );
     }
 
     #[test]
