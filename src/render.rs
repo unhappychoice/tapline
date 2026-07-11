@@ -24,6 +24,19 @@ fn lane_color(lane: usize) -> Color {
     PALETTE[lane % PALETTE.len()]
 }
 
+/// Highlight `S`, `K`, and Space in blue (they're the anchor keys the player
+/// uses to orient their hands); every other key label stays white.
+fn key_label_color(keys: &[char]) -> Color {
+    if keys.iter().any(|c| {
+        let up = c.to_ascii_uppercase();
+        up == 'S' || up == 'K' || *c == ' '
+    }) {
+        Color::Blue
+    } else {
+        Color::White
+    }
+}
+
 /// Rectangles for the play field, computed from terminal size and lane count.
 /// Extracted so the layout math is testable without a real terminal.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -400,18 +413,18 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
                 .copied()
                 .unwrap_or(-9999.0)
             < 120.0;
+        let keys = game
+            .chart
+            .keys
+            .get(lane)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
         let color = if flash {
-            Color::White
+            Color::Yellow
         } else {
-            lane_color(lane)
+            key_label_color(keys)
         };
-        let display = format_lane_key(
-            game.chart
-                .keys
-                .get(lane)
-                .map(|v| v.as_slice())
-                .unwrap_or(&[]),
-        );
+        let display = format_lane_key(keys);
         queue!(
             out,
             cursor::MoveTo(lx.saturating_sub(1), bottom + 1),
@@ -808,6 +821,34 @@ mod tests {
         c.genre = "hardcore".into();
         let g = Game::new(c);
         assert!(format_difficulty_badge(&g).contains("hardcore"));
+    }
+
+    #[test]
+    fn key_label_color_paints_anchor_keys_blue() {
+        assert_eq!(key_label_color(&['S']), Color::Blue);
+        assert_eq!(key_label_color(&['K']), Color::Blue);
+        assert_eq!(key_label_color(&[' ']), Color::Blue);
+        // Case-insensitive anchor detection.
+        assert_eq!(key_label_color(&['s']), Color::Blue);
+    }
+
+    #[test]
+    fn key_label_color_paints_the_other_lanes_white() {
+        for k in ['D', 'F', 'J', 'L', 'A', 'H'] {
+            assert_eq!(
+                key_label_color(&[k]),
+                Color::White,
+                "{k} should not be highlighted"
+            );
+        }
+    }
+
+    #[test]
+    fn key_label_color_treats_multi_bind_lanes_as_anchor_if_any_key_matches() {
+        // The 5K center lane binds both F and J → neither is an anchor.
+        assert_eq!(key_label_color(&['F', 'J']), Color::White);
+        // A synthetic lane that happens to include S is still an anchor.
+        assert_eq!(key_label_color(&['S', 'A']), Color::Blue);
     }
 
     #[test]
