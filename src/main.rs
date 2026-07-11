@@ -19,10 +19,15 @@ fn main() -> Result<()> {
 }
 
 fn run(out: &mut Stdout, args: &Args) -> Result<()> {
-    let choice = cli::choose_chart(out, args)?;
-    match cli::load_chart(&choice, args)? {
-        Some(chart) => runtime::play_chart(out, args, chart),
-        None => Ok(()),
+    loop {
+        let choice = cli::choose_chart(out, args)?;
+        let Some(chart) = cli::load_chart(&choice, args)? else {
+            return Ok(());
+        };
+        runtime::play_chart(out, args, chart)?;
+        if args.file.is_some() || args.built_in {
+            return Ok(());
+        }
     }
 }
 
