@@ -310,7 +310,8 @@ fn materialize_long_notes_with(
                 hit: false,
                 keysound: Some(ks),
                 end_ms: Some(end_ms),
-                held_since: None,            });
+                held_since: None,
+            });
         }
     }
 }
@@ -355,10 +356,7 @@ fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
     }
 }
 
-fn collect_bga_events(
-    raw: &[(u32, String, String)],
-    timeline: &Timeline,
-) -> Vec<BgaEvent> {
+fn collect_bga_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec<BgaEvent> {
     let mut out: Vec<BgaEvent> = Vec::new();
     for (measure, ch, data) in raw {
         let Some(layer) = bga_channel_to_layer(ch) else {
@@ -506,24 +504,24 @@ fn collect_timing_events(
     bpm_defs: &HashMap<u32, f64>,
     stop_defs: &HashMap<u32, f64>,
 ) -> Vec<TimingEvent> {
+    type TimingResolver<'a> = Box<dyn Fn(u32) -> Option<TimingEventKind> + 'a>;
     let mut out: Vec<TimingEvent> = Vec::new();
     for (measure, ch, data) in raw {
-        let (slots, resolve): (Vec<u32>, Box<dyn Fn(u32) -> Option<TimingEventKind>>) =
-            match ch.as_str() {
-                "03" => (
-                    parse_slots_hex(data),
-                    Box::new(|v| Some(TimingEventKind::Bpm(v as f64))),
-                ),
-                "08" => (
-                    parse_slots(data),
-                    Box::new(|v| bpm_defs.get(&v).copied().map(TimingEventKind::Bpm)),
-                ),
-                "09" => (
-                    parse_slots(data),
-                    Box::new(|v| stop_defs.get(&v).copied().map(TimingEventKind::Stop)),
-                ),
-                _ => continue,
-            };
+        let (slots, resolve): (Vec<u32>, TimingResolver) = match ch.as_str() {
+            "03" => (
+                parse_slots_hex(data),
+                Box::new(|v| Some(TimingEventKind::Bpm(v as f64))),
+            ),
+            "08" => (
+                parse_slots(data),
+                Box::new(|v| bpm_defs.get(&v).copied().map(TimingEventKind::Bpm)),
+            ),
+            "09" => (
+                parse_slots(data),
+                Box::new(|v| stop_defs.get(&v).copied().map(TimingEventKind::Stop)),
+            ),
+            _ => continue,
+        };
         let n = slots.len();
         if n == 0 {
             continue;
@@ -546,7 +544,11 @@ fn collect_timing_events(
     out.sort_by(|a, b| {
         a.measure
             .cmp(&b.measure)
-            .then_with(|| a.frac.partial_cmp(&b.frac).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| {
+                a.frac
+                    .partial_cmp(&b.frac)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| a.sort_bucket().cmp(&b.sort_bucket()))
     });
     out
@@ -876,9 +878,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
     let is_active = |stack: &[IfLevel]| stack.iter().all(|l| l.included);
     let mut out = String::with_capacity(text.len());
     for line in text.lines() {
-        let trimmed = line
-            .trim()
-            .trim_start_matches('\u{feff}');
+        let trimmed = line.trim().trim_start_matches('\u{feff}');
         if let Some(body) = trimmed.strip_prefix('#') {
             let (head, rest) = split_first_word(body);
             let up = head.to_ascii_uppercase();
@@ -902,8 +902,8 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                     continue;
                 }
                 "IF" => {
-                    let ok = current_pick
-                        .is_some_and(|p| rest.trim().parse::<u32>().ok() == Some(p));
+                    let ok =
+                        current_pick.is_some_and(|p| rest.trim().parse::<u32>().ok() == Some(p));
                     if_stack.push(IfLevel {
                         matched_yet: ok,
                         included: ok,
