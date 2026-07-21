@@ -161,9 +161,7 @@ impl Game {
             .notes
             .iter()
             .enumerate()
-            .filter(|(_, n)| {
-                !n.hit && n.held_since.is_none() && n.time_ms + MISS_AFTER < now_ms
-            })
+            .filter(|(_, n)| !n.hit && n.held_since.is_none() && n.time_ms + MISS_AFTER < now_ms)
             .map(|(i, _)| i)
             .collect();
         for i in missed {
@@ -244,7 +242,9 @@ mod tests {
             lane,
             hit: false,
             keysound: Some(1),
-            end_ms: None, held_since: None,        }
+            end_ms: None,
+            held_since: None,
+        }
     }
 
     #[test]
@@ -509,7 +509,10 @@ mod tests {
         let mut g = Game::new(chart_with(vec![ln(1000.0, 2000.0, 0)], 4));
         g.hit(0, 1000.0);
         let ks = g.hit(0, 1010.0);
-        assert!(ks.is_none(), "second press must not re-trigger the LN start");
+        assert!(
+            ks.is_none(),
+            "second press must not re-trigger the LN start"
+        );
         assert_eq!(g.perfect, 1, "no second Perfect awarded");
     }
 

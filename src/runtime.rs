@@ -372,13 +372,17 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: Some(1),
-                end_ms: None, held_since: None,            },
+                end_ms: None,
+                held_since: None,
+            },
             Note {
                 time_ms: 500.0,
                 lane: 1,
                 hit: false,
                 keysound: Some(2),
-                end_ms: None, held_since: None,            },
+                end_ms: None,
+                held_since: None,
+            },
         ];
         let game = Game::new(base_chart(4, notes));
         let auto = build_auto_notes(&game, &opts(false));
@@ -393,19 +397,25 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: Some(1),
-                end_ms: None, held_since: None,            },
+                end_ms: None,
+                held_since: None,
+            },
             Note {
                 time_ms: 500.0,
                 lane: 1,
                 hit: false,
                 keysound: Some(2),
-                end_ms: None, held_since: None,            },
+                end_ms: None,
+                held_since: None,
+            },
             Note {
                 time_ms: 800.0,
                 lane: 2,
                 hit: false,
                 keysound: Some(3),
-                end_ms: None, held_since: None,            },
+                end_ms: None,
+                held_since: None,
+            },
         ];
         let game = Game::new(base_chart(4, notes));
         let auto = build_auto_notes(&game, &opts(true));
@@ -516,13 +526,17 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: Some(1),
-                end_ms: None, held_since: None,            },
+                end_ms: None,
+                held_since: None,
+            },
             Note {
                 time_ms: 400.0,
                 lane: 1,
                 hit: false,
                 keysound: Some(2),
-                end_ms: None, held_since: None,            },
+                end_ms: None,
+                held_since: None,
+            },
         ];
         let game = Game::new(base_chart(4, notes));
         let bank = SampleBank::silent();
@@ -565,13 +579,17 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: Some(1),
-                end_ms: None, held_since: None,            },
+                end_ms: None,
+                held_since: None,
+            },
             Note {
                 time_ms: 3200.0,
                 lane: 0,
                 hit: false,
                 keysound: Some(2),
-                end_ms: None, held_since: None,            },
+                end_ms: None,
+                held_since: None,
+            },
         ];
         Game::new(base_chart(4, notes))
     }
@@ -583,7 +601,15 @@ mod tests {
         let bank = SampleBank::silent();
         // Give the game a start that pretends we're already past countdown.
         let start = Instant::now() - Duration::from_millis(3000);
-        let handled = handle_key(KeyCode::Esc, KeyEventKind::Press, &mut g, &bank, &opts(false), &mut s, start);
+        let handled = handle_key(
+            KeyCode::Esc,
+            KeyEventKind::Press,
+            &mut g,
+            &bank,
+            &opts(false),
+            &mut s,
+            start,
+        );
         assert!(handled, "Esc should short-circuit the input loop");
         assert!(s.quit);
     }
@@ -595,7 +621,15 @@ mod tests {
             let mut s = LoopState::new(Vec::new());
             let bank = SampleBank::silent();
             let start = Instant::now();
-            let handled = handle_key(code, KeyEventKind::Press, &mut g, &bank, &opts(false), &mut s, start);
+            let handled = handle_key(
+                code,
+                KeyEventKind::Press,
+                &mut g,
+                &bank,
+                &opts(false),
+                &mut s,
+                start,
+            );
             assert!(handled);
             assert!(s.quit);
         }
@@ -677,7 +711,15 @@ mod tests {
             KeyCode::Enter,
             KeyCode::Tab,
         ] {
-            let handled = handle_key(code, KeyEventKind::Press, &mut g, &bank, &opts(false), &mut s, start);
+            let handled = handle_key(
+                code,
+                KeyEventKind::Press,
+                &mut g,
+                &bank,
+                &opts(false),
+                &mut s,
+                start,
+            );
             assert!(!handled);
         }
         assert!(!s.quit);

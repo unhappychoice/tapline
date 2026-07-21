@@ -125,8 +125,20 @@ pub fn keys_for(lane_count: usize) -> Vec<Vec<char>> {
         // Double-play 14K: P1 hands on the home-row style layout,
         // P2 hands on the row below.
         14 => &[
-            &['S'], &['D'], &['F'], &[' '], &['J'], &['K'], &['L'],
-            &['Z'], &['X'], &['C'], &['V'], &['B'], &['N'], &['M'],
+            &['S'],
+            &['D'],
+            &['F'],
+            &[' '],
+            &['J'],
+            &['K'],
+            &['L'],
+            &['Z'],
+            &['X'],
+            &['C'],
+            &['V'],
+            &['B'],
+            &['N'],
+            &['M'],
         ],
         _ => &[&['S'], &['D'], &['K'], &['L']],
     };
@@ -144,7 +156,9 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
                 lane: *lane,
                 hit: false,
                 keysound: None,
-                end_ms: None, held_since: None,            });
+                end_ms: None,
+                held_since: None,
+            });
         }
     };
 
@@ -217,7 +231,9 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
             lane,
             hit: false,
             keysound: None,
-            end_ms: None, held_since: None,        });
+            end_ms: None,
+            held_since: None,
+        });
     }
 
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());

@@ -14,7 +14,12 @@ pub const LANE_WIDTH: u16 = 7;
 /// every other key stays white. Applied to both key labels and the notes
 /// falling in that lane so the two are always in sync.
 fn lane_key_color(game: &Game, lane: usize) -> Color {
-    let keys = game.chart.keys.get(lane).map(|v| v.as_slice()).unwrap_or(&[]);
+    let keys = game
+        .chart
+        .keys
+        .get(lane)
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
     key_label_color(keys)
 }
 
@@ -253,7 +258,7 @@ pub fn format_bga_badge(bga: &[BgaEvent], now_ms: f64) -> Option<String> {
     }
     let fmt = |layer: BgaLayer| -> String {
         active_bga_id(bga, layer, now_ms)
-            .map(|id| bmp_id_label(id))
+            .map(bmp_id_label)
             .unwrap_or_else(|| "--".to_string())
     };
     Some(format!(
@@ -276,11 +281,7 @@ fn bmp_id_label(id: u32) -> String {
 
 /// Appends the subtitle in `~…~` after the title when present.
 pub fn format_title_line(title: &str, subtitle: &str) -> String {
-    let t = if title.is_empty() {
-        "TAPLINE"
-    } else {
-        title
-    };
+    let t = if title.is_empty() { "TAPLINE" } else { title };
     if subtitle.is_empty() {
         t.to_string()
     } else {
@@ -475,7 +476,14 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
                 } else {
                     base
                 };
-                draw_long_note(out, note.time_ms - now_ms, end_ms - now_ms, &layout, lx, color)?;
+                draw_long_note(
+                    out,
+                    note.time_ms - now_ms,
+                    end_ms - now_ms,
+                    &layout,
+                    lx,
+                    color,
+                )?;
             }
         }
     }
@@ -581,8 +589,15 @@ pub fn draw_intro_full(
     let badge = format_audio_badge(audio_on, samples_loaded, decode_failures);
     queue!(
         out,
-        cursor::MoveTo(cols.saturating_sub(badge.chars().count() as u16) / 2, rows - 2),
-        SetForegroundColor(if decode_failures > 0 { Color::Yellow } else { Color::DarkGrey }),
+        cursor::MoveTo(
+            cols.saturating_sub(badge.chars().count() as u16) / 2,
+            rows - 2
+        ),
+        SetForegroundColor(if decode_failures > 0 {
+            Color::Yellow
+        } else {
+            Color::DarkGrey
+        }),
         Print(&badge),
         ResetColor
     )?;
@@ -639,7 +654,12 @@ pub fn draw_result(out: &mut Stdout, game: &Game) -> anyhow::Result<()> {
     )?;
     if !game.chart.maker.is_empty() {
         y += 2;
-        line(out, format!("chart by {}", game.chart.maker), Color::DarkGrey, y)?;
+        line(
+            out,
+            format!("chart by {}", game.chart.maker),
+            Color::DarkGrey,
+            y,
+        )?;
     }
     y += 2;
     line(out, "press any key to exit".to_string(), Color::DarkGrey, y)?;
@@ -666,7 +686,9 @@ mod tests {
                 lane: 0,
                 hit: false,
                 keysound: None,
-                end_ms: None, held_since: None,            }],
+                end_ms: None,
+                held_since: None,
+            }],
             duration_ms: 30_000.0,
             lane_count,
             keys: keys_for(lane_count),
@@ -696,10 +718,7 @@ mod tests {
 
     #[test]
     fn format_artist_line_joins_artist_and_subartist_with_a_slash() {
-        assert_eq!(
-            format_artist_line("A", "B"),
-            Some("— A / B".to_string())
-        );
+        assert_eq!(format_artist_line("A", "B"), Some("— A / B".to_string()));
     }
 
     #[test]
@@ -803,10 +822,7 @@ mod tests {
             layer: BgaLayer::Base,
             bmp_id: 1,
         }];
-        assert_eq!(
-            format_bga_badge(&evs, 200.0).unwrap(),
-            "BGA 01·--·--"
-        );
+        assert_eq!(format_bga_badge(&evs, 200.0).unwrap(), "BGA 01·--·--");
     }
 
     #[test]
@@ -1008,9 +1024,7 @@ mod tests {
     #[test]
     fn long_note_range_returns_none_when_fully_in_the_future() {
         let l = PlayLayout::compute(80, 24, 4).unwrap();
-        assert!(
-            long_note_screen_range(APPROACH_MS + 10.0, APPROACH_MS + 500.0, &l).is_none()
-        );
+        assert!(long_note_screen_range(APPROACH_MS + 10.0, APPROACH_MS + 500.0, &l).is_none());
     }
 
     #[test]
