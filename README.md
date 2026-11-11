@@ -111,10 +111,23 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 | polyphony     | multiple `#00101` lines mix concurrently                    |
 | control flow  | `#RANDOM`, `#SETRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF` (nesting supported) |
 
+### Long notes and landmines
+
+Long-note starts are judged like regular notes. On terminals that report key
+release events, releasing a held note is judged separately against its end time:
+Perfect within ±45 ms, Great within ±90 ms, Good within ±140 ms, and Miss
+outside ±140 ms. If no release event arrives and the note remains held in the
+game, it is automatically completed as Perfect once the end time + 160 ms has
+passed. A long note whose start was never hit becomes Miss once more than
+160 ms has elapsed after its start time.
+
+Pressing the same lane within ±40 ms of a landmine triggers it once, adding a
+Miss and resetting combo. Mines are checked before regular notes on that press,
+so the press can also score a note. Holding a lane alone does not trigger mines.
+
 ### Not yet supported (v1)
 
-- Long-note release scoring (LN starts are hittable but the release edge is not judged yet)
-- Landmine judgment / damage (mines are parsed and stored on `Chart.mines` but do not affect play yet)
+- Landmine damage scaling (the parsed `damage` value does not affect the penalty; each triggered mine adds one Miss without deducting existing score)
 - `#SWITCH` / `#CASE` (the `#IF`-style variants are supported)
 - BGA rendering (channels `04` / `06` / `07` and `#BMPxx` are parsed and stored on `Chart.bga` / `Chart.bmp_paths`, but the terminal renderer does not draw them yet)
 - Non-canonical double-play like 5K DP or asymmetric side counts (only 7K + 7K is folded into the 14-lane playable pool; other DP shapes are still parsed into `Chart.p2_notes` but not merged)
