@@ -14,6 +14,13 @@ pub struct Note {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct InvisibleNote {
+    pub time_ms: f64,
+    pub lane: usize,
+    pub keysound: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct BgmEvent {
     pub time_ms: f64,
     pub keysound: u32,
@@ -61,6 +68,12 @@ pub struct VolumeEvent {
     pub volume: u8,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SampleSlice {
+    pub start_ms: f64,
+    pub duration_ms: Option<f64>,
+}
+
 pub struct Chart {
     pub title: String,
     pub subtitle: String,
@@ -78,8 +91,10 @@ pub struct Chart {
     pub vol_wav: Option<u8>,
     pub volume_events: Vec<VolumeEvent>,
     pub notes: Vec<Note>,
+    pub invisible_notes: Vec<InvisibleNote>,
     pub mines: Vec<Mine>,
     pub p2_notes: Vec<Note>,
+    pub p2_invisible_notes: Vec<InvisibleNote>,
     pub p2_mines: Vec<Mine>,
     pub bgm: Vec<BgmEvent>,
     pub bga: Vec<BgaEvent>,
@@ -87,6 +102,8 @@ pub struct Chart {
     pub duration_ms: f64,
     pub lane_count: usize,
     pub keys: Vec<Vec<char>>,
+    pub sound_layers: std::collections::HashMap<u32, Vec<u32>>,
+    pub sample_slices: std::collections::HashMap<u32, SampleSlice>,
     pub wav_paths: std::collections::HashMap<u32, PathBuf>,
 }
 
@@ -109,8 +126,10 @@ impl Default for Chart {
             vol_wav: None,
             volume_events: Vec::new(),
             notes: Vec::new(),
+            invisible_notes: Vec::new(),
             mines: Vec::new(),
             p2_notes: Vec::new(),
+            p2_invisible_notes: Vec::new(),
             p2_mines: Vec::new(),
             bgm: Vec::new(),
             bga: Vec::new(),
@@ -118,6 +137,8 @@ impl Default for Chart {
             duration_ms: 0.0,
             lane_count: 4,
             keys: keys_for(4),
+            sound_layers: std::collections::HashMap::new(),
+            sample_slices: std::collections::HashMap::new(),
             wav_paths: std::collections::HashMap::new(),
         }
     }

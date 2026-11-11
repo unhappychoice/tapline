@@ -1,7 +1,8 @@
 use crate::chart::{Chart, VolumeTarget};
 use rayon::prelude::*;
 use rodio::buffer::SamplesBuffer;
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Source};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -32,6 +33,7 @@ struct DecodedSample {
 struct SharedSamples {
     data: Arc<Vec<f32>>,
     pos: usize,
+    end: usize,
     channels: u16,
     sample_rate: u32,
 }
@@ -39,6 +41,9 @@ struct SharedSamples {
 impl Iterator for SharedSamples {
     type Item = f32;
     fn next(&mut self) -> Option<f32> {
+        if self.pos >= self.end {
+            return None;
+        }
         let s = *self.data.get(self.pos)?;
         self.pos += 1;
         Some(s)
@@ -64,6 +69,9 @@ pub struct SampleBank {
     _stream: Option<OutputStream>,
     handle: Option<OutputStreamHandle>,
     samples: HashMap<u32, DecodedSample>,
+    layers: HashMap<u32, Vec<u32>>,
+    playing_slices: RefCell<HashMap<u32, Sink>>,
+    slices: HashMap<u32, crate::chart::SampleSlice>,
     pub enabled: bool,
     /// Number of `wav_paths` entries that failed to decode. Surfaced on the
     /// intro screen so charts that end up unexpectedly silent are diagnosable.
@@ -78,6 +86,9 @@ impl SampleBank {
         });
         let (samples, failures) = decode_all(wav_paths);
         Self {
+            layers: HashMap::new(),
+            playing_slices: RefCell::new(HashMap::new()),
+            slices: HashMap::new(),
             _stream: stream,
             handle,
             samples,
@@ -86,8 +97,21 @@ impl SampleBank {
         }
     }
 
+    pub fn with_slices(mut self, slices: &HashMap<u32, crate::chart::SampleSlice>) -> Self {
+        self.slices = slices.clone();
+        self
+    }
+
+    pub fn with_layers(mut self, layers: &HashMap<u32, Vec<u32>>) -> Self {
+        self.layers = layers.clone();
+        self
+    }
+
     pub fn silent() -> Self {
         Self {
+            layers: HashMap::new(),
+            playing_slices: RefCell::new(HashMap::new()),
+            slices: HashMap::new(),
             _stream: None,
             handle: None,
             samples: HashMap::new(),
@@ -137,8 +161,13 @@ impl SampleBank {
             )
             .fold(0.0, f64::max);
         // Leave one frame after the strict miss boundary for judgment processing.
+        let invisible_end = chart
+            .invisible_notes
+            .iter()
+            .map(|note| note.time_ms + 2500.0)
+            .fold(0.0, f64::max);
         audio_end
-            .map(|end| end.max(judgment_end + 32.0))
+            .map(|end| end.max(judgment_end + 32.0).max(invisible_end))
             .unwrap_or(chart.duration_ms)
     }
 
@@ -151,19 +180,9 @@ impl SampleBank {
     }
 
     pub fn play_with_gain(&self, id: u32, gain: f32) {
-        let Some(handle) = &self.handle else {
-            return;
-        };
-        let Some(s) = self.samples.get(&id) else {
-            return;
-        };
-        let source = SharedSamples {
-            data: Arc::clone(&s.data),
-            pos: 0,
-            channels: s.channels,
-            sample_rate: s.sample_rate,
-        };
-        let _ = handle.play_raw(source.amplify(gain));
+        self.sound_ids(&id)
+            .iter()
+            .for_each(|id| self.play_sample(*id, gain));
     }
 
     pub fn play_synth(&self, freq: f32, duration_ms: u32) {
@@ -201,14 +220,70 @@ impl SampleBank {
         }
     }
 
+    fn sound_ids<'a>(&'a self, id: &'a u32) -> &'a [u32] {
+        self.layers
+            .get(id)
+            .map_or(std::slice::from_ref(id), Vec::as_slice)
+    }
+
+    fn play_sample(&self, id: u32, gain: f32) {
+        let Some(handle) = &self.handle else {
+            return;
+        };
+        let Some(source) = self.sample_with_gain(id, gain) else {
+            return;
+        };
+        if self.slices.contains_key(&id) {
+            if let Ok(sink) = Sink::try_new(handle) {
+                sink.append(source);
+                self.replace_slice(id, sink);
+            }
+        } else {
+            let _ = handle.play_raw(source);
+        }
+    }
+
+    fn sample_with_gain(&self, id: u32, gain: f32) -> Option<impl Source<Item = f32> + Send> {
+        self.samples
+            .get(&id)
+            .map(|sample| sample_source(sample, self.slices.get(&id)).amplify(gain))
+    }
+
+    fn replace_slice(&self, id: u32, sink: Sink) {
+        if let Some(previous) = self.playing_slices.borrow_mut().insert(id, sink) {
+            previous.stop();
+        }
+    }
+
     fn hit_sound(&self, keysound: Option<u32>, synth_mode: bool) -> HitSound {
         if synth_mode || self.samples.is_empty() {
             return HitSound::Synth;
         }
-        match keysound.filter(|id| self.samples.contains_key(id)) {
+        match keysound.filter(|id| {
+            self.sound_ids(id)
+                .iter()
+                .any(|id| self.samples.contains_key(id))
+        }) {
             Some(id) => HitSound::Sample(id),
             None => HitSound::Silent,
         }
+    }
+}
+
+fn sample_source(s: &DecodedSample, slice: Option<&crate::chart::SampleSlice>) -> SharedSamples {
+    let frame = |ms: f64| (ms / 1000.0 * s.sample_rate as f64).round() as usize;
+    let start_frame = slice.map_or(0, |slice| frame(slice.start_ms));
+    let end_frame = slice.and_then(|slice| slice.duration_ms.map(|d| frame(slice.start_ms + d)));
+    SharedSamples {
+        data: Arc::clone(&s.data),
+        pos: start_frame
+            .saturating_mul(s.channels as usize)
+            .min(s.data.len()),
+        end: end_frame.map_or(s.data.len(), |f| {
+            f.saturating_mul(s.channels as usize).min(s.data.len())
+        }),
+        channels: s.channels,
+        sample_rate: s.sample_rate,
     }
 }
 
@@ -355,6 +430,25 @@ mod tests {
     }
 
     #[test]
+    fn duration_leaves_time_for_empty_presses_after_invisible_notes() {
+        let bank = duration_bank();
+        let chart = crate::chart::Chart {
+            bgm: vec![crate::chart::BgmEvent {
+                time_ms: 0.0,
+                keysound: 1,
+            }],
+            invisible_notes: vec![crate::chart::InvisibleNote {
+                time_ms: 20000.0,
+                lane: 0,
+                keysound: 1,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(bank.chart_duration_ms(&chart, false), 22500.0);
+        assert_eq!(bank.chart_duration_ms(&chart, true), 22500.0);
+    }
+
+    #[test]
     fn duration_covers_earlier_samples_late_hits_and_long_note_judgments() {
         let mut bank = duration_bank();
         let mut chart = crate::chart::Chart {
@@ -468,6 +562,122 @@ mod tests {
             0.5 * 128.0 / 255.0
         );
         assert_eq!(playback_gain(&chart, VolumeTarget::Key, 6100.0), 0.5);
+    }
+
+    #[test]
+    fn layers_resolve_all_available_slices_even_if_one_is_missing() {
+        let (samples, _) = decode_all(&HashMap::from([
+            (1, PathBuf::from("tests/fixtures/tone.wav")),
+            (2, PathBuf::from("tests/fixtures/tone.wav")),
+        ]));
+        let bank = SampleBank {
+            samples,
+            ..SampleBank::silent()
+        }
+        .with_layers(&HashMap::from([(3, vec![0, 1, 2])]));
+        assert_eq!(bank.sound_ids(&3), &[0, 1, 2]);
+        assert_eq!(bank.hit_sound(Some(3), false), HitSound::Sample(3));
+        assert_eq!(bank.hit_sound(Some(3), true), HitSound::Synth);
+        assert_eq!(bank.sound_ids(&1), &[1]);
+    }
+
+    #[test]
+    fn layered_slices_apply_gain_and_preserve_slice_boundaries() {
+        let mut bank = SampleBank::silent()
+            .with_layers(&HashMap::from([(3, vec![1, 2])]))
+            .with_slices(&HashMap::from([(
+                1,
+                crate::chart::SampleSlice {
+                    start_ms: 1.0,
+                    duration_ms: Some(2.0),
+                },
+            )]));
+        [1, 2].into_iter().for_each(|id| {
+            bank.samples.insert(
+                id,
+                DecodedSample {
+                    channels: 1,
+                    sample_rate: 1000,
+                    data: Arc::new(vec![0.0, 0.4, 0.8, 1.0]),
+                },
+            );
+        });
+        let output: Vec<Vec<f32>> = bank
+            .sound_ids(&3)
+            .iter()
+            .map(|id| bank.sample_with_gain(*id, 0.5).unwrap().collect())
+            .collect();
+        assert_eq!(output, [vec![0.2, 0.4], vec![0.0, 0.2, 0.4, 0.5]]);
+        assert!(bank.sample_with_gain(99, 0.5).is_none());
+    }
+
+    #[test]
+    fn shared_slices_replace_playback_but_other_slices_keep_playing() {
+        let bank = SampleBank::silent();
+        let (first, mut first_output) = Sink::new_idle();
+        first.append(SamplesBuffer::new(1, 44100, vec![1.0; 1000]));
+        bank.replace_slice(1, first);
+        let (other, _other_output) = Sink::new_idle();
+        other.append(SamplesBuffer::new(1, 44100, vec![1.0; 1000]));
+        bank.replace_slice(2, other);
+        let (replacement, _replacement_output) = Sink::new_idle();
+        replacement.append(SamplesBuffer::new(1, 44100, vec![0.5; 1000]));
+        bank.replace_slice(1, replacement);
+        assert_eq!(first_output.next(), None);
+        let playing = bank.playing_slices.borrow();
+        assert_eq!(playing.len(), 2);
+        assert!(!playing[&1].empty());
+        assert!(!playing[&2].empty());
+    }
+
+    #[test]
+    fn slice_source_preserves_stereo_frames_and_clamps_to_audio_length() {
+        let sample = DecodedSample {
+            channels: 2,
+            sample_rate: 1000,
+            data: Arc::new((0..20).map(|n| n as f32).collect()),
+        };
+        let slice = crate::chart::SampleSlice {
+            start_ms: 2.0,
+            duration_ms: Some(3.0),
+        };
+        assert_eq!(
+            sample_source(&sample, Some(&slice)).collect::<Vec<_>>(),
+            (4..10).map(|n| n as f32).collect::<Vec<_>>()
+        );
+        let tail = crate::chart::SampleSlice {
+            start_ms: 8.0,
+            duration_ms: None,
+        };
+        assert_eq!(
+            sample_source(&sample, Some(&tail)).collect::<Vec<_>>(),
+            vec![16.0, 17.0, 18.0, 19.0]
+        );
+        let beyond = crate::chart::SampleSlice {
+            start_ms: 100.0,
+            duration_ms: Some(1.0),
+        };
+        assert_eq!(sample_source(&sample, Some(&beyond)).count(), 0);
+        let clipped = crate::chart::SampleSlice {
+            start_ms: 8.0,
+            duration_ms: Some(100.0),
+        };
+        assert_eq!(sample_source(&sample, Some(&clipped)).count(), 4);
+        assert_eq!(sample_source(&sample, None).count(), 20);
+    }
+
+    #[test]
+    fn bmson_fixture_decodes_shared_audio_for_all_slices() {
+        let chart =
+            crate::bmson::load(std::path::Path::new("tests/fixtures/minimal.bmson"), 0.0).unwrap();
+        let (samples, failures) = decode_all(&chart.wav_paths);
+        assert_eq!(failures, 0);
+        assert_eq!(samples.len(), 3);
+        assert!(Arc::ptr_eq(&samples[&0].data, &samples[&1].data));
+        let lengths: Vec<_> = (0..3)
+            .map(|id| sample_source(&samples[&id], chart.sample_slices.get(&id)).count())
+            .collect();
+        assert_eq!(lengths, [4000, 2000, 8000]);
     }
 
     #[test]
@@ -625,6 +835,7 @@ mod tests {
             let source = SharedSamples {
                 data: Arc::clone(&sample.data),
                 pos: 0,
+                end: usize::MAX,
                 channels: sample.channels,
                 sample_rate: sample.sample_rate,
             };
