@@ -30,7 +30,7 @@ pub fn play_chart(out: &mut Stdout, args: &Args, chart: chart::Chart) -> Result<
     let bank = if args.no_audio {
         audio::SampleBank::silent()
     } else {
-        audio::SampleBank::new(&chart.wav_paths)
+        audio::SampleBank::with_settings(&chart.wav_paths, &chart.sample_settings)
     };
     let mut game = game::Game::new(chart);
     execute!(out, terminal::Clear(terminal::ClearType::All))?;

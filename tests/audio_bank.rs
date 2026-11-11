@@ -149,3 +149,26 @@ fn run_in_audio_process() -> bool {
     assert!(output.status.success(), "{output:?}");
     true
 }
+
+#[test]
+fn extended_wav_loads_keysounds_with_extension_fallback_and_shared_paths() {
+    if run_in_audio_process() {
+        return;
+    }
+    let dir = tempdir();
+    std::fs::write(dir.join("sound file.wav"), silent_wav_bytes(128)).unwrap();
+    let path = dir.join("chart.bms");
+    std::fs::write(
+        &path,
+        "#EXWAV01 p 10000 sound file.ogg\n#WAV02 sound file.wav\n#WAVCMD 01 01 50\n#00011:01\n",
+    )
+    .unwrap();
+    let chart = tapline::bms::load(&path, 0.0).unwrap();
+    assert_eq!(chart.notes[0].keysound, Some(1));
+    assert_eq!(chart.wav_paths[&1], chart.wav_paths[&2]);
+    let bank = SampleBank::with_settings(&chart.wav_paths, &chart.sample_settings);
+    assert_eq!(bank.sample_count(), 2);
+    assert_eq!(bank.decode_failures, 0);
+    bank.play_hit(0, chart.notes[0].keysound, false);
+    std::fs::remove_dir_all(dir).unwrap();
+}

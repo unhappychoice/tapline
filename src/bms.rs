@@ -159,6 +159,7 @@ fn build_chart(
         lane_count,
         keys: keys_for(lane_count),
         wav_paths,
+        sample_settings: pass.sample_settings,
     })
 }
 
@@ -715,6 +716,7 @@ struct HeaderPass {
     rank: Option<u8>,
     total: Option<f64>,
     vol_wav: Option<u8>,
+    sample_settings: HashMap<u32, crate::sample_settings::SampleSettings>,
     wav_defs: HashMap<u32, String>,
     bpm_defs: HashMap<u32, f64>,
     stop_defs: HashMap<u32, f64>,
@@ -740,6 +742,7 @@ impl Default for HeaderPass {
             rank: None,
             total: None,
             vol_wav: None,
+            sample_settings: HashMap::new(),
             wav_defs: HashMap::new(),
             bpm_defs: HashMap::new(),
             stop_defs: HashMap::new(),
@@ -751,6 +754,21 @@ impl Default for HeaderPass {
 }
 
 impl HeaderPass {
+    fn absorb_wavcmd(&mut self, value: &str) {
+        let parts: Vec<_> = value.split_whitespace().collect();
+        if let [command, id, value] = parts.as_slice() {
+            if let (Ok(id), Ok(value)) = (u32::from_str_radix(id, 36), value.parse::<u32>()) {
+                let settings = self.sample_settings.entry(id).or_default();
+                match *command {
+                    "00" if value <= 127 => settings.pitch = Some(value as u8),
+                    "01" => settings.volume = Some(value),
+                    "02" => settings.length = Some(value),
+                    _ => {}
+                }
+            }
+        }
+    }
+
     fn absorb(&mut self, line: &str) {
         let (cmd, val) = split_cmd_value(line);
         let up = cmd.to_ascii_uppercase();
@@ -799,6 +817,7 @@ impl HeaderPass {
                     }
                 }
             }
+            "WAVCMD" => self.absorb_wavcmd(val),
             "LNOBJ" => {
                 if let Ok(id) = u32::from_str_radix(val.trim(), 36) {
                     if id > 0 {
@@ -814,9 +833,25 @@ impl HeaderPass {
                 }
             }
             _ => {
-                if let Some(rest) = up.strip_prefix("WAV") {
+                if let Some(rest) = up.strip_prefix("EXWAV") {
+                    if let (Ok(id), Some((settings, path))) = (
+                        u32::from_str_radix(rest, 36),
+                        crate::sample_settings::SampleSettings::parse_exwav(val),
+                    ) {
+                        let current = self.sample_settings.entry(id).or_default();
+                        current.pan = settings.pan;
+                        current.attenuation = settings.attenuation;
+                        current.frequency = settings.frequency;
+                        self.wav_defs.insert(id, path.to_string());
+                    }
+                } else if let Some(rest) = up.strip_prefix("WAV") {
                     if let Ok(id) = u32::from_str_radix(rest, 36) {
                         self.wav_defs.insert(id, val.trim().to_string());
+                        if let Some(settings) = self.sample_settings.get_mut(&id) {
+                            settings.pan = 0;
+                            settings.attenuation = 0;
+                            settings.frequency = None;
+                        }
                     }
                 } else if let Some(rest) = up.strip_prefix("BPM") {
                     if !rest.is_empty() {
@@ -1078,6 +1113,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn extended_wav_parses_flags_in_order_and_keeps_filename_spaces() {
+        let mut pass = HeaderPass::default();
+        pass.absorb("exwav0E vFp -2000 22050 -10000 sound file.wav");
+        pass.absorb("WAVCMD 00 0E 72");
+        pass.absorb("WAVCMD 01 0E 50");
+        pass.absorb("WAVCMD 02 0E 200");
+        let settings = pass.sample_settings[&14].clone();
+        assert_eq!(pass.wav_defs[&14], "sound file.wav");
+        assert_eq!(settings.pan, -10000);
+        assert_eq!(settings.attenuation, -2000);
+        assert_eq!(settings.frequency, Some(22050));
+        assert_eq!(settings.pitch, Some(72));
+        assert_eq!(settings.volume, Some(50));
+        assert_eq!(settings.length, Some(200));
+        pass.absorb("EXWAV0E p 10001 invalid.wav");
+        pass.absorb("WAVCMD 00 0E 128");
+        assert_eq!(pass.sample_settings[&14], settings);
     }
 
     #[test]

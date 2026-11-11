@@ -72,6 +72,7 @@ pub struct Chart {
     pub duration_ms: f64,
     pub lane_count: usize,
     pub keys: Vec<Vec<char>>,
+    pub sample_settings: std::collections::HashMap<u32, crate::sample_settings::SampleSettings>,
     pub wav_paths: std::collections::HashMap<u32, PathBuf>,
 }
 
@@ -102,6 +103,7 @@ impl Default for Chart {
             duration_ms: 0.0,
             lane_count: 4,
             keys: keys_for(4),
+            sample_settings: Default::default(),
             wav_paths: std::collections::HashMap::new(),
         }
     }
