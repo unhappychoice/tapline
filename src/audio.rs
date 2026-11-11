@@ -1,6 +1,7 @@
 use rayon::prelude::*;
 use rodio::buffer::SamplesBuffer;
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Source};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -57,6 +58,8 @@ pub struct SampleBank {
     _stream: Option<OutputStream>,
     handle: Option<OutputStreamHandle>,
     samples: HashMap<u32, DecodedSample>,
+    layers: HashMap<u32, Vec<u32>>,
+    playing_slices: RefCell<HashMap<u32, Sink>>,
     slices: HashMap<u32, crate::chart::SampleSlice>,
     pub enabled: bool,
     /// Number of `wav_paths` entries that failed to decode. Surfaced on the
@@ -72,6 +75,8 @@ impl SampleBank {
         });
         let (samples, failures) = decode_all(wav_paths);
         Self {
+            layers: HashMap::new(),
+            playing_slices: RefCell::new(HashMap::new()),
             slices: HashMap::new(),
             _stream: stream,
             handle,
@@ -86,8 +91,15 @@ impl SampleBank {
         self
     }
 
+    pub fn with_layers(mut self, layers: &HashMap<u32, Vec<u32>>) -> Self {
+        self.layers = layers.clone();
+        self
+    }
+
     pub fn silent() -> Self {
         Self {
+            layers: HashMap::new(),
+            playing_slices: RefCell::new(HashMap::new()),
             slices: HashMap::new(),
             _stream: None,
             handle: None,
@@ -102,14 +114,9 @@ impl SampleBank {
     }
 
     pub fn play(&self, id: u32) {
-        let Some(handle) = &self.handle else {
-            return;
-        };
-        let Some(s) = self.samples.get(&id) else {
-            return;
-        };
-        let source = sample_source(s, self.slices.get(&id));
-        let _ = handle.play_raw(source);
+        self.sound_ids(&id)
+            .iter()
+            .for_each(|id| self.play_sample(*id));
     }
 
     pub fn play_synth(&self, freq: f32, duration_ms: u32) {
@@ -133,11 +140,45 @@ impl SampleBank {
         }
     }
 
+    fn sound_ids<'a>(&'a self, id: &'a u32) -> &'a [u32] {
+        self.layers
+            .get(id)
+            .map_or(std::slice::from_ref(id), Vec::as_slice)
+    }
+
+    fn play_sample(&self, id: u32) {
+        let Some(handle) = &self.handle else {
+            return;
+        };
+        let Some(s) = self.samples.get(&id) else {
+            return;
+        };
+        let source = sample_source(s, self.slices.get(&id));
+        if self.slices.contains_key(&id) {
+            if let Ok(sink) = Sink::try_new(handle) {
+                sink.append(source);
+                self.replace_slice(id, sink);
+            }
+        } else {
+            let _ = handle.play_raw(source);
+        }
+    }
+
+    fn replace_slice(&self, id: u32, sink: Sink) {
+        if let Some(previous) = self.playing_slices.borrow_mut().insert(id, sink) {
+            previous.stop();
+        }
+    }
+
     fn hit_sound(&self, keysound: Option<u32>, synth_mode: bool) -> HitSound {
         if synth_mode || self.samples.is_empty() {
             return HitSound::Synth;
         }
-        match keysound.filter(|id| self.samples.contains_key(id)) {
+        match keysound.filter(|id| {
+            self.sound_ids(id)
+                .iter()
+                .any(|id| self.samples.contains_key(id))
+        }) {
             Some(id) => HitSound::Sample(id),
             None => HitSound::Silent,
         }
@@ -258,6 +299,42 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layers_resolve_all_available_slices_even_if_one_is_missing() {
+        let (samples, _) = decode_all(&HashMap::from([
+            (1, PathBuf::from("tests/fixtures/tone.wav")),
+            (2, PathBuf::from("tests/fixtures/tone.wav")),
+        ]));
+        let bank = SampleBank {
+            samples,
+            ..SampleBank::silent()
+        }
+        .with_layers(&HashMap::from([(3, vec![0, 1, 2])]));
+        assert_eq!(bank.sound_ids(&3), &[0, 1, 2]);
+        assert_eq!(bank.hit_sound(Some(3), false), HitSound::Sample(3));
+        assert_eq!(bank.hit_sound(Some(3), true), HitSound::Synth);
+        assert_eq!(bank.sound_ids(&1), &[1]);
+    }
+
+    #[test]
+    fn shared_slices_replace_playback_but_other_slices_keep_playing() {
+        let bank = SampleBank::silent();
+        let (first, mut first_output) = Sink::new_idle();
+        first.append(SamplesBuffer::new(1, 44100, vec![1.0; 1000]));
+        bank.replace_slice(1, first);
+        let (other, _other_output) = Sink::new_idle();
+        other.append(SamplesBuffer::new(1, 44100, vec![1.0; 1000]));
+        bank.replace_slice(2, other);
+        let (replacement, _replacement_output) = Sink::new_idle();
+        replacement.append(SamplesBuffer::new(1, 44100, vec![0.5; 1000]));
+        bank.replace_slice(1, replacement);
+        assert_eq!(first_output.next(), None);
+        let playing = bank.playing_slices.borrow();
+        assert_eq!(playing.len(), 2);
+        assert!(!playing[&1].empty());
+        assert!(!playing[&2].empty());
+    }
 
     #[test]
     fn slice_source_preserves_stereo_frames_and_clamps_to_audio_length() {

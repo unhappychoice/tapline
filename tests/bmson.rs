@@ -130,7 +130,7 @@ fn resolution_defaults_and_double_play_mapping() {
                 2000.0
             }
         );
-        assert_eq!(c.bgm.len(), 1);
+        assert!(c.bgm.is_empty());
     }
 }
 
@@ -160,4 +160,71 @@ fn invalid_versions_timing_modes_and_paths_are_rejected() {
     cases
         .into_iter()
         .for_each(|data| assert!(load_value(data).is_err()));
+}
+
+#[test]
+fn layered_notes_are_judged_once_and_keep_all_channel_slices() {
+    let mut data = base();
+    data["sound_channels"] = json!([
+        {"name":"sound.wav","notes":[{"x":1,"y":0}, {"x":2,"y":0}]},
+        {"name":"sound.wav","notes":[{"x":1,"y":0}]},
+        {"name":"third.wav","notes":[{"x":1,"y":0}]}
+    ]);
+    let chart = load_value(data).unwrap();
+    assert_eq!(chart.notes.len(), 2);
+    let layered = chart.notes[0].keysound.unwrap();
+    assert_eq!(chart.sound_layers[&layered], [0, 1, 2]);
+    assert_eq!(chart.notes[1].keysound, Some(0));
+    let mut game = Game::new(chart);
+    game.hit(0, 1000.0);
+    game.hit(1, 1000.0);
+    game.check_misses(2000.0);
+    assert_eq!(game.perfect, 2);
+    assert_eq!(game.miss, 0);
+}
+
+#[test]
+fn shared_playable_slices_suppress_bgm_and_duplicate_bgm_plays_once() {
+    let mut data = base();
+    data["sound_channels"] = json!([
+        {"name":"sound.wav","notes":[
+            {"x":0,"y":0}, {"x":1,"y":0}, {"x":1,"y":0},
+            {"x":0,"y":240}, {"x":null,"y":240}]},
+        {"name":"other.wav","notes":[{"x":0,"y":0}]}
+    ]);
+    let chart = load_value(data).unwrap();
+    assert_eq!(chart.notes.len(), 1);
+    assert_eq!(chart.notes[0].keysound, Some(0));
+    assert!(chart.sound_layers.is_empty());
+    assert_eq!(
+        chart.bgm.iter().map(|e| e.keysound).collect::<Vec<_>>(),
+        [2, 1]
+    );
+}
+
+#[test]
+fn layered_long_notes_merge_and_unequal_lengths_are_rejected() {
+    for lengths in [[240, 240], [0, 240], [240, 480]] {
+        let mut data = base();
+        data["sound_channels"] = json!([
+            {"name":"first.wav","notes":[{"x":1,"y":0,"l":lengths[0]}]},
+            {"name":"second.wav","notes":[{"x":1,"y":0,"l":lengths[1]}]}
+        ]);
+        let result = load_value(data);
+        if lengths[0] != lengths[1] {
+            assert!(result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("unequal lengths"));
+        } else {
+            let chart = result.unwrap();
+            assert_eq!(chart.notes.len(), 1);
+            assert_eq!(chart.notes[0].end_ms, Some(1500.0));
+            assert_eq!(
+                chart.sound_layers[&chart.notes[0].keysound.unwrap()],
+                [0, 1]
+            );
+        }
+    }
 }

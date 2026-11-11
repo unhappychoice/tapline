@@ -1,3 +1,4 @@
+mod layers;
 mod model;
 mod timing;
 
@@ -54,6 +55,7 @@ pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
     for channel in &data.sound_channels {
         add_channel(&mut chart, channel, &timeline, dir, mode)?;
     }
+    layers::merge(&mut chart)?;
     for image in &data.bga.bga_header {
         chart
             .bmp_paths

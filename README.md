@@ -140,7 +140,10 @@ bmson 1.0.0 (UTF-8 JSON) charts can be selected or loaded with
 `tapline --file chart.bmson`. BPM changes, stops, long notes (`l`),
 background audio, and keysound slicing (`c`) are supported. Sound slices
 use elapsed chart time, including BPM changes and stops, and share decoded
-audio buffers. Missing audio extensions fall back to WAV / OGG / MP3.
+audio buffers. Notes at the same lane and pulse are judged once and play all
+layered keysounds. Shared slices have a polyphony of one, and background notes
+sharing a playable slice are discarded. Layered notes with unequal lengths are
+rejected. Missing audio extensions fall back to WAV / OGG / MP3.
 
 Supported layouts are `beat-5k`, `beat-7k`, `beat-14k`, `popn-5k`, and
 `generic-4keys` / `generic-5keys` / `generic-7keys` / `generic-14keys`.
