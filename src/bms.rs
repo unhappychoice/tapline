@@ -1,4 +1,4 @@
-use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, Mine, Note};
+use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, Mine, Note, TextEvent};
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -96,6 +96,7 @@ fn build_chart(
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true);
     let mut bga = collect_bga_events(&raw, &timeline);
+    let text_events = collect_text_events(&raw, &timeline, &pass.text_defs);
     let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
     let lane_count = playable_lane_count(&acc, &p2_acc);
     let p1_lane_count = acc.lanes.count();
@@ -154,6 +155,7 @@ fn build_chart(
         p2_mines,
         bgm,
         bga,
+        text_events,
         bmp_paths,
         duration_ms,
         lane_count,
@@ -374,6 +376,29 @@ fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
         "07" => Some(BgaLayer::Overlay),
         _ => None,
     }
+}
+
+fn collect_text_events(
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    defs: &HashMap<u32, String>,
+) -> Vec<TextEvent> {
+    let mut events: Vec<_> = raw
+        .iter()
+        .filter(|(_, ch, _)| ch == "99")
+        .flat_map(|(measure, _, data)| {
+            let slots = parse_slots(data);
+            let count = slots.len();
+            slots.into_iter().enumerate().filter_map(move |(i, id)| {
+                defs.get(&id).filter(|_| id != 0).map(|text| TextEvent {
+                    time_ms: timeline.time_at(*measure, i as f64 / count as f64),
+                    text: text.clone(),
+                })
+            })
+        })
+        .collect();
+    events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+    events
 }
 
 fn collect_bga_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec<BgaEvent> {
@@ -719,6 +744,7 @@ struct HeaderPass {
     bpm_defs: HashMap<u32, f64>,
     stop_defs: HashMap<u32, f64>,
     bmp_defs: HashMap<u32, String>,
+    text_defs: HashMap<u32, String>,
     lnobj: Option<u32>,
     lntype: u8,
 }
@@ -744,6 +770,7 @@ impl Default for HeaderPass {
             bpm_defs: HashMap::new(),
             stop_defs: HashMap::new(),
             bmp_defs: HashMap::new(),
+            text_defs: HashMap::new(),
             lnobj: None,
             lntype: 1,
         }
@@ -814,7 +841,14 @@ impl HeaderPass {
                 }
             }
             _ => {
-                if let Some(rest) = up.strip_prefix("WAV") {
+                if let Some(rest) = up.strip_prefix("TEXT").or_else(|| up.strip_prefix("SONG")) {
+                    if rest.len() == 2 {
+                        if let Ok(id) = u32::from_str_radix(rest, 36) {
+                            self.text_defs
+                                .insert(id, crate::terminal_text::sanitize(val));
+                        }
+                    }
+                } else if let Some(rest) = up.strip_prefix("WAV") {
                     if let Ok(id) = u32::from_str_radix(rest, 36) {
                         self.wav_defs.insert(id, val.trim().to_string());
                     }
@@ -1078,6 +1112,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn text_events_resolve_aliases_sanitize_and_follow_the_timeline() {
+        let dir = tempdir();
+        let path = dir.join("text.bms");
+        std::fs::write(&path, "#BPM 120\n#BPM01 240\n#STOP01 48\n#TEXT01 First\x1b[2J\x07\n#songZZ 日本語\n#TEXT02\n#00299:ZZ02\n#00199:000100XX\n#00102:0.5\n#00108:01\n#00109:01\n#TEXT00 Ignored\n#00099:00\n").unwrap();
+        let chart = load(&path, 500.0).unwrap();
+        let texts: Vec<_> = chart.text_events.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(texts, vec!["First[2J", "日本語", ""]);
+        let times: Vec<_> = chart.text_events.iter().map(|e| e.time_ms).collect();
+        assert_eq!(times, vec![2875.0, 3250.0, 3750.0]);
+        assert!(chart.duration_ms > times[2]);
+    }
+
+    #[test]
+    fn text_headers_require_two_base36_digits_and_last_definition_wins() {
+        let mut pass = HeaderPass::default();
+        [
+            "TEXT01 First",
+            "SONG01 Last",
+            "TEXT1 Short",
+            "TEXT001 Long",
+            "TEXT!! Invalid",
+        ]
+        .iter()
+        .for_each(|line| pass.absorb(line));
+        assert_eq!(pass.text_defs.len(), 1);
+        assert_eq!(pass.text_defs.get(&1).unwrap(), "Last");
     }
 
     #[test]

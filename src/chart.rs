@@ -47,6 +47,12 @@ pub struct BgaEvent {
     pub bmp_id: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct TextEvent {
+    pub time_ms: f64,
+    pub text: String,
+}
+
 pub struct Chart {
     pub title: String,
     pub subtitle: String,
@@ -68,6 +74,7 @@ pub struct Chart {
     pub p2_mines: Vec<Mine>,
     pub bgm: Vec<BgmEvent>,
     pub bga: Vec<BgaEvent>,
+    pub text_events: Vec<TextEvent>,
     pub bmp_paths: std::collections::HashMap<u32, PathBuf>,
     pub duration_ms: f64,
     pub lane_count: usize,
@@ -98,6 +105,7 @@ impl Default for Chart {
             p2_mines: Vec::new(),
             bgm: Vec::new(),
             bga: Vec::new(),
+            text_events: Vec::new(),
             bmp_paths: std::collections::HashMap::new(),
             duration_ms: 0.0,
             lane_count: 4,
