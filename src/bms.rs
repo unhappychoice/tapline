@@ -93,7 +93,12 @@ fn build_chart(
     lead_in_ms: f64,
 ) -> Result<Chart> {
     let wav_paths = resolve_wavs(&dir, &pass.wav_defs);
-    let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
+    let max_measure = raw
+        .iter()
+        .map(|(m, _, _)| *m)
+        .chain(pass.stp_events.iter().map(|event| event.measure))
+        .max()
+        .unwrap_or(0);
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true);
     let mut bga = collect_bga_events(&raw, &timeline);
     let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
@@ -168,9 +173,14 @@ fn collect_chart_sides(
     lead_in_ms: f64,
     collect_bgm: bool,
 ) -> (Timeline, ChartAcc, ChartAcc) {
-    let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
+    let max_measure = raw
+        .iter()
+        .map(|(m, _, _)| *m)
+        .chain(pass.stp_events.iter().map(|event| event.measure))
+        .max()
+        .unwrap_or(0);
     let scales = collect_measure_scales(raw);
-    let events = collect_timing_events(raw, &pass.bpm_defs, &pass.stop_defs);
+    let events = collect_timing_events(raw, &pass.bpm_defs, &pass.stop_defs, &pass.stp_events);
     let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
     let acc = accumulate_side(raw, &timeline, P1_LANES, collect_bgm);
     let p2_acc = accumulate_side(raw, &timeline, P2_LANES, false);
@@ -501,6 +511,7 @@ fn collect_measure_scales(raw: &[(u32, String, String)]) -> HashMap<u32, f64> {
 enum TimingEventKind {
     Bpm(f64),
     Stop(f64),
+    StopMs(f64),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -514,7 +525,7 @@ impl TimingEvent {
     fn sort_bucket(&self) -> u8 {
         match self.kind {
             TimingEventKind::Bpm(_) => 0,
-            TimingEventKind::Stop(_) => 1,
+            TimingEventKind::Stop(_) | TimingEventKind::StopMs(_) => 1,
         }
     }
 }
@@ -523,9 +534,10 @@ fn collect_timing_events(
     raw: &[(u32, String, String)],
     bpm_defs: &HashMap<u32, f64>,
     stop_defs: &HashMap<u32, f64>,
+    stp_events: &[TimingEvent],
 ) -> Vec<TimingEvent> {
     type TimingResolver<'a> = Box<dyn Fn(u32) -> Option<TimingEventKind> + 'a>;
-    let mut out: Vec<TimingEvent> = Vec::new();
+    let mut out = stp_events.to_vec();
     for (measure, ch, data) in raw {
         let (slots, resolve): (Vec<u32>, TimingResolver) = match ch.as_str() {
             "03" => (
@@ -574,9 +586,24 @@ fn collect_timing_events(
     out
 }
 
+fn parse_stp(value: &str) -> Option<TimingEvent> {
+    let mut fields = value.split_whitespace();
+    let (measure, position) = fields.next()?.split_once('.')?;
+    let valid_part = |part: &str| part.len() == 3 && part.bytes().all(|b| b.is_ascii_digit());
+    if !valid_part(measure) || !valid_part(position) {
+        return None;
+    }
+    let ms = fields.next()?.parse::<f64>().ok()?;
+    (fields.next().is_none() && ms.is_finite() && ms > 0.0).then_some(TimingEvent {
+        measure: measure.parse().ok()?,
+        frac: position.parse::<u32>().ok()? as f64 / 1000.0,
+        kind: TimingEventKind::StopMs(ms),
+    })
+}
+
 fn kind_is_positive(kind: &TimingEventKind) -> bool {
     match *kind {
-        TimingEventKind::Bpm(v) | TimingEventKind::Stop(v) => v > 0.0,
+        TimingEventKind::Bpm(v) | TimingEventKind::Stop(v) | TimingEventKind::StopMs(v) => v > 0.0,
     }
 }
 
@@ -656,8 +683,12 @@ impl Timeline {
                         }
                         current_bpm = new_bpm;
                     }
-                    TimingEventKind::Stop(ticks) => {
-                        let pause_ms = ticks / 48.0 * 60_000.0 / last.bpm;
+                    TimingEventKind::Stop(_) | TimingEventKind::StopMs(_) => {
+                        let pause_ms = match ev.kind {
+                            TimingEventKind::Stop(ticks) => ticks / 48.0 * 60_000.0 / last.bpm,
+                            TimingEventKind::StopMs(ms) => ms,
+                            TimingEventKind::Bpm(_) => unreachable!(),
+                        };
                         segments.push(Segment {
                             frac_start: frac,
                             ms_at_start: ms_here + pause_ms,
@@ -718,6 +749,7 @@ struct HeaderPass {
     wav_defs: HashMap<u32, String>,
     bpm_defs: HashMap<u32, f64>,
     stop_defs: HashMap<u32, f64>,
+    stp_events: Vec<TimingEvent>,
     bmp_defs: HashMap<u32, String>,
     lnobj: Option<u32>,
     lntype: u8,
@@ -743,6 +775,7 @@ impl Default for HeaderPass {
             wav_defs: HashMap::new(),
             bpm_defs: HashMap::new(),
             stop_defs: HashMap::new(),
+            stp_events: Vec::new(),
             bmp_defs: HashMap::new(),
             lnobj: None,
             lntype: 1,
@@ -755,6 +788,7 @@ impl HeaderPass {
         let (cmd, val) = split_cmd_value(line);
         let up = cmd.to_ascii_uppercase();
         match up.as_str() {
+            "STP" => self.stp_events.extend(parse_stp(val)),
             "TITLE" => self.title = val.to_string(),
             "SUBTITLE" => self.subtitle = val.to_string(),
             "ARTIST" => self.artist = val.to_string(),
@@ -1343,7 +1377,7 @@ mod tests {
         ];
         let bpm_defs: HashMap<u32, f64> = [(1u32, 175.5)].into();
         let stop_defs: HashMap<u32, f64> = [(1u32, 96.0)].into();
-        let evs = collect_timing_events(&raw, &bpm_defs, &stop_defs);
+        let evs = collect_timing_events(&raw, &bpm_defs, &stop_defs, &[]);
         assert_eq!(evs.len(), 3);
         assert!(matches!(evs[0].kind, TimingEventKind::Bpm(v) if (v - 120.0).abs() < 1e-6));
         assert!(matches!(evs[1].kind, TimingEventKind::Bpm(v) if (v - 175.5).abs() < 1e-6));
@@ -1357,7 +1391,7 @@ mod tests {
             (2u32, "09".to_string(), "0099".to_string()),
         ];
         let empty: HashMap<u32, f64> = HashMap::new();
-        assert!(collect_timing_events(&raw, &empty, &empty).is_empty());
+        assert!(collect_timing_events(&raw, &empty, &empty, &[]).is_empty());
     }
 
     #[test]
@@ -1783,6 +1817,69 @@ mod tests {
         assert_eq!(chart.notes.len(), 1);
         // No stop would put the note at 4000ms; with a 1000ms stop it lands at 5000ms.
         assert!((chart.notes[0].time_ms - 5000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn load_applies_stp_at_mid_measure() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "#BPM 120\n#STP 002.500 1000\n#00211:01010101\n#00311:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 250.0).unwrap();
+        let times: Vec<_> = chart.notes.iter().map(|note| note.time_ms).collect();
+        assert_eq!(times, vec![4250.0, 4750.0, 6250.0, 6750.0, 7250.0]);
+    }
+
+    #[test]
+    fn stp_combines_with_bpm_changes_and_tick_stops() {
+        let mut pass = HeaderPass::default();
+        pass.absorb("BPM 120");
+        pass.absorb("STOP01 48");
+        pass.absorb("stp 002.500 1000");
+        pass.absorb("STP 002.500 250");
+        let raw = vec![
+            (2, "03".into(), "00F0".into()),
+            (2, "09".into(), "0001".into()),
+        ];
+        let (timeline, _, _) = collect_chart_sides(&raw, &pass, 0.0, false);
+        assert_eq!(timeline.time_at(2, 0.25), 4500.0);
+        assert_eq!(timeline.time_at(2, 0.5), 6500.0);
+        assert_eq!(timeline.time_at(3, 0.0), 7000.0);
+    }
+
+    #[test]
+    fn load_includes_stp_after_last_note_in_duration() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(&path, "#BPM 120\n#00011:01\n#STP 002.500 1000\n").unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.duration_ms, 9500.0);
+    }
+
+    #[test]
+    fn stp_ignores_invalid_positions_and_durations() {
+        [
+            "",
+            "002.500",
+            "002.500 0",
+            "002.500 -1000",
+            "002.500 NaN",
+            "002.500 inf",
+            "002.500 1000 extra",
+            "002.1000 1000",
+            "002.abc 1000",
+            "-02.500 1000",
+            "002500 1000",
+        ]
+        .iter()
+        .for_each(|value| assert!(parse_stp(value).is_none(), "{value}"));
+        let event = parse_stp("002.000 12.5").unwrap();
+        assert_eq!(event.measure, 2);
+        assert_eq!(event.frac, 0.0);
+        assert!(matches!(event.kind, TimingEventKind::StopMs(12.5)));
     }
 
     #[test]
