@@ -182,7 +182,9 @@ fn overflowing_timing_is_rejected_before_creating_notes() {
         "#STOP01 inf\n#00109:01\n#00111:0101\n",
         "#STOP01 1e308\n#00109:01\n#00111:0101\n",
     ] {
-        assert!(bms::load(&write_text(text), 0.0).is_err(), "{text}");
+        let path = write_text(text);
+        assert!(bms::load(&path, 0.0).is_err(), "{text}");
+        assert!(bms::read_meta(&path).is_err(), "{text}");
     }
 }
 
