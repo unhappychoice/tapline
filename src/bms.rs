@@ -172,8 +172,8 @@ fn collect_chart_sides(
     let scales = collect_measure_scales(raw);
     let events = collect_timing_events(raw, &pass.bpm_defs, &pass.stop_defs);
     let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
-    let acc = accumulate_side(raw, &timeline, P1_LANES, collect_bgm);
-    let p2_acc = accumulate_side(raw, &timeline, P2_LANES, false);
+    let acc = accumulate_side(raw, &timeline, P1_LANES, collect_bgm, pass.lntype);
+    let p2_acc = accumulate_side(raw, &timeline, P2_LANES, false, pass.lntype);
     (timeline, acc, p2_acc)
 }
 
@@ -229,6 +229,7 @@ fn accumulate_side(
     timeline: &Timeline,
     lanes: LaneMap,
     collect_bgm: bool,
+    lntype: u8,
 ) -> ChartAcc {
     let mut acc = ChartAcc::default();
     for (measure, ch, data) in raw {
@@ -238,7 +239,11 @@ fn accumulate_side(
             push_bgm_slots(&mut acc, *measure, data, timeline);
         }
     }
-    materialize_long_notes_with(&mut acc, raw, timeline, lanes.long);
+    if lntype == 2 {
+        materialize_continuous_long_notes(&mut acc, raw, timeline, lanes.long);
+    } else {
+        materialize_long_notes_with(&mut acc, raw, timeline, lanes.long);
+    }
     materialize_mines_with(&mut acc, raw, timeline, lanes.mine);
     acc
 }
@@ -330,6 +335,55 @@ fn materialize_long_notes_with(
                 hit: false,
                 keysound: Some(ks),
                 end_ms: Some(end_ms),
+                held_since: None,
+            });
+        }
+    }
+}
+
+fn materialize_continuous_long_notes(
+    acc: &mut ChartAcc,
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    lane_of: fn(&str) -> Option<usize>,
+) {
+    let mut per_lane: HashMap<usize, Vec<(f64, f64, u32)>> = HashMap::new();
+    for (measure, ch, data) in raw {
+        let Some(lane) = lane_of(ch) else {
+            continue;
+        };
+        let slots = parse_slots(data);
+        let n = slots.len() as f64;
+        per_lane.entry(lane).or_default().extend(
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| **slot != 0)
+                .map(|(i, slot)| {
+                    let start = *measure as f64 + i as f64 / n;
+                    let end = *measure as f64 + (i + 1) as f64 / n;
+                    (start, end, *slot)
+                }),
+        );
+    }
+    for (lane, mut spans) in per_lane {
+        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let mut merged: Vec<(f64, f64, u32)> = Vec::new();
+        for (start, end, keysound) in spans {
+            if let Some(previous) = merged.last_mut().filter(|span| start <= span.1) {
+                previous.1 = previous.1.max(end);
+            } else {
+                merged.push((start, end, keysound));
+            }
+        }
+        for (start, end, keysound) in merged {
+            acc.lanes.observe_lane(lane);
+            acc.notes.push(Note {
+                time_ms: timeline.time_at(start.floor() as u32, start.fract()),
+                lane,
+                hit: false,
+                keysound: Some(keysound),
+                end_ms: Some(timeline.time_at(end.floor() as u32, end.fract())),
                 held_since: None,
             });
         }

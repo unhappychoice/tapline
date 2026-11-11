@@ -203,3 +203,73 @@ fn wav_references_that_do_not_exist_are_dropped_from_wav_paths() {
     // Neither kick.wav nor snare.wav exists next to the .bms file.
     assert!(chart.wav_paths.is_empty());
 }
+
+#[test]
+fn lntype_two_merges_runs_and_preserves_the_first_keysound_on_both_sides() {
+    let path = write_text("#BPM 60\n#LNTYPE 2\n#00151:0102030000040000\n#00161:0102030000040000\n");
+    let chart = bms::load(&path, 0.0).unwrap();
+    for notes in [&chart.notes, &chart.p2_notes] {
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].time_ms, 4000.0);
+        assert_eq!(notes[0].end_ms, Some(5500.0));
+        assert_eq!(notes[0].keysound, Some(1));
+        assert_eq!(notes[1].time_ms, 6500.0);
+        assert_eq!(notes[1].end_ms, Some(7000.0));
+        assert_eq!(notes[1].keysound, Some(4));
+    }
+}
+
+#[test]
+fn lntype_two_merges_across_measures_with_different_resolutions_in_time_order() {
+    let path = write_text("#BPM 60\n#LNTYPE 2\n#00251:02020300\n#00151:0001\n#00351:04\n");
+    let chart = bms::load(&path, 250.0).unwrap();
+    assert_eq!(chart.notes.len(), 2);
+    assert_eq!(chart.notes[0].time_ms, 6250.0);
+    assert_eq!(chart.notes[0].end_ms, Some(11250.0));
+    assert_eq!(chart.notes[0].keysound, Some(1));
+    assert_eq!(chart.notes[1].time_ms, 12250.0);
+    assert_eq!(chart.notes[1].end_ms, Some(16250.0));
+}
+
+#[test]
+fn lntype_two_does_not_bridge_missing_measures_or_lanes() {
+    let path = write_text("#BPM 60\n#LNTYPE 2\n#00151:01\n#00351:02\n#00252:03\n#00451:\n");
+    let chart = bms::load(&path, 0.0).unwrap();
+    let spans: Vec<_> = chart
+        .notes
+        .iter()
+        .map(|n| (n.lane, n.time_ms, n.end_ms))
+        .collect();
+    assert_eq!(
+        spans,
+        vec![
+            (0, 4000.0, Some(8000.0)),
+            (1, 8000.0, Some(12000.0)),
+            (0, 12000.0, Some(16000.0))
+        ]
+    );
+}
+
+#[test]
+fn lntype_two_endpoints_follow_measure_scales_bpm_changes_and_stops() {
+    let path = write_text(
+        "#BPM 60\n#LNTYPE 2\n#BPM01 120\n#STOP01 48\n#00102:0.5\n#00108:00010000\n#00109:00000100\n#00151:01020300\n",
+    );
+    let chart = bms::load(&path, 0.0).unwrap();
+    assert_eq!(chart.notes.len(), 1);
+    assert_eq!(chart.notes[0].time_ms, 4000.0);
+    assert_eq!(chart.notes[0].end_ms, Some(5500.0));
+}
+
+#[test]
+fn default_and_explicit_lntype_one_keep_pairing_slots_and_ignore_unmatched_starts() {
+    for header in ["", "#LNTYPE 1\n"] {
+        let path = write_text(&format!("#BPM 60\n{header}#00151:010203040500\n"));
+        let chart = bms::load(&path, 0.0).unwrap();
+        assert_eq!(chart.notes.len(), 2);
+        assert_eq!(chart.notes[0].time_ms, 4000.0);
+        assert!((chart.notes[0].end_ms.unwrap() - (4000.0 + 4000.0 / 6.0)).abs() < 1e-6);
+        assert_eq!(chart.notes[1].end_ms, Some(6000.0));
+        assert_eq!(chart.notes[1].keysound, Some(3));
+    }
+}
