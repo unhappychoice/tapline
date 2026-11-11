@@ -109,7 +109,7 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, plus 14K double-play when both sides fill 7 lanes each |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
-| control flow  | `#RANDOM`, `#SETRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF` (nesting supported) |
+| control flow  | `#RANDOM`, `#SETRANDOM`, `#ENDRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF` (nesting supported) |
 
 ### Long notes and landmines
 
