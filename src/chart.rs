@@ -54,6 +54,12 @@ pub struct BgaEvent {
     pub bmp_id: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SampleSlice {
+    pub start_ms: f64,
+    pub duration_ms: Option<f64>,
+}
+
 pub struct Chart {
     pub title: String,
     pub subtitle: String,
@@ -81,6 +87,8 @@ pub struct Chart {
     pub duration_ms: f64,
     pub lane_count: usize,
     pub keys: Vec<Vec<char>>,
+    pub sound_layers: std::collections::HashMap<u32, Vec<u32>>,
+    pub sample_slices: std::collections::HashMap<u32, SampleSlice>,
     pub wav_paths: std::collections::HashMap<u32, PathBuf>,
 }
 
@@ -113,6 +121,8 @@ impl Default for Chart {
             duration_ms: 0.0,
             lane_count: 4,
             keys: keys_for(4),
+            sound_layers: std::collections::HashMap::new(),
+            sample_slices: std::collections::HashMap::new(),
             wav_paths: std::collections::HashMap::new(),
         }
     }
