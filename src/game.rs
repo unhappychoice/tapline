@@ -77,7 +77,7 @@ impl Game {
                 continue;
             }
             let dt = (n.time_ms - now_ms).abs();
-            if dt > WINDOW_GOOD {
+            if dt > WINDOW_GOOD * self.chart.judgment_scale(n.time_ms) {
                 continue;
             }
             if best.is_none_or(|(_, b)| dt < b) {
@@ -88,9 +88,10 @@ impl Game {
         if let Some((i, dt)) = best {
             let keysound = self.chart.notes[i].keysound;
             let is_ln = self.chart.notes[i].end_ms.is_some();
-            let j = if dt <= WINDOW_PERFECT {
+            let scale = self.chart.judgment_scale(self.chart.notes[i].time_ms);
+            let j = if dt <= WINDOW_PERFECT * scale {
                 Judgment::Perfect
-            } else if dt <= WINDOW_GREAT {
+            } else if dt <= WINDOW_GREAT * scale {
                 Judgment::Great
             } else {
                 Judgment::Good
@@ -141,11 +142,12 @@ impl Game {
             return;
         };
         let dt = (end_ms - now_ms).abs();
-        let j = if dt <= WINDOW_PERFECT {
+        let scale = self.chart.judgment_scale(end_ms);
+        let j = if dt <= WINDOW_PERFECT * scale {
             Judgment::Perfect
-        } else if dt <= WINDOW_GREAT {
+        } else if dt <= WINDOW_GREAT * scale {
             Judgment::Great
-        } else if dt <= WINDOW_GOOD {
+        } else if dt <= WINDOW_GOOD * scale {
             Judgment::Good
         } else {
             Judgment::Miss
@@ -161,7 +163,11 @@ impl Game {
             .notes
             .iter()
             .enumerate()
-            .filter(|(_, n)| !n.hit && n.held_since.is_none() && n.time_ms + MISS_AFTER < now_ms)
+            .filter(|(_, n)| {
+                !n.hit
+                    && n.held_since.is_none()
+                    && n.time_ms + MISS_AFTER * self.chart.judgment_scale(n.time_ms) < now_ms
+            })
             .map(|(i, _)| i)
             .collect();
         for i in missed {
@@ -180,7 +186,7 @@ impl Game {
                     return None;
                 }
                 let end = n.end_ms?;
-                (end + MISS_AFTER < now_ms).then_some(i)
+                (end + MISS_AFTER * self.chart.judgment_scale(end) < now_ms).then_some(i)
             })
             .collect();
         for i in auto {

@@ -1,4 +1,4 @@
-use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, Mine, Note};
+use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, ExRankEvent, Mine, Note};
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -96,6 +96,7 @@ fn build_chart(
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true);
     let mut bga = collect_bga_events(&raw, &timeline);
+    let exrank_events = collect_exrank_events(&raw, &timeline, &pass.exrank_defs);
     let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
     let lane_count = playable_lane_count(&acc, &p2_acc);
     let p1_lane_count = acc.lanes.count();
@@ -146,6 +147,9 @@ fn build_chart(
         playlevel: pass.playlevel,
         difficulty: pass.difficulty,
         rank: pass.rank,
+        def_exrank: pass.def_exrank,
+        exrank_defs: pass.exrank_defs,
+        exrank_events,
         total: pass.total,
         vol_wav: pass.vol_wav,
         notes,
@@ -365,6 +369,37 @@ fn materialize_mines_with(
             });
         }
     }
+}
+
+fn positive_percent(value: &str) -> Option<f64> {
+    value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite() && *v > 0.0)
+}
+
+fn collect_exrank_events(
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    defs: &HashMap<u32, f64>,
+) -> Vec<ExRankEvent> {
+    let mut events: Vec<_> = raw
+        .iter()
+        .filter(|(_, ch, _)| ch == "A0")
+        .flat_map(|(measure, _, data)| {
+            let slots = parse_slots(data);
+            let count = slots.len();
+            slots.into_iter().enumerate().filter_map(move |(i, id)| {
+                defs.get(&id).map(|percent| ExRankEvent {
+                    time_ms: timeline.time_at(*measure, i as f64 / count as f64),
+                    percent: *percent,
+                })
+            })
+        })
+        .collect();
+    events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+    events
 }
 
 fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
@@ -713,6 +748,8 @@ struct HeaderPass {
     playlevel: Option<u8>,
     difficulty: Option<u8>,
     rank: Option<u8>,
+    def_exrank: Option<f64>,
+    exrank_defs: HashMap<u32, f64>,
     total: Option<f64>,
     vol_wav: Option<u8>,
     wav_defs: HashMap<u32, String>,
@@ -738,6 +775,8 @@ impl Default for HeaderPass {
             playlevel: None,
             difficulty: None,
             rank: None,
+            def_exrank: None,
+            exrank_defs: HashMap::new(),
             total: None,
             vol_wav: None,
             wav_defs: HashMap::new(),
@@ -778,6 +817,11 @@ impl HeaderPass {
                     self.difficulty = Some(v);
                 }
             }
+            "DEFEXRANK" => {
+                if let Some(v) = positive_percent(val) {
+                    self.def_exrank = Some(v);
+                }
+            }
             "RANK" => {
                 if let Ok(v) = val.trim().parse::<u8>() {
                     if v <= 4 {
@@ -814,7 +858,17 @@ impl HeaderPass {
                 }
             }
             _ => {
-                if let Some(rest) = up.strip_prefix("WAV") {
+                if let Some(rest) = up.strip_prefix("EXRANK") {
+                    if rest.len() == 2 {
+                        if let (Ok(id), Some(v)) =
+                            (u32::from_str_radix(rest, 36), positive_percent(val))
+                        {
+                            if id > 0 {
+                                self.exrank_defs.insert(id, v);
+                            }
+                        }
+                    }
+                } else if let Some(rest) = up.strip_prefix("WAV") {
                     if let Ok(id) = u32::from_str_radix(rest, 36) {
                         self.wav_defs.insert(id, val.trim().to_string());
                     }

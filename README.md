@@ -104,8 +104,8 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
-| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
+| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#DEFEXRANK`, `#EXRANKxx`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
+| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `A0` (judgment-width change), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, plus 14K double-play when both sides fill 7 lanes each |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
@@ -142,6 +142,15 @@ The parsed `damage` value does not scale the penalty or subtract score.
 | GREAT   | ±90 ms   | 200         |
 | GOOD    | ±140 ms  | 100         |
 | MISS    | > 160 ms | 0           |
+
+The table shows NORMAL windows. `#RANK` values 0–4 scale these windows by
+1/3, 2/3, 1, 4/3, and 5/3 respectively; missing or invalid ranks use NORMAL.
+`#DEFEXRANK` overrides `#RANK` with a percentage of NORMAL (50 halves the
+windows). `#EXRANKxx` defines percentages selected by channel `A0`, effective
+from the event timestamp. Undefined objects and non-positive or non-finite
+percentages are ignored. Tap and long-note start windows use the note timestamp;
+release windows use the long-note end timestamp. Automatic MISS and held-note
+completion deadlines scale too; landmine windows remain fixed.
 
 Combo (up to +50) is added on top of every non-miss hit.
 

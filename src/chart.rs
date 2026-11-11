@@ -47,6 +47,12 @@ pub struct BgaEvent {
     pub bmp_id: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ExRankEvent {
+    pub time_ms: f64,
+    pub percent: f64,
+}
+
 pub struct Chart {
     pub title: String,
     pub subtitle: String,
@@ -60,6 +66,9 @@ pub struct Chart {
     pub playlevel: Option<u8>,
     pub difficulty: Option<u8>,
     pub rank: Option<u8>,
+    pub def_exrank: Option<f64>,
+    pub exrank_defs: std::collections::HashMap<u32, f64>,
+    pub exrank_events: Vec<ExRankEvent>,
     pub total: Option<f64>,
     pub vol_wav: Option<u8>,
     pub notes: Vec<Note>,
@@ -73,6 +82,21 @@ pub struct Chart {
     pub lane_count: usize,
     pub keys: Vec<Vec<char>>,
     pub wav_paths: std::collections::HashMap<u32, PathBuf>,
+}
+
+impl Chart {
+    pub fn judgment_scale(&self, time_ms: f64) -> f64 {
+        let index = self.exrank_events.partition_point(|e| e.time_ms <= time_ms);
+        if index > 0 {
+            return self.exrank_events[index - 1].percent / 100.0;
+        }
+        self.def_exrank
+            .map(|v| v / 100.0)
+            .unwrap_or_else(|| match self.rank {
+                Some(rank @ 0..=4) => (f64::from(rank) + 1.0) / 3.0,
+                _ => 1.0,
+            })
+    }
 }
 
 impl Default for Chart {
@@ -90,6 +114,9 @@ impl Default for Chart {
             playlevel: None,
             difficulty: None,
             rank: None,
+            def_exrank: None,
+            exrank_defs: std::collections::HashMap::new(),
+            exrank_events: Vec::new(),
             total: None,
             vol_wav: None,
             notes: Vec::new(),
