@@ -13,13 +13,7 @@ fn chart(headers: &str, channels: &str) -> tapline::chart::Chart {
 
 #[test]
 fn rank_scales_normal_windows_and_defaults_to_normal() {
-    for (rank, scale) in [
-        (0, 1.0 / 3.0),
-        (1, 2.0 / 3.0),
-        (2, 1.0),
-        (3, 4.0 / 3.0),
-        (4, 5.0 / 3.0),
-    ] {
+    for (rank, scale) in [(0, 0.5), (1, 0.75), (2, 1.0), (3, 1.25), (4, 1.5)] {
         let c = chart(&format!("#RANK {rank}"), "#00011:01");
         assert_eq!(c.judgment_scale(500.0), scale);
         let mut game = Game::new(c);
@@ -94,4 +88,22 @@ fn a0_uses_bpm_stop_measure_length_and_lead_in_timing() {
     );
     assert_eq!(c.exrank_events[0].time_ms, 1250.0);
     assert_eq!(c.notes[0].time_ms, 1250.0);
+}
+
+#[test]
+fn a0_overrides_rank_only_from_the_event_time() {
+    let c = chart("#RANK 4\n#EXRANK01 50", "#00011:0101\n#000A0:0001");
+    assert_eq!(c.judgment_scale(1499.0), 1.5);
+    assert_eq!(c.judgment_scale(1500.0), 0.5);
+    let mut game = Game::new(c);
+    game.hit(0, 560.0);
+    game.hit(0, 1530.0);
+    assert_eq!((game.perfect, game.great), (1, 1));
+}
+
+#[test]
+fn narrowed_windows_preserve_invisible_keysounds_on_empty_presses() {
+    let mut game = Game::new(chart("#DEFEXRANK 50", "#00011:0101\n#00031:0002"));
+    assert_eq!(game.hit(0, 1600.0), Some(2));
+    assert_eq!(game.perfect + game.great + game.good + game.miss, 0);
 }
