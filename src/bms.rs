@@ -92,11 +92,12 @@ fn build_chart(
     dir: PathBuf,
     lead_in_ms: f64,
 ) -> Result<Chart> {
-    let wav_paths = resolve_wavs(&dir, &pass.wav_defs);
+    let assets = AssetIndex::new(&dir);
+    let wav_paths = resolve_wavs(&assets, &pass.wav_defs);
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true);
     let mut bga = collect_bga_events(&raw, &timeline);
-    let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
+    let bmp_paths = resolve_bmp_paths(&assets, &pass.bmp_defs);
     let lane_count = playable_lane_count(&acc, &p2_acc);
     let p1_lane_count = acc.lanes.count();
     let p2_lane_count = p2_acc.lanes.count();
@@ -402,24 +403,8 @@ fn collect_bga_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec
     out
 }
 
-fn resolve_bmp_paths(dir: &Path, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
-    defs.iter()
-        .filter_map(|(id, name)| {
-            let direct = dir.join(name);
-            if direct.exists() {
-                return Some((*id, direct));
-            }
-            let stem = Path::new(name)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(name);
-            ["png", "bmp", "jpg", "jpeg", "gif", "mp4", "webm"]
-                .iter()
-                .map(|ext| dir.join(format!("{stem}.{ext}")))
-                .find(|p| p.exists())
-                .map(|p| (*id, p))
-        })
-        .collect()
+fn resolve_bmp_paths(assets: &AssetIndex, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
+    assets.resolve(defs, &["png", "bmp", "jpg", "jpeg", "gif", "mp4", "webm"])
 }
 
 fn mine_channel_to_lane(ch: &str) -> Option<usize> {
@@ -1049,20 +1034,65 @@ fn channel_to_lane(ch: &str) -> Option<usize> {
     }
 }
 
-fn resolve_wavs(dir: &Path, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
-    defs.iter()
-        .filter_map(|(id, name)| {
-            let direct = dir.join(name);
-            if direct.exists() {
-                return Some((*id, direct));
+struct AssetIndex {
+    exact: HashMap<PathBuf, PathBuf>,
+    folded: HashMap<String, PathBuf>,
+}
+
+impl AssetIndex {
+    fn new(dir: &Path) -> Self {
+        let mut assets = Self {
+            exact: HashMap::new(),
+            folded: HashMap::new(),
+        };
+        assets.scan(dir, Path::new(""));
+        assets
+    }
+
+    fn resolve(&self, defs: &HashMap<u32, String>, extensions: &[&str]) -> HashMap<u32, PathBuf> {
+        defs.iter()
+            .filter_map(|(id, name)| {
+                let normalized = name.replace('\\', "/");
+                let path: PathBuf = Path::new(&normalized).components().collect();
+                self.find(&path)
+                    .or_else(|| {
+                        extensions
+                            .iter()
+                            .find_map(|ext| self.find(&path.with_extension(ext)))
+                    })
+                    .map(|path| (*id, path.clone()))
+            })
+            .collect()
+    }
+
+    fn find(&self, path: &Path) -> Option<&PathBuf> {
+        self.exact
+            .get(path)
+            .or_else(|| self.folded.get(&path.to_string_lossy().to_lowercase()))
+    }
+
+    fn scan(&mut self, dir: &Path, relative: &Path) {
+        let Ok(entries) = std::fs::read_dir(dir.join(relative)) else {
+            return;
+        };
+        let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = relative.join(entry.file_name());
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                self.scan(dir, &path);
+            } else if entry.path().is_file() {
+                self.folded
+                    .entry(path.to_string_lossy().to_lowercase())
+                    .or_insert_with(|| entry.path());
+                self.exact.insert(path, entry.path());
             }
-            ["wav", "ogg", "mp3", "flac"]
-                .iter()
-                .map(|ext| direct.with_extension(ext))
-                .find(|p| p.exists())
-                .map(|p| (*id, p))
-        })
-        .collect()
+        }
+    }
+}
+
+fn resolve_wavs(assets: &AssetIndex, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
+    assets.resolve(defs, &["wav", "ogg", "mp3", "flac"])
 }
 
 #[cfg(test)]
@@ -1554,7 +1584,7 @@ mod tests {
         let dir = tempdir();
         std::fs::write(dir.join("cover.jpg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "cover.png".to_string())].into();
-        let out = resolve_bmp_paths(&dir, &defs);
+        let out = resolve_bmp_paths(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("cover.jpg"));
     }
 
@@ -1947,11 +1977,84 @@ mod tests {
     }
 
     #[test]
+    fn load_resolves_windows_paths_and_case_insensitive_assets() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("sub/nested")).unwrap();
+        [
+            "sub/kick.wav",
+            "sub/nested/Snare.OGG",
+            "Cover.PNG",
+            "sub/Background.JPG",
+        ]
+        .iter()
+        .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        let chart_path = dir.join("chart.bms");
+        std::fs::write(
+            &chart_path,
+            "#BPM 120\n#WAV01 SUB\\KICK.WAV\n#WAV02 SUB\\NESTED\\SNARE.WAV\n\
+             #BMP01 cover.png\n#BMP02 SUB\\BACKGROUND.BMP\n#00111:0102\n",
+        )
+        .unwrap();
+        let chart = load(&chart_path, 0.0).unwrap();
+        assert_eq!(chart.wav_paths.get(&1), Some(&dir.join("sub/kick.wav")));
+        assert_eq!(
+            chart.wav_paths.get(&2),
+            Some(&dir.join("sub/nested/Snare.OGG"))
+        );
+        assert_eq!(chart.bmp_paths.get(&1), Some(&dir.join("Cover.PNG")));
+        assert_eq!(
+            chart.bmp_paths.get(&2),
+            Some(&dir.join("sub/Background.JPG"))
+        );
+    }
+
+    #[test]
+    fn resolve_assets_prefers_requested_extension_over_fallback() {
+        let dir = tempdir();
+        ["Kick.WAV", "kick.ogg", "Cover.BMP", "cover.png"]
+            .iter()
+            .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        let assets = AssetIndex::new(&dir);
+        let wavs = [(1, "kick.wav".to_string())].into();
+        let bmps = [(1, "cover.bmp".to_string())].into();
+        assert_eq!(
+            resolve_wavs(&assets, &wavs).get(&1),
+            Some(&dir.join("Kick.WAV"))
+        );
+        assert_eq!(
+            resolve_bmp_paths(&assets, &bmps).get(&1),
+            Some(&dir.join("Cover.BMP"))
+        );
+    }
+
+    #[test]
+    fn resolve_assets_prefers_exact_case_when_names_collide() {
+        let dir = tempdir();
+        std::fs::write(dir.join("Kick.wav"), b"").unwrap();
+        if dir.join("kick.wav").exists() {
+            return;
+        }
+        std::fs::write(dir.join("kick.wav"), b"").unwrap();
+        let defs = [(1, "kick.wav".to_string()), (2, "KICK.WAV".to_string())].into();
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
+        assert_eq!(out.get(&1), Some(&dir.join("kick.wav")));
+        assert_eq!(out.get(&2), Some(&dir.join("Kick.wav")));
+    }
+
+    #[test]
+    fn resolve_bmp_paths_does_not_fall_back_to_chart_directory() {
+        let dir = tempdir();
+        std::fs::write(dir.join("cover.jpg"), b"").unwrap();
+        let defs = [(1, "sub/cover.bmp".to_string())].into();
+        assert!(resolve_bmp_paths(&AssetIndex::new(&dir), &defs).is_empty());
+    }
+
+    #[test]
     fn resolve_wavs_returns_direct_match_when_file_exists() {
         let dir = tempdir();
         std::fs::write(dir.join("kick.wav"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("kick.wav"));
     }
 
@@ -1960,7 +2063,7 @@ mod tests {
         let dir = tempdir();
         std::fs::write(dir.join("kick.ogg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("kick.ogg"));
     }
 
@@ -1968,7 +2071,7 @@ mod tests {
     fn resolve_wavs_drops_entries_with_no_matching_file() {
         let dir = tempdir();
         let defs: HashMap<u32, String> = [(1u32, "missing.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert!(out.is_empty());
     }
 
@@ -1979,7 +2082,7 @@ mod tests {
         std::fs::write(dir.join("audio/kick.ogg"), b"").unwrap();
         std::fs::write(dir.join("kick.ogg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "audio/kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("audio/kick.ogg"));
     }
 
@@ -1988,7 +2091,7 @@ mod tests {
         let dir = tempdir();
         std::fs::write(dir.join("kick.ogg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "audio/kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert!(out.is_empty());
     }
 
