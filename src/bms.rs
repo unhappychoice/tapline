@@ -1,4 +1,7 @@
-use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, InvisibleNote, Mine, Note};
+use crate::chart::{
+    keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, InvisibleNote, Mine, Note, VolumeEvent,
+    VolumeTarget,
+};
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -143,11 +146,12 @@ fn build_chart(
     lead_in_ms: f64,
     pms: bool,
 ) -> Result<Chart> {
-    let wav_paths = resolve_wavs(&dir, &pass.wav_defs);
+    let assets = AssetIndex::new(&dir);
+    let wav_paths = resolve_wavs(&assets, &pass.wav_defs);
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true, pms);
     let mut bga = collect_bga_events(&raw, &timeline, pass.base);
-    let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
+    let bmp_paths = resolve_bmp_paths(&assets, &pass.bmp_defs);
     let lane_count = playable_lane_count(&acc, &p2_acc, pms);
     let p1_lane_count = if pms { 9 } else { acc.lanes.count() };
     let p2_lane_count = p2_acc.lanes.count();
@@ -209,6 +213,7 @@ fn build_chart(
         rank: pass.rank,
         total: pass.total,
         vol_wav: pass.vol_wav,
+        volume_events: collect_volume_events(&raw, &timeline),
         notes,
         mines,
         p2_notes,
@@ -222,6 +227,8 @@ fn build_chart(
         lane_count,
         keys: keys_for(lane_count),
         wav_paths,
+        sample_slices: HashMap::new(),
+        sound_layers: HashMap::new(),
     })
 }
 
@@ -237,11 +244,11 @@ fn collect_chart_sides(
     let events = collect_timing_events(raw, &pass.bpm_defs, &pass.stop_defs, pass.base);
     let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
     let lanes = if pms { PMS_LANES } else { P1_LANES };
-    let acc = accumulate_side(raw, &timeline, lanes, collect_bgm, pass.base);
+    let acc = accumulate_side(raw, &timeline, lanes, collect_bgm, pass.lntype, pass.base);
     let p2_acc = if pms {
         ChartAcc::default()
     } else {
-        accumulate_side(raw, &timeline, P2_LANES, false, pass.base)
+        accumulate_side(raw, &timeline, P2_LANES, false, pass.lntype, pass.base)
     };
     (timeline, acc, p2_acc)
 }
@@ -300,6 +307,7 @@ fn accumulate_side(
     timeline: &Timeline,
     lanes: LaneMap,
     collect_bgm: bool,
+    lntype: u8,
     base: u32,
 ) -> ChartAcc {
     let raw = merge_note_lines(raw, lanes, base);
@@ -326,7 +334,11 @@ fn accumulate_side(
             push_bgm_slots(&mut acc, *measure, data, timeline, base);
         }
     }
-    materialize_long_notes_with(&mut acc, raw, timeline, lanes.long, base);
+    if lntype == 2 {
+        materialize_continuous_long_notes(&mut acc, raw, timeline, lanes.long, base);
+    } else {
+        materialize_long_notes_with(&mut acc, raw, timeline, lanes.long, base);
+    }
     materialize_mines_with(&mut acc, raw, timeline, lanes.mine);
     acc
 }
@@ -463,6 +475,56 @@ fn materialize_long_notes_with(
     }
 }
 
+fn materialize_continuous_long_notes(
+    acc: &mut ChartAcc,
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    lane_of: fn(&str) -> Option<usize>,
+    base: u32,
+) {
+    let mut per_lane: HashMap<usize, Vec<(f64, f64, u32)>> = HashMap::new();
+    for (measure, ch, data) in raw {
+        let Some(lane) = lane_of(ch) else {
+            continue;
+        };
+        let slots = parse_slots(data, base);
+        let n = slots.len() as f64;
+        per_lane.entry(lane).or_default().extend(
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| **slot != 0)
+                .map(|(i, slot)| {
+                    let start = *measure as f64 + i as f64 / n;
+                    let end = *measure as f64 + (i + 1) as f64 / n;
+                    (start, end, *slot)
+                }),
+        );
+    }
+    for (lane, mut spans) in per_lane {
+        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let mut merged: Vec<(f64, f64, u32)> = Vec::new();
+        for (start, end, keysound) in spans {
+            if let Some(previous) = merged.last_mut().filter(|span| start <= span.1) {
+                previous.1 = previous.1.max(end);
+            } else {
+                merged.push((start, end, keysound));
+            }
+        }
+        for (start, end, keysound) in merged {
+            acc.lanes.observe_lane(lane);
+            acc.notes.push(Note {
+                time_ms: timeline.time_at(start.floor() as u32, start.fract()),
+                lane,
+                hit: false,
+                keysound: Some(keysound),
+                end_ms: Some(timeline.time_at(end.floor() as u32, end.fract())),
+                held_since: None,
+            });
+        }
+    }
+}
+
 fn materialize_mines_with(
     acc: &mut ChartAcc,
     raw: &[(u32, String, String)],
@@ -503,6 +565,31 @@ fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
     }
 }
 
+fn collect_volume_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec<VolumeEvent> {
+    let mut events = Vec::new();
+    for (measure, channel, data) in raw {
+        let target = match channel.as_str() {
+            "97" => VolumeTarget::Bgm,
+            "98" => VolumeTarget::Key,
+            _ => continue,
+        };
+        let slots = parse_slots_hex(data);
+        events.extend(
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| **v != 0)
+                .map(|(i, &volume)| VolumeEvent {
+                    time_ms: timeline.time_at(*measure, i as f64 / slots.len() as f64),
+                    target,
+                    volume: volume as u8,
+                }),
+        );
+    }
+    events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+    events
+}
+
 fn collect_bga_events(
     raw: &[(u32, String, String)],
     timeline: &Timeline,
@@ -533,24 +620,8 @@ fn collect_bga_events(
     out
 }
 
-fn resolve_bmp_paths(dir: &Path, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
-    defs.iter()
-        .filter_map(|(id, name)| {
-            let direct = dir.join(name);
-            if direct.exists() {
-                return Some((*id, direct));
-            }
-            let stem = Path::new(name)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(name);
-            ["png", "bmp", "jpg", "jpeg", "gif", "mp4", "webm"]
-                .iter()
-                .map(|ext| dir.join(format!("{stem}.{ext}")))
-                .find(|p| p.exists())
-                .map(|p| (*id, p))
-        })
-        .collect()
+fn resolve_bmp_paths(assets: &AssetIndex, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
+    assets.resolve(defs, &["png", "bmp", "jpg", "jpeg", "gif", "mp4", "webm"])
 }
 
 fn mine_channel_to_lane(ch: &str) -> Option<usize> {
@@ -1042,10 +1113,20 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
         matched_yet: bool,
         included: bool,
     }
+    #[derive(Default)]
+    struct SwitchLevel {
+        pick: Option<u32>,
+        included: bool,
+        skipped: bool,
+        default: bool,
+    }
+    let mut switch_stack: Vec<SwitchLevel> = Vec::new();
     let mut rng = seed.wrapping_add(0x9E3779B97F4A7C15);
     let mut random_stack: Vec<u32> = Vec::new();
     let mut if_stack: Vec<IfLevel> = Vec::new();
-    let is_active = |stack: &[IfLevel]| stack.iter().all(|l| l.included);
+    let is_active = |ifs: &[IfLevel], switches: &[SwitchLevel]| {
+        ifs.iter().all(|l| l.included) && switches.iter().all(|l| l.included)
+    };
     let mut out = String::with_capacity(text.len());
     for line in text.lines() {
         let trimmed = line.trim().trim_start_matches('\u{feff}');
@@ -1053,8 +1134,52 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
             let (head, rest) = split_first_word(body);
             let up = head.to_ascii_uppercase();
             match up.as_str() {
+                "SWITCH" | "SETSWITCH" => {
+                    let pick = rest.trim().parse::<u32>().ok().filter(|&n| n > 0);
+                    let pick = pick.filter(|_| is_active(&if_stack, &switch_stack));
+                    switch_stack.push(SwitchLevel {
+                        pick: pick.map(|n| {
+                            if up == "SWITCH" {
+                                xorshift_pick(&mut rng, n)
+                            } else {
+                                n
+                            }
+                        }),
+                        ..SwitchLevel::default()
+                    });
+                    continue;
+                }
+                "CASE" | "DEF" | "SKIP" => {
+                    if if_stack.iter().all(|l| l.included) {
+                        if let Some(top) = switch_stack.last_mut() {
+                            if !top.skipped && !top.default {
+                                match up.as_str() {
+                                    "CASE" => {
+                                        top.included |= top.pick.is_some_and(|p| {
+                                            rest.trim().parse::<u32>().ok() == Some(p)
+                                        });
+                                    }
+                                    "DEF" => {
+                                        top.included = top.pick.is_some();
+                                        top.default = true;
+                                    }
+                                    _ if top.included => {
+                                        top.included = false;
+                                        top.skipped = true;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+                "ENDSW" => {
+                    switch_stack.pop();
+                    continue;
+                }
                 "RANDOM" => {
-                    if is_active(&if_stack) {
+                    if is_active(&if_stack, &switch_stack) {
                         if let Ok(n) = rest.trim().parse::<u32>() {
                             if n > 0 {
                                 random_stack.push(xorshift_pick(&mut rng, n));
@@ -1064,7 +1189,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                     continue;
                 }
                 "SETRANDOM" => {
-                    if is_active(&if_stack) {
+                    if is_active(&if_stack, &switch_stack) {
                         if let Ok(n) = rest.trim().parse::<u32>() {
                             random_stack.push(n);
                         }
@@ -1072,7 +1197,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                     continue;
                 }
                 "ENDRANDOM" => {
-                    if is_active(&if_stack) {
+                    if is_active(&if_stack, &switch_stack) {
                         random_stack.pop();
                     }
                     continue;
@@ -1115,7 +1240,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                 _ => {}
             }
         }
-        if is_active(&if_stack) {
+        if is_active(&if_stack, &switch_stack) {
             out.push_str(line);
             out.push('\n');
         }
@@ -1230,20 +1355,68 @@ fn channel_to_lane(ch: &str) -> Option<usize> {
     }
 }
 
-fn resolve_wavs(dir: &Path, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
-    defs.iter()
-        .filter_map(|(id, name)| {
-            let direct = dir.join(name);
-            if direct.exists() {
-                return Some((*id, direct));
+struct AssetIndex {
+    exact: HashMap<PathBuf, PathBuf>,
+    folded: HashMap<String, PathBuf>,
+}
+
+impl AssetIndex {
+    fn new(dir: &Path) -> Self {
+        let mut assets = Self {
+            exact: HashMap::new(),
+            folded: HashMap::new(),
+        };
+        assets.scan(dir, Path::new(""));
+        assets
+    }
+
+    fn resolve(&self, defs: &HashMap<u32, String>, extensions: &[&str]) -> HashMap<u32, PathBuf> {
+        defs.iter()
+            .filter_map(|(id, name)| {
+                let normalized = name.replace('\\', "/");
+                let path: PathBuf = Path::new(&normalized)
+                    .components()
+                    .filter(|component| *component != std::path::Component::CurDir)
+                    .collect();
+                self.find(&path)
+                    .or_else(|| {
+                        extensions
+                            .iter()
+                            .find_map(|ext| self.find(&path.with_extension(ext)))
+                    })
+                    .map(|path| (*id, path.clone()))
+            })
+            .collect()
+    }
+
+    fn find(&self, path: &Path) -> Option<&PathBuf> {
+        self.exact
+            .get(path)
+            .or_else(|| self.folded.get(&path.to_string_lossy().to_lowercase()))
+    }
+
+    fn scan(&mut self, dir: &Path, relative: &Path) {
+        let Ok(entries) = std::fs::read_dir(dir.join(relative)) else {
+            return;
+        };
+        let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = relative.join(entry.file_name());
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                self.scan(dir, &path);
+            } else if entry.path().is_file() {
+                self.folded
+                    .entry(path.to_string_lossy().to_lowercase())
+                    .or_insert_with(|| entry.path());
+                self.exact.insert(path, entry.path());
             }
-            ["wav", "ogg", "mp3", "flac"]
-                .iter()
-                .map(|ext| direct.with_extension(ext))
-                .find(|p| p.exists())
-                .map(|p| (*id, p))
-        })
-        .collect()
+        }
+    }
+}
+
+fn resolve_wavs(assets: &AssetIndex, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
+    assets.resolve(defs, &["wav", "ogg", "mp3", "flac"])
 }
 
 #[cfg(test)]
@@ -1953,6 +2126,24 @@ mod tests {
     }
 
     #[test]
+    fn volume_events_use_hex_skip_rests_and_follow_the_timeline() {
+        let dir = tempdir();
+        let path = dir.join("volume.bms");
+        std::fs::write(&path, "#BPM 120\n#STOP01 192\n#00109:01\n#00103:003C\n#00102:0.5\n#00298:ff\n#00197:004000GG\n#00198:0080\n").unwrap();
+        let chart = load(&path, 100.0).unwrap();
+        assert_eq!(chart.volume_events.len(), 3);
+        let events = &chart.volume_events;
+        assert_eq!(events[0].target, VolumeTarget::Bgm);
+        assert_eq!(events[0].volume, 64);
+        assert_eq!(events[0].time_ms, 4350.0);
+        assert_eq!(events[1].target, VolumeTarget::Key);
+        assert_eq!(events[1].volume, 128);
+        assert_eq!(events[1].time_ms, 4600.0);
+        assert_eq!(events[2].volume, 255);
+        assert_eq!(events[2].time_ms, 5600.0);
+    }
+
+    #[test]
     fn load_records_bga_events_from_channels_04_06_07() {
         let dir = tempdir();
         let path = dir.join("song.bms");
@@ -1984,7 +2175,7 @@ mod tests {
         let dir = tempdir();
         std::fs::write(dir.join("cover.jpg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "cover.png".to_string())].into();
-        let out = resolve_bmp_paths(&dir, &defs);
+        let out = resolve_bmp_paths(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("cover.jpg"));
     }
 
@@ -2054,6 +2245,206 @@ mod tests {
 ";
         let out = resolve_control_flow(text, 0);
         assert!(out.contains("#TITLE Inner"));
+    }
+
+    #[test]
+    fn switch_selects_cases_with_skip_and_fallthrough() {
+        let branches = "\
+#CASE 1
+#00111:01
+#SKIP
+#CASE 2
+#00112:02
+#CASE 3
+#00113:03
+#SKIP
+#DEF
+#00114:04
+#ENDSW
+#TITLE After
+";
+        for (pick, expected) in [
+            (1, "#00111:01\n"),
+            (2, "#00112:02\n#00113:03\n"),
+            (3, "#00113:03\n"),
+            (4, "#00114:04\n"),
+        ] {
+            let text = format!("#SETSWITCH {pick}\n{branches}");
+            assert_eq!(
+                resolve_control_flow(&text, 0),
+                format!("{expected}#TITLE After\n")
+            );
+        }
+    }
+
+    #[test]
+    fn load_switch_keeps_only_selected_notes_and_metadata() {
+        let dir = tempdir();
+        let path = dir.join("switch.bms");
+        std::fs::write(
+            &path,
+            "\
+#BPM 120
+#SETSWITCH 2
+#CASE 1
+#TITLE Hidden
+#00111:01
+#SKIP
+#CASE 2
+#TITLE Chosen
+#00112:02
+#SKIP
+#DEF
+#TITLE Default
+#00113:03
+#ENDSW
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.notes.len(), 1);
+        assert_eq!(chart.notes[0].keysound, Some(2));
+        assert_eq!(read_meta(&path).unwrap().title, "Chosen");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn switch_falls_through_default_until_endsw() {
+        let text = "\
+#SETSWITCH 2
+#CASE 2
+#TITLE Chosen
+#DEF
+#ARTIST Default
+#SKIP
+#CASE 3
+#BPM 150
+#ENDSW
+";
+        assert_eq!(
+            resolve_control_flow(text, 0),
+            "#TITLE Chosen\n#ARTIST Default\n#BPM 150\n"
+        );
+    }
+
+    #[test]
+    fn switch_random_choice_is_deterministic_and_in_range() {
+        let text = "\
+#SWITCH 3
+#CASE 1
+#TITLE A
+#SKIP
+#CASE 2
+#TITLE B
+#SKIP
+#CASE 3
+#TITLE C
+#SKIP
+#DEF
+#TITLE Invalid
+#ENDSW
+";
+        for seed in 0..32 {
+            let out = resolve_control_flow(text, seed);
+            assert_eq!(out, resolve_control_flow(text, seed));
+            assert!(["#TITLE A\n", "#TITLE B\n", "#TITLE C\n"].contains(&out.as_str()));
+        }
+    }
+
+    #[test]
+    fn switches_nest_with_random_and_if_in_both_directions() {
+        let text = "\
+#RANDOM 1
+#IF 1
+#SETSWITCH 2
+#CASE 1
+#SETSWITCH 1
+#CASE 1
+#TITLE Hidden switch
+#ENDSW
+#SETRANDOM 9
+#CASE 2
+#IF 9
+#TITLE Hidden random
+#ELSE
+#TITLE Chosen
+#ENDIF
+#IF 9
+#SKIP
+#ENDIF
+#SETSWITCH 1
+#CASE 1
+#ARTIST Nested
+#SKIP
+#DEF
+#ARTIST Hidden default
+#ENDSW
+#BPM 150
+#SKIP
+#CASE 3
+#TITLE Hidden case
+#ENDSW
+#ELSE
+#SETSWITCH 1
+#CASE 1
+#TITLE Hidden if
+#ENDSW
+#ENDIF
+#TITLE After
+";
+        assert_eq!(
+            resolve_control_flow(text, 0),
+            "#TITLE Chosen\n#ARTIST Nested\n#BPM 150\n#TITLE After\n"
+        );
+    }
+
+    #[test]
+    fn switch_directives_are_case_insensitive_and_ignore_invalid_ranges() {
+        let text = "\
+#switch 0
+#case 1
+#TITLE Invalid
+#def
+#TITLE Invalid default
+#endsw
+#setswitch 1
+#case 1
+#TITLE Chosen
+#skip
+#def
+#TITLE Hidden
+#endsw
+";
+        assert_eq!(resolve_control_flow(text, 0), "#TITLE Chosen\n");
+    }
+
+    #[test]
+    fn switch_branches_preserve_and_restore_random_scopes() {
+        let text = "\
+#SETRANDOM 2
+#SETSWITCH 1
+#CASE 2
+#RANDOM 3
+#ENDRANDOM
+#CASE 1
+#RANDOM 1
+#IF 1
+Inner
+#ENDIF
+#ENDRANDOM
+#IF 2
+Outer
+#ENDIF
+#SKIP
+#CASE 3
+#ENDRANDOM
+#ENDSW
+#IF 2
+After
+#ENDIF
+#ENDRANDOM
+";
+        assert_eq!(resolve_control_flow(text, 0), "Inner\nOuter\nAfter\n");
     }
 
     #[test]
@@ -2499,11 +2890,138 @@ Always
     }
 
     #[test]
+    fn load_resolves_windows_paths_and_case_insensitive_assets() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("sub/nested")).unwrap();
+        [
+            "sub/kick.wav",
+            "sub/nested/Snare.OGG",
+            "Cover.PNG",
+            "sub/Background.JPG",
+        ]
+        .iter()
+        .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        let chart_path = dir.join("chart.bms");
+        std::fs::write(
+            &chart_path,
+            "#BPM 120\n#WAV01 SUB\\KICK.WAV\n#WAV02 SUB\\NESTED\\SNARE.WAV\n\
+             #BMP01 cover.png\n#BMP02 SUB\\BACKGROUND.BMP\n#00111:0102\n",
+        )
+        .unwrap();
+        let chart = load(&chart_path, 0.0).unwrap();
+        assert_eq!(chart.wav_paths.get(&1), Some(&dir.join("sub/kick.wav")));
+        assert_eq!(
+            chart.wav_paths.get(&2),
+            Some(&dir.join("sub/nested/Snare.OGG"))
+        );
+        assert_eq!(chart.bmp_paths.get(&1), Some(&dir.join("Cover.PNG")));
+        assert_eq!(
+            chart.bmp_paths.get(&2),
+            Some(&dir.join("sub/Background.JPG"))
+        );
+    }
+
+    #[test]
+    fn load_pms_resolves_windows_assets_and_preserves_ninth_lane() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("assets/Kick.OGG"), b"").unwrap();
+        std::fs::write(dir.join("assets/Cover.PNG"), b"").unwrap();
+        let path = dir.join("chart.pms");
+        std::fs::write(
+            &path,
+            "#BPM 120\n#WAV01 ASSETS\\KICK.WAV\n#BMP01 ASSETS\\COVER.BMP\n#00125:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.lane_count, 9);
+        assert_eq!(chart.notes.len(), 1);
+        assert_eq!(chart.notes[0].lane, 8);
+        assert_eq!(chart.notes[0].keysound, Some(1));
+        assert_eq!(chart.wav_paths.get(&1), Some(&dir.join("assets/Kick.OGG")));
+        assert_eq!(chart.bmp_paths.get(&1), Some(&dir.join("assets/Cover.PNG")));
+    }
+
+    #[test]
+    fn resolve_assets_normalizes_leading_current_directory_components() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        [
+            "kick.wav",
+            "Cover.PNG",
+            "sub/Snare.OGG",
+            "sub/Background.JPG",
+        ]
+        .iter()
+        .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        let assets = AssetIndex::new(&dir);
+        ["./", ".\\", "././", ".\\.\\"].iter().for_each(|prefix| {
+            let wavs = [
+                (1, format!("{prefix}kick.wav")),
+                (2, format!("{prefix}SUB\\SNARE.WAV")),
+            ]
+            .into();
+            let bmps = [
+                (1, format!("{prefix}cover.png")),
+                (2, format!("{prefix}SUB\\BACKGROUND.BMP")),
+            ]
+            .into();
+            let wav_paths = resolve_wavs(&assets, &wavs);
+            let bmp_paths = resolve_bmp_paths(&assets, &bmps);
+            assert_eq!(wav_paths.get(&1), Some(&dir.join("kick.wav")));
+            assert_eq!(wav_paths.get(&2), Some(&dir.join("sub/Snare.OGG")));
+            assert_eq!(bmp_paths.get(&1), Some(&dir.join("Cover.PNG")));
+            assert_eq!(bmp_paths.get(&2), Some(&dir.join("sub/Background.JPG")));
+        });
+    }
+
+    #[test]
+    fn resolve_assets_prefers_requested_extension_over_fallback() {
+        let dir = tempdir();
+        ["Kick.WAV", "kick.ogg", "Cover.BMP", "cover.png"]
+            .iter()
+            .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        let assets = AssetIndex::new(&dir);
+        let wavs = [(1, "kick.wav".to_string())].into();
+        let bmps = [(1, "cover.bmp".to_string())].into();
+        assert_eq!(
+            resolve_wavs(&assets, &wavs).get(&1),
+            Some(&dir.join("Kick.WAV"))
+        );
+        assert_eq!(
+            resolve_bmp_paths(&assets, &bmps).get(&1),
+            Some(&dir.join("Cover.BMP"))
+        );
+    }
+
+    #[test]
+    fn resolve_assets_prefers_exact_case_when_names_collide() {
+        let dir = tempdir();
+        std::fs::write(dir.join("Kick.wav"), b"").unwrap();
+        if dir.join("kick.wav").exists() {
+            return;
+        }
+        std::fs::write(dir.join("kick.wav"), b"").unwrap();
+        let defs = [(1, "kick.wav".to_string()), (2, "KICK.WAV".to_string())].into();
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
+        assert_eq!(out.get(&1), Some(&dir.join("kick.wav")));
+        assert_eq!(out.get(&2), Some(&dir.join("Kick.wav")));
+    }
+
+    #[test]
+    fn resolve_bmp_paths_does_not_fall_back_to_chart_directory() {
+        let dir = tempdir();
+        std::fs::write(dir.join("cover.jpg"), b"").unwrap();
+        let defs = [(1, "sub/cover.bmp".to_string())].into();
+        assert!(resolve_bmp_paths(&AssetIndex::new(&dir), &defs).is_empty());
+    }
+
+    #[test]
     fn resolve_wavs_returns_direct_match_when_file_exists() {
         let dir = tempdir();
         std::fs::write(dir.join("kick.wav"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("kick.wav"));
     }
 
@@ -2512,7 +3030,7 @@ Always
         let dir = tempdir();
         std::fs::write(dir.join("kick.ogg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("kick.ogg"));
     }
 
@@ -2520,7 +3038,7 @@ Always
     fn resolve_wavs_drops_entries_with_no_matching_file() {
         let dir = tempdir();
         let defs: HashMap<u32, String> = [(1u32, "missing.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert!(out.is_empty());
     }
 
@@ -2531,7 +3049,7 @@ Always
         std::fs::write(dir.join("audio/kick.ogg"), b"").unwrap();
         std::fs::write(dir.join("kick.ogg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "audio/kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("audio/kick.ogg"));
     }
 
@@ -2540,7 +3058,7 @@ Always
         let dir = tempdir();
         std::fs::write(dir.join("kick.ogg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "audio/kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert!(out.is_empty());
     }
 
