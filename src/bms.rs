@@ -40,7 +40,7 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
         bpm: pass.bpm,
         playlevel: pass.playlevel,
         difficulty: pass.difficulty,
-        lane_count: playable_lane_count(&acc, &p2_acc),
+        lane_count: playable_lane_count(&acc, &p2_acc, pass.player),
     })
 }
 
@@ -97,7 +97,7 @@ fn build_chart(
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true);
     let mut bga = collect_bga_events(&raw, &timeline);
     let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
-    let lane_count = playable_lane_count(&acc, &p2_acc);
+    let lane_count = playable_lane_count(&acc, &p2_acc, pass.player);
     let p1_lane_count = acc.lanes.count();
     let p2_lane_count = p2_acc.lanes.count();
     let mut notes = acc.notes;
@@ -113,16 +113,14 @@ fn build_chart(
     mines.retain(|n| n.lane < p1_lane_count);
     p2_notes.retain(|n| n.lane < p2_lane_count);
     p2_mines.retain(|n| n.lane < p2_lane_count);
-    // Fold canonical 14K double-play into the primary pool: P2 notes/mines
-    // shift into lanes 7..=13 and lane_count expands to 14. Non-canonical DP
-    // (e.g. 5K+5K) is left split — the runtime plays P1 only.
-    if lane_count == 14 {
+    // Place P2 immediately to the right of P1, independent of either side's width.
+    if lane_count > p1_lane_count {
         for mut n in p2_notes.drain(..) {
-            n.lane += 7;
+            n.lane += p1_lane_count;
             notes.push(n);
         }
         for mut m in p2_mines.drain(..) {
-            m.lane += 7;
+            m.lane += p1_lane_count;
             mines.push(m);
         }
     }
@@ -177,12 +175,9 @@ fn collect_chart_sides(
     (timeline, acc, p2_acc)
 }
 
-fn playable_lane_count(acc: &ChartAcc, p2_acc: &ChartAcc) -> usize {
-    if acc.lanes.count() == 7 && p2_acc.lanes.count() == 7 && !p2_acc.notes.is_empty() {
-        14
-    } else {
-        acc.lanes.count()
-    }
+fn playable_lane_count(acc: &ChartAcc, p2_acc: &ChartAcc, player: Option<u8>) -> usize {
+    let double_play = player == Some(3) || !p2_acc.lanes.0.is_empty();
+    acc.lanes.count() + if double_play { p2_acc.lanes.count() } else { 0 }
 }
 
 fn p2_channel_to_lane(ch: &str) -> Option<usize> {
@@ -721,6 +716,7 @@ struct HeaderPass {
     bmp_defs: HashMap<u32, String>,
     lnobj: Option<u32>,
     lntype: u8,
+    player: Option<u8>,
 }
 
 impl Default for HeaderPass {
@@ -746,6 +742,7 @@ impl Default for HeaderPass {
             bmp_defs: HashMap::new(),
             lnobj: None,
             lntype: 1,
+            player: None,
         }
     }
 }
@@ -755,6 +752,7 @@ impl HeaderPass {
         let (cmd, val) = split_cmd_value(line);
         let up = cmd.to_ascii_uppercase();
         match up.as_str() {
+            "PLAYER" => self.player = val.trim().parse().ok(),
             "TITLE" => self.title = val.to_string(),
             "SUBTITLE" => self.subtitle = val.to_string(),
             "ARTIST" => self.artist = val.to_string(),
@@ -1390,12 +1388,9 @@ mod tests {
     }
 
     #[test]
-    fn load_captures_p2_notes_mines_and_long_notes_into_the_p2_pools() {
+    fn load_merges_p2_notes_mines_and_long_notes() {
         let dir = tempdir();
         let path = dir.join("song.bms");
-        // Populate: a P1 note (11), a P2 note (21), a P2 LN pair (61), a P2
-        // mine (E9). The P1 side has to have at least one note or lane_count
-        // clamps everything down.
         std::fs::write(
             &path,
             "\
@@ -1409,13 +1404,16 @@ mod tests {
         )
         .unwrap();
         let chart = load(&path, 0.0).unwrap();
-        assert_eq!(chart.notes.len(), 1, "one visible P1 note");
-        // P2 side: one 21 note + one paired LN start on 61 = 2 notes.
-        assert_eq!(chart.p2_notes.len(), 2);
-        assert!(chart.p2_notes.iter().any(|n| n.end_ms.is_some()));
-        assert_eq!(chart.p2_mines.len(), 1);
-        assert_eq!(chart.p2_mines[0].lane, 0);
-        assert_eq!(chart.p2_mines[0].damage, 100);
+        assert_eq!(chart.lane_count, 8);
+        assert_eq!(chart.notes.len(), 3);
+        assert!(chart
+            .notes
+            .iter()
+            .any(|n| n.lane == 4 && n.end_ms.is_some()));
+        assert!(chart.p2_notes.is_empty());
+        assert!(chart.p2_mines.is_empty());
+        assert_eq!(chart.mines[0].lane, 4);
+        assert_eq!(chart.mines[0].damage, 100);
     }
 
     #[test]
@@ -1437,6 +1435,8 @@ mod tests {
 #00125:0100
 #00128:0100
 #00129:0100
+#00161:01000100
+#001E9:0064
 ",
         )
         .unwrap();
@@ -1453,6 +1453,61 @@ mod tests {
             "P2 lane 0 should live at merged lane 7"
         );
         assert!(chart.notes.iter().any(|n| n.lane == 13));
+        assert!(chart
+            .notes
+            .iter()
+            .any(|n| n.lane == 7 && n.end_ms.is_some()));
+        assert_eq!(chart.mines[0].lane, 13);
+        assert!(chart.p2_mines.is_empty());
+    }
+
+    #[test]
+    fn double_play_merges_both_sides_and_matches_metadata() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        let cases = [
+            ("", "#00115:01", "#00125:01", 5, 5),
+            ("#PLAYER 3", "#00115:01", "#00125:01", 5, 5),
+            ("", "#00119:01", "#00125:01", 7, 5),
+            ("", "#00115:01", "#00129:01", 5, 7),
+            ("#PLAYER 3", "#00115:01", "", 5, 5),
+        ];
+        for (header, p1, p2, left, right) in cases {
+            let text = format!("#BPM 120\n{header}\n#00111:01\n{p1}\n{p2}\n");
+            std::fs::write(&path, text).unwrap();
+            let chart = load(&path, 0.0).unwrap();
+            assert_eq!(chart.lane_count, left + right);
+            assert_eq!(read_meta(&path).unwrap().lane_count, chart.lane_count);
+            assert_eq!(chart.keys.len(), chart.lane_count);
+            assert!(chart.p2_notes.is_empty());
+            assert!(chart.p2_mines.is_empty());
+            if !p2.is_empty() {
+                assert!(chart.notes.iter().any(|n| n.lane == left + right - 1));
+            }
+        }
+    }
+
+    #[test]
+    fn ten_key_chart_makes_every_lane_playable() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        let channels = [11, 12, 13, 14, 15, 21, 22, 23, 24, 25];
+        let text = channels
+            .iter()
+            .map(|ch| format!("#001{ch}:01\n"))
+            .collect::<String>();
+        std::fs::write(&path, format!("#BPM 120\n{text}")).unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.lane_count, 10);
+        let mut lanes = chart.notes.iter().map(|n| n.lane).collect::<Vec<_>>();
+        lanes.sort_unstable();
+        assert_eq!(lanes, (0..10).collect::<Vec<_>>());
+        let mut game = crate::game::Game::new(chart);
+        for key in "sdfklzxcnm".chars() {
+            let lane = crate::runtime::lane_for_key(key, &game.chart.keys).unwrap();
+            game.hit(lane, 2000.0);
+        }
+        assert_eq!(game.combo, 10);
     }
 
     #[test]
@@ -1466,9 +1521,9 @@ mod tests {
             ("split long pair", "#00159:01\n#00259:01", 7),
             ("long note DP", "#00159:0101\n#00169:0101", 14),
             ("empty P2", "#00119:01\n#00129:00", 7),
-            ("asymmetric DP", "#00111:01\n#00129:01", 4),
+            ("asymmetric DP", "#00111:01\n#00129:01", 11),
             ("mine", "#00111:01\n#001D9:01", 7),
-            ("P2 mine only", "#00119:01\n#001E9:01", 7),
+            ("P2 mine only", "#00119:01\n#001E9:01", 14),
             ("invalid slot", "#00111:01\n#00119:!!", 4),
             (
                 "non-playable channels",
