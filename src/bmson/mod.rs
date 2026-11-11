@@ -91,6 +91,7 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
     let c = load(path, 0.0)?;
     Ok(ChartMeta {
         path: path.into(),
+        random_seed: 0,
         title: c.title,
         subtitle: c.subtitle,
         artist: c.artist,

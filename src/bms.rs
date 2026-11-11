@@ -1,4 +1,7 @@
-use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, InvisibleNote, Mine, Note};
+use crate::chart::{
+    keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, InvisibleNote, Mine, Note, VolumeEvent,
+    VolumeTarget,
+};
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -210,6 +213,7 @@ fn build_chart(
         rank: pass.rank,
         total: pass.total,
         vol_wav: pass.vol_wav,
+        volume_events: collect_volume_events(&raw, &timeline),
         notes,
         mines,
         p2_notes,
@@ -552,6 +556,31 @@ fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
         "07" => Some(BgaLayer::Overlay),
         _ => None,
     }
+}
+
+fn collect_volume_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec<VolumeEvent> {
+    let mut events = Vec::new();
+    for (measure, channel, data) in raw {
+        let target = match channel.as_str() {
+            "97" => VolumeTarget::Bgm,
+            "98" => VolumeTarget::Key,
+            _ => continue,
+        };
+        let slots = parse_slots_hex(data);
+        events.extend(
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| **v != 0)
+                .map(|(i, &volume)| VolumeEvent {
+                    time_ms: timeline.time_at(*measure, i as f64 / slots.len() as f64),
+                    target,
+                    volume: volume as u8,
+                }),
+        );
+    }
+    events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+    events
 }
 
 fn collect_bga_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec<BgaEvent> {
@@ -1878,6 +1907,24 @@ mod tests {
         p.absorb("BMPZZ  scene.mp4  ");
         assert_eq!(p.bmp_defs.get(&1).unwrap(), "cover.png");
         assert_eq!(p.bmp_defs.get(&1295).unwrap(), "scene.mp4");
+    }
+
+    #[test]
+    fn volume_events_use_hex_skip_rests_and_follow_the_timeline() {
+        let dir = tempdir();
+        let path = dir.join("volume.bms");
+        std::fs::write(&path, "#BPM 120\n#STOP01 192\n#00109:01\n#00103:003C\n#00102:0.5\n#00298:ff\n#00197:004000GG\n#00198:0080\n").unwrap();
+        let chart = load(&path, 100.0).unwrap();
+        assert_eq!(chart.volume_events.len(), 3);
+        let events = &chart.volume_events;
+        assert_eq!(events[0].target, VolumeTarget::Bgm);
+        assert_eq!(events[0].volume, 64);
+        assert_eq!(events[0].time_ms, 4350.0);
+        assert_eq!(events[1].target, VolumeTarget::Key);
+        assert_eq!(events[1].volume, 128);
+        assert_eq!(events[1].time_ms, 4600.0);
+        assert_eq!(events[2].volume, 255);
+        assert_eq!(events[2].time_ms, 5600.0);
     }
 
     #[test]
