@@ -138,6 +138,17 @@ pub fn keys_for(lane_count: usize) -> Vec<Vec<char>> {
     let raw: &[&[char]] = match lane_count {
         5 => &[&['S'], &['D'], &['F', 'J'], &['K'], &['L']],
         7 => &[&['S'], &['D'], &['F'], &[' '], &['J'], &['K'], &['L']],
+        9 => &[
+            &['A'],
+            &['S'],
+            &['D'],
+            &['F'],
+            &[' '],
+            &['J'],
+            &['K'],
+            &['L'],
+            &[';'],
+        ],
         // Double-play 14K: P1 hands on the home-row style layout,
         // P2 hands on the row below.
         14 => &[
@@ -269,6 +280,15 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_for_9k_binds_each_button_to_a_unique_key() {
+        let keys = keys_for(9);
+        assert_eq!(
+            keys,
+            "ASDF JKL;".chars().map(|key| vec![key]).collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn keys_for_4k_is_dj_max_outer_2_plus_2() {
