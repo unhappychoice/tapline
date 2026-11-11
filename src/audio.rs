@@ -85,6 +85,52 @@ impl SampleBank {
         }
     }
 
+    pub fn chart_duration_ms(&self, chart: &crate::chart::Chart, auto_ks: bool) -> f64 {
+        if !self.enabled {
+            return chart.duration_ms;
+        }
+        let notes = chart.notes.iter().map(|note| {
+            let delay = if auto_ks {
+                0.0
+            } else {
+                crate::game::WINDOW_GOOD
+            };
+            (note.time_ms + delay, note.keysound)
+        });
+        let bgm = chart
+            .bgm
+            .iter()
+            .map(|event| (event.time_ms, Some(event.keysound)));
+        let audio_end = notes
+            .chain(bgm)
+            .map(|(time, id)| {
+                id.and_then(|id| self.samples.get(&id))
+                    .map(|sample| {
+                        time + sample.data.len() as f64 * 1000.0
+                            / sample.channels as f64
+                            / sample.sample_rate as f64
+                            + 32.0
+                    })
+                    .unwrap_or(chart.duration_ms)
+            })
+            .reduce(f64::max);
+        let judgment_end = chart
+            .notes
+            .iter()
+            .map(|note| note.end_ms.unwrap_or(note.time_ms) + crate::game::MISS_AFTER)
+            .chain(
+                chart
+                    .mines
+                    .iter()
+                    .map(|mine| mine.time_ms + crate::game::MINE_WINDOW),
+            )
+            .fold(0.0, f64::max);
+        // Leave one frame after the strict miss boundary for judgment processing.
+        audio_end
+            .map(|end| end.max(judgment_end + 32.0))
+            .unwrap_or(chart.duration_ms)
+    }
+
     pub fn sample_count(&self) -> usize {
         self.samples.len()
     }
@@ -234,6 +280,122 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn duration_bank() -> SampleBank {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("tapline-duration-{}-{id}.wav", std::process::id()));
+        let mut wav = b"RIFF".to_vec();
+        let data_size = 8000u32 * 2 * 2 * 10;
+        wav.extend((36 + data_size).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(8000u32.to_le_bytes());
+        wav.extend(32000u32.to_le_bytes());
+        wav.extend(4u16.to_le_bytes());
+        wav.extend(16u16.to_le_bytes());
+        wav.extend(b"data");
+        wav.extend(data_size.to_le_bytes());
+        wav.resize(44 + data_size as usize, 0);
+        std::fs::write(&path, wav).unwrap();
+        let sample = decode(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        SampleBank {
+            enabled: true,
+            samples: HashMap::from([(1, sample)]),
+            ..SampleBank::silent()
+        }
+    }
+
+    #[test]
+    fn duration_waits_for_decoded_stereo_bgm_and_removes_empty_measures() {
+        let bank = duration_bank();
+        let path =
+            std::env::temp_dir().join(format!("tapline-duration-{}.bms", std::process::id()));
+        std::fs::write(&path, "#BPM 60\n#00101:01\n#02011:00\n").unwrap();
+        let mut chart = crate::bms::load(&path, 0.0).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(chart.duration_ms > 14032.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false), 14032.0);
+        chart.duration_ms = 60000.0;
+        assert_eq!(bank.chart_duration_ms(&chart, false), 14032.0);
+    }
+
+    #[test]
+    fn duration_covers_earlier_samples_late_hits_and_long_note_judgments() {
+        let mut bank = duration_bank();
+        let mut chart = crate::chart::Chart {
+            duration_ms: 30000.0,
+            notes: vec![crate::chart::Note {
+                time_ms: 4000.0,
+                keysound: Some(1),
+                ..Default::default()
+            }],
+            bgm: vec![crate::chart::BgmEvent {
+                time_ms: 0.0,
+                keysound: 1,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(bank.chart_duration_ms(&chart, false), 14172.0);
+        assert_eq!(bank.chart_duration_ms(&chart, true), 14032.0);
+        chart.notes[0].end_ms = Some(20000.0);
+        assert_eq!(bank.chart_duration_ms(&chart, true), 20192.0);
+        chart.mines.push(crate::chart::Mine {
+            time_ms: 25000.0,
+            ..Default::default()
+        });
+        assert_eq!(bank.chart_duration_ms(&chart, true), 25072.0);
+        chart.notes[0].time_ms = 0.0;
+        chart.notes[0].end_ms = None;
+        chart.mines.clear();
+        chart.bgm[0].time_ms = 1000.0;
+        assert_eq!(bank.chart_duration_ms(&chart, true), 11032.0);
+        bank.samples.insert(
+            2,
+            DecodedSample {
+                channels: 1,
+                sample_rate: 8000,
+                data: Arc::new(vec![0.0; 800]),
+            },
+        );
+        chart.notes[0].time_ms = 9000.0;
+        chart.notes[0].keysound = Some(2);
+        assert_eq!(bank.chart_duration_ms(&chart, true), 11032.0);
+    }
+
+    #[test]
+    fn duration_falls_back_for_disabled_missing_or_unused_samples() {
+        let mut bank = duration_bank();
+        let mut chart = crate::chart::Chart {
+            duration_ms: 30000.0,
+            ..Default::default()
+        };
+        assert_eq!(bank.chart_duration_ms(&chart, false), 30000.0);
+        chart.bgm.push(crate::chart::BgmEvent {
+            time_ms: 4000.0,
+            keysound: 1,
+        });
+        bank.enabled = false;
+        assert_eq!(bank.chart_duration_ms(&chart, false), 30000.0);
+        bank.enabled = true;
+        chart.bgm[0].keysound = 2;
+        assert_eq!(bank.chart_duration_ms(&chart, false), 30000.0);
+        chart.notes.push(crate::chart::Note {
+            time_ms: 4000.0,
+            keysound: Some(1),
+            ..Default::default()
+        });
+        assert_eq!(bank.chart_duration_ms(&chart, false), 30000.0);
+        chart.notes[0].keysound = None;
+        assert_eq!(bank.chart_duration_ms(&chart, false), 30000.0);
+        bank.samples.clear();
+        assert_eq!(bank.chart_duration_ms(&chart, false), 30000.0);
+    }
 
     #[test]
     fn hit_sound_selection_uses_decoded_samples_and_synth_override() {
