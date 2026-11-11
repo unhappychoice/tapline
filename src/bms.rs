@@ -230,6 +230,8 @@ fn accumulate_side(
     lanes: LaneMap,
     collect_bgm: bool,
 ) -> ChartAcc {
+    let raw = merge_note_lines(raw, lanes);
+    let raw = raw.as_slice();
     let mut acc = ChartAcc::default();
     for (measure, ch, data) in raw {
         if let Some(lane) = (lanes.normal)(ch) {
@@ -241,6 +243,37 @@ fn accumulate_side(
     materialize_long_notes_with(&mut acc, raw, timeline, lanes.long);
     materialize_mines_with(&mut acc, raw, timeline, lanes.mine);
     acc
+}
+
+fn merge_note_lines(raw: &[(u32, String, String)], lanes: LaneMap) -> Vec<(u32, String, String)> {
+    let mut seen = HashSet::new();
+    let mut merged = raw.to_vec();
+    for (measure, ch, data) in merged.iter_mut().rev() {
+        let slots = if (lanes.mine)(ch).is_some() {
+            parse_slots_hex(data)
+        } else if (lanes.normal)(ch).is_some() || (lanes.long)(ch).is_some() {
+            parse_slots(data)
+        } else {
+            continue;
+        };
+        let n = slots.len();
+        for (i, _) in slots.iter().enumerate().filter(|(_, slot)| **slot != 0) {
+            let divisor = greatest_common_divisor(i, n);
+            let position = (*measure, ch.clone(), i / divisor, n / divisor);
+            if !seen.insert(position) {
+                data.replace_range(i * 2..i * 2 + 2, "00");
+            }
+        }
+    }
+    merged
+}
+
+fn greatest_common_divisor(a: usize, b: usize) -> usize {
+    if b == 0 {
+        a
+    } else {
+        greatest_common_divisor(b, a % b)
+    }
 }
 
 fn push_normal_slots(
