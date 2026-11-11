@@ -956,7 +956,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
         included: bool,
     }
     let mut rng = seed.wrapping_add(0x9E3779B97F4A7C15);
-    let mut current_pick: Option<u32> = None;
+    let mut random_stack: Vec<u32> = Vec::new();
     let mut if_stack: Vec<IfLevel> = Vec::new();
     let is_active = |stack: &[IfLevel]| stack.iter().all(|l| l.included);
     let mut out = String::with_capacity(text.len());
@@ -970,7 +970,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                     if is_active(&if_stack) {
                         if let Ok(n) = rest.trim().parse::<u32>() {
                             if n > 0 {
-                                current_pick = Some(xorshift_pick(&mut rng, n));
+                                random_stack.push(xorshift_pick(&mut rng, n));
                             }
                         }
                     }
@@ -979,14 +979,21 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                 "SETRANDOM" => {
                     if is_active(&if_stack) {
                         if let Ok(n) = rest.trim().parse::<u32>() {
-                            current_pick = Some(n);
+                            random_stack.push(n);
                         }
                     }
                     continue;
                 }
+                "ENDRANDOM" => {
+                    if is_active(&if_stack) {
+                        random_stack.pop();
+                    }
+                    continue;
+                }
                 "IF" => {
-                    let ok =
-                        current_pick.is_some_and(|p| rest.trim().parse::<u32>().ok() == Some(p));
+                    let ok = random_stack
+                        .last()
+                        .is_some_and(|&p| rest.trim().parse::<u32>().ok() == Some(p));
                     if_stack.push(IfLevel {
                         matched_yet: ok,
                         included: ok,
@@ -998,8 +1005,9 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                         if top.matched_yet {
                             top.included = false;
                         } else {
-                            let ok = current_pick
-                                .is_some_and(|p| rest.trim().parse::<u32>().ok() == Some(p));
+                            let ok = random_stack
+                                .last()
+                                .is_some_and(|&p| rest.trim().parse::<u32>().ok() == Some(p));
                             top.included = ok;
                             top.matched_yet = ok;
                         }
@@ -1776,6 +1784,95 @@ mod tests {
 ";
         let out = resolve_control_flow(text, 0);
         assert!(out.contains("#TITLE Inner"));
+    }
+
+    #[test]
+    fn resolve_control_flow_restores_outer_random_after_nested_scope() {
+        let text = "\
+#RANDOM 2
+#IF 1
+#RANDOM 3
+#IF 1
+Inner
+#ELSEIF 2
+Inner
+#ELSE
+Inner
+#ENDIF
+#ENDRANDOM
+#ENDIF
+#IF 2
+Outer two
+#ELSEIF 1
+Outer one
+#ENDIF
+";
+        (0u64..64).for_each(|seed| {
+            let mut rng = seed.wrapping_add(0x9E3779B97F4A7C15);
+            let expected = match xorshift_pick(&mut rng, 2) {
+                1 => "Inner\nOuter one\n",
+                _ => "Outer two\n",
+            };
+            assert_eq!(resolve_control_flow(text, seed), expected, "seed {seed}");
+        });
+    }
+
+    #[test]
+    fn resolve_control_flow_ignores_random_scopes_in_skipped_branches() {
+        let text = "\
+#RANDOM 1
+#IF 2
+#RANDOM 3
+#SETRANDOM 2
+#ENDRANDOM
+#ENDRANDOM
+#ENDIF
+#IF 1
+Outer
+#ENDIF
+#ENDRANDOM
+";
+        assert_eq!(resolve_control_flow(text, 0), "Outer\n");
+    }
+
+    #[test]
+    fn resolve_control_flow_keeps_latest_pick_without_endrandom() {
+        let text = "\
+#RANDOM 1
+#IF 1
+#SETRANDOM 2
+#ENDIF
+#IF 2
+Latest
+#ENDIF
+#RANDOM 1
+#IF 1
+Next
+#ENDIF
+";
+        assert_eq!(resolve_control_flow(text, 0), "Latest\nNext\n");
+    }
+
+    #[test]
+    fn resolve_control_flow_endrandom_restores_setrandom_and_clears_last_pick() {
+        let text = "\
+#SETRANDOM 2
+#RANDOM 1
+#IF 1
+Inner
+#ENDIF
+#ENDRANDOM
+#IF 2
+Outer
+#ENDIF
+#ENDRANDOM
+#ENDRANDOM
+#IF 2
+Unexpected
+#ENDIF
+Always
+";
+        assert_eq!(resolve_control_flow(text, 0), "Inner\nOuter\nAlways\n");
     }
 
     #[test]

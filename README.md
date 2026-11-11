@@ -109,7 +109,7 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, 9K PMS (`.pms`: `11–15 + 22–25`), plus 14K double-play when both sides fill 7 lanes each |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
-| control flow  | `#RANDOM`, `#SETRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF` (nesting supported) |
+| control flow  | `#RANDOM`, `#SETRANDOM`, `#ENDRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF` (nesting supported) |
 
 PMS mode is selected by the `.pms` extension (case-insensitive) and always uses
 nine lanes. Long notes (`51–55 + 62–65`) and landmines (`D1–D5 + E2–E5`)
