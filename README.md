@@ -104,7 +104,7 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
+| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
 | channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, 9K PMS (`.pms`: `11–15 + 22–25`), plus 14K double-play when both sides fill 7 lanes each |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
