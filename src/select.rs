@@ -12,7 +12,7 @@ use std::io::{Stdout, Write};
 use std::path::Path;
 use std::time::Duration;
 
-const EXTS: [&str; 4] = ["bms", "bml", "bme", "pms"];
+const EXTS: [&str; 5] = ["bms", "bml", "bme", "pms", "bmson"];
 
 pub fn scan(root: &Path) -> Vec<ChartMeta> {
     let mut out = Vec::new();
@@ -39,7 +39,12 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<ChartMeta>) {
         if ty.map(|t| t.is_dir()).unwrap_or(false) {
             walk(&path, depth + 1, out);
         } else if is_bms(&path) {
-            if let Ok(meta) = bms::read_meta(&path) {
+            let meta = if crate::bmson::is_bmson(&path) {
+                crate::bmson::read_meta(&path)
+            } else {
+                bms::read_meta(&path)
+            };
+            if let Ok(meta) = meta {
                 out.push(meta);
             }
         }
