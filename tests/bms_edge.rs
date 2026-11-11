@@ -206,7 +206,7 @@ fn bpm_changes_and_stops_keep_all_event_times_finite() {
     let path = write_text(
         "#BPM 120\n#BPM01 240\n#STOP01 48\n#00108:0001\n#00109:0001\n\
          #00111:0101\n#00151:0101\n#00121:0101\n#00161:0101\n\
-         #001D1:0101\n#001E1:0101\n#00101:0101\n#00104:0101\n",
+         #001D1:0101\n#001E1:0101\n#00131:0101\n#00141:0101\n#00101:0101\n#00104:0101\n",
     );
     let chart = bms::load(&path, 500.0).unwrap();
     assert_eq!(chart.duration_ms, 6750.0);
@@ -220,6 +220,13 @@ fn bpm_changes_and_stops_keep_all_event_times_finite() {
         .iter()
         .chain(&chart.p2_mines)
         .all(|mine| mine.time_ms.is_finite()));
+    assert!(!chart.invisible_notes.is_empty());
+    assert!(!chart.p2_invisible_notes.is_empty());
+    assert!(chart
+        .invisible_notes
+        .iter()
+        .chain(&chart.p2_invisible_notes)
+        .all(|note| note.time_ms.is_finite()));
     assert!(chart.bgm.iter().all(|event| event.time_ms.is_finite()));
     assert!(chart.bga.iter().all(|event| event.time_ms.is_finite()));
 }
