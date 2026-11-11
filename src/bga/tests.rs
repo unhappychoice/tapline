@@ -113,7 +113,17 @@ fn preloaded_images_survive_deleted_files_and_bad_files_are_skipped() {
         (3, invalid.clone()),
     ]
     .into();
-    let bank = ImageBank::load(&paths);
+    let mut game = Game::new(Chart {
+        bmp_paths: paths,
+        notes: vec![Note {
+            time_ms: 1000.0,
+            keysound: Some(7),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    assert_eq!(game.hit(0, 0.0), Some(7));
+    let bank = game.bga;
     std::fs::remove_file(path).unwrap();
     std::fs::remove_file(invalid).unwrap();
     assert_eq!(bank.0.len(), 1);

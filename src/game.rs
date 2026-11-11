@@ -1,4 +1,4 @@
-use crate::chart::Chart;
+use crate::chart::{Chart, Note};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Judgment {
@@ -37,6 +37,8 @@ pub struct Game {
     pub good: u32,
     pub miss: u32,
     pub flash: FlashState,
+    lane_keysounds: Vec<Option<u32>>,
+    keysound_events: std::iter::Peekable<std::vec::IntoIter<Note>>,
 }
 
 pub const WINDOW_PERFECT: f64 = 45.0;
@@ -52,7 +54,17 @@ impl Game {
     pub fn new(chart: Chart) -> Self {
         let lane_count = chart.lane_count;
         let bga = crate::bga::ImageBank::load(&chart.bmp_paths);
+        let mut events = chart.notes.clone();
+        events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+        let mut lane_keysounds = vec![None; lane_count];
+        events.iter().rev().for_each(|note| {
+            if let Some(sound) = lane_keysounds.get_mut(note.lane) {
+                *sound = note.keysound;
+            }
+        });
         Self {
+            lane_keysounds,
+            keysound_events: events.into_iter().peekable(),
             chart,
             bga,
             score: 0,
@@ -75,6 +87,7 @@ impl Game {
         if lane >= self.flash.last_lane_hit.len() {
             return None;
         }
+        self.update_keysounds(now_ms);
         self.trigger_mines(lane, now_ms);
         let mut best: Option<(usize, f64)> = None;
         for (i, n) in self.chart.notes.iter().enumerate() {
@@ -108,7 +121,15 @@ impl Game {
             self.apply(j, now_ms);
             return keysound;
         }
-        None
+        self.lane_keysounds[lane]
+    }
+
+    fn update_keysounds(&mut self, now_ms: f64) {
+        while let Some(note) = self.keysound_events.next_if(|note| note.time_ms <= now_ms) {
+            if let Some(sound) = self.lane_keysounds.get_mut(note.lane) {
+                *sound = note.keysound;
+            }
+        }
     }
 
     fn trigger_mines(&mut self, lane: usize, now_ms: f64) {
@@ -161,6 +182,7 @@ impl Game {
     }
 
     pub fn check_misses(&mut self, now_ms: f64) {
+        self.update_keysounds(now_ms);
         let missed: Vec<usize> = self
             .chart
             .notes
@@ -253,6 +275,99 @@ mod tests {
         }
     }
 
+    fn sound_note(time_ms: f64, lane: usize, keysound: Option<u32>) -> Note {
+        Note {
+            keysound,
+            ..note(time_ms, lane)
+        }
+    }
+
+    #[test]
+    fn empty_presses_use_each_lanes_first_sound_without_changing_gameplay() {
+        let mut g = Game::new(chart_with(
+            vec![
+                sound_note(3000.0, 0, Some(3)),
+                note(1000.0, 0),
+                sound_note(2000.0, 1, Some(2)),
+            ],
+            4,
+        ));
+        assert_eq!(g.hit(0, 0.0), Some(1));
+        assert_eq!(g.hit(1, 0.0), Some(2));
+        assert_eq!(g.hit(2, 0.0), None);
+        assert_eq!((g.score, g.combo, g.max_combo), (0, 0, 0));
+        assert_eq!((g.perfect, g.great, g.good, g.miss), (0, 0, 0, 0));
+        assert_eq!(g.accuracy(), 100.0);
+        assert_eq!(g.flash.last_judgment, None);
+        assert!(g.chart.notes.iter().all(|n| !n.hit));
+    }
+
+    #[test]
+    fn empty_presses_use_latest_passed_sound_even_before_miss_window_expires() {
+        let mut g = Game::new(chart_with(
+            vec![
+                note(1000.0, 0),
+                sound_note(2000.0, 0, Some(2)),
+                sound_note(3000.0, 0, Some(3)),
+            ],
+            4,
+        ));
+        g.check_misses(2000.0);
+        assert_eq!(g.hit(0, 2145.0), Some(2));
+        assert_eq!(g.miss, 1);
+        assert!(!g.chart.notes[1].hit);
+        g.check_misses(3200.0);
+        assert_eq!(g.hit(0, 4000.0), Some(3));
+        assert_eq!(g.miss, 3);
+        assert_eq!(g.score, 0);
+    }
+
+    #[test]
+    fn empty_presses_after_hits_preserve_score_combo_and_judgment() {
+        let mut g = Game::new(chart_with(
+            vec![note(1000.0, 0), sound_note(2000.0, 0, Some(2))],
+            4,
+        ));
+        assert_eq!(g.hit(0, 1000.0), Some(1));
+        assert_eq!(g.hit(0, 1500.0), Some(1));
+        assert_eq!(g.hit(0, 2000.0), Some(2));
+        g.check_misses(2500.0);
+        assert_eq!(g.hit(0, 3000.0), Some(2));
+        assert_eq!((g.score, g.combo, g.max_combo), (603, 2, 2));
+        assert_eq!((g.perfect, g.great, g.good, g.miss), (2, 0, 0, 0));
+        assert_eq!(g.flash.last_judgment, Some(Judgment::Perfect));
+        assert_eq!(g.flash.last_judgment_at, 2000.0);
+    }
+
+    #[test]
+    fn passing_notes_updates_only_their_lane_and_can_clear_the_sound() {
+        let mut g = Game::new(chart_with(
+            vec![
+                note(1000.0, 0),
+                sound_note(2000.0, 0, Some(2)),
+                sound_note(1000.0, 1, Some(3)),
+                sound_note(3000.0, 0, None),
+            ],
+            4,
+        ));
+        assert_eq!(g.hit(0, 2500.0), Some(2));
+        assert_eq!(g.hit(1, 2500.0), Some(3));
+        assert_eq!(g.hit(0, 3500.0), None);
+        assert_eq!(g.hit(1, 3500.0), Some(3));
+    }
+
+    #[test]
+    fn early_hit_plays_target_sound_and_passage_updates_held_long_note_sound() {
+        let mut held = ln(2000.0, 4000.0, 0);
+        held.keysound = Some(2);
+        let mut g = Game::new(chart_with(vec![note(1000.0, 0), held], 4));
+        assert_eq!(g.hit(0, 1900.0), Some(2));
+        g.check_misses(2100.0);
+        assert_eq!(g.hit(0, 2500.0), Some(2));
+        assert!(g.chart.notes[1].held_since.is_some());
+        assert_eq!(g.good, 1);
+    }
+
     #[test]
     fn judgment_points_ladder() {
         assert_eq!(Judgment::Perfect.points(), 300);
@@ -302,10 +417,10 @@ mod tests {
     }
 
     #[test]
-    fn hit_outside_good_window_is_ignored() {
+    fn hit_outside_good_window_returns_keysound_without_judgment() {
         let mut g = Game::new(chart_with(vec![note(1000.0, 0)], 4));
         let ks = g.hit(0, 1000.0 + WINDOW_GOOD + 5.0);
-        assert!(ks.is_none());
+        assert_eq!(ks, Some(1));
         assert_eq!(g.perfect + g.great + g.good + g.miss, 0);
         assert_eq!(g.score, 0);
     }
@@ -332,7 +447,7 @@ mod tests {
         g.hit(0, 1000.0);
         assert_eq!(g.perfect, 1);
         let extra = g.hit(0, 1005.0);
-        assert!(extra.is_none());
+        assert_eq!(extra, Some(1));
         assert_eq!(g.perfect, 1);
     }
 
@@ -517,10 +632,7 @@ mod tests {
         let mut g = Game::new(chart_with(vec![ln(1000.0, 2000.0, 0)], 4));
         g.hit(0, 1000.0);
         let ks = g.hit(0, 1010.0);
-        assert!(
-            ks.is_none(),
-            "second press must not re-trigger the LN start"
-        );
+        assert_eq!(ks, Some(1), "second press replays the assigned keysound");
         assert_eq!(g.perfect, 1, "no second Perfect awarded");
     }
 
