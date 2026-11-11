@@ -151,3 +151,24 @@ fn invalid_chart_timing_is_rejected_before_terminal_setup() {
         });
     });
 }
+
+#[test]
+fn overflowing_built_in_timing_is_rejected_before_terminal_setup() {
+    [
+        vec!["--bpm=1e-320"],
+        vec!["--bpm=1e-303"],
+        vec!["--bpm=2e-302"],
+        vec!["--bpm=6e-302", "--countdown-ms=1.7e308"],
+    ]
+    .iter()
+    .for_each(|timing| {
+        let mut args = vec!["--built-in", "--no-audio"];
+        args.extend(timing);
+        let (code, stdout, stderr) = run_with(&args);
+        assert_eq!(code, 2, "expected CLI error for {timing:?}: {stderr}");
+        assert!(stdout.is_empty(), "terminal output: {stdout:?}");
+        assert!(stderr.contains("finite built-in chart timing"), "{stderr}");
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        assert!(!stderr.contains('\x1b'), "terminal escape: {stderr:?}");
+    });
+}

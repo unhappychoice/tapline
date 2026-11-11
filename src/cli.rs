@@ -52,6 +52,19 @@ pub struct Args {
     pub audio_lead_ms: f64,
 }
 
+impl Args {
+    pub fn validate(&self) -> Result<(), clap::Error> {
+        if built_in_duration(self.bpm, self.countdown_ms).is_finite() {
+            Ok(())
+        } else {
+            Err(clap::Error::raw(
+                clap::error::ErrorKind::ValueValidation,
+                "--bpm and --countdown-ms must produce finite built-in chart timing",
+            ))
+        }
+    }
+}
+
 pub enum ChartChoice {
     File(PathBuf),
     Cancelled,
@@ -88,11 +101,19 @@ pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::cha
 
 fn parse_bpm(value: &str) -> Result<f64, String> {
     let bpm = value.parse::<f64>().map_err(|err| err.to_string())?;
-    if bpm.is_finite() && bpm > 0.0 {
+    if bpm.is_finite() && bpm > 0.0 && built_in_duration(bpm, 0.0).is_finite() {
         Ok(bpm)
     } else {
-        Err("BPM must be finite and greater than zero".into())
+        Err(
+            "BPM must be finite and greater than zero, and produce finite built-in chart timing"
+                .into(),
+        )
     }
+}
+
+fn built_in_duration(bpm: f64, countdown_ms: f64) -> f64 {
+    let section = 16.0 * (60_000.0 / bpm);
+    (0..4).fold(countdown_ms, |time, _| time + section) + 2000.0
 }
 
 fn parse_countdown(value: &str) -> Result<f64, String> {
@@ -198,6 +219,24 @@ mod tests {
             assert_eq!(args.bpm, 0.5);
             assert_eq!(args.countdown_ms, countdown.parse::<f64>().unwrap());
         });
+    }
+
+    #[test]
+    fn finite_extreme_chart_timing_is_accepted() {
+        [("3e-302", "0"), ("120", "1.7e308")]
+            .iter()
+            .for_each(|(bpm, countdown)| {
+                let args = Args::try_parse_from([
+                    "tapline",
+                    &format!("--bpm={bpm}"),
+                    &format!("--countdown-ms={countdown}"),
+                ])
+                .unwrap();
+                args.validate().unwrap();
+                let chart = load_chart(&ChartChoice::BuiltIn, &args).unwrap().unwrap();
+                assert!(chart.duration_ms.is_finite());
+                assert!(chart.notes.iter().all(|note| note.time_ms.is_finite()));
+            });
     }
 
     fn base_args() -> Args {
