@@ -9,6 +9,7 @@ pub struct Gauge {
     pub kind: GaugeKind,
     value: f64,
     recovery: f64,
+    compensation: f64,
 }
 
 impl Gauge {
@@ -25,6 +26,7 @@ impl Gauge {
         Self {
             kind,
             value: 20.0,
+            compensation: 0.0,
             recovery: if count == 0 {
                 0.0
             } else {
@@ -41,7 +43,13 @@ impl Gauge {
                 Judgment::Miss => -6.0,
             },
         };
-        self.value = (self.value + delta).clamp(0.0, 100.0);
+        let adjusted = delta - self.compensation;
+        let next = self.value + adjusted;
+        self.compensation = (next - self.value) - adjusted;
+        self.value = next.clamp(0.0, 100.0);
+        if self.value != next {
+            self.compensation = 0.0;
+        }
     }
 
     pub fn value(&self) -> f64 {
@@ -117,6 +125,36 @@ mod tests {
         assert!(g.is_clear());
         g.apply(Judgment::Miss);
         assert_eq!(g.value(), 74.0);
+        assert!(!g.is_clear());
+    }
+
+    #[test]
+    fn fractional_recovery_clears_at_eighty() {
+        [Judgment::Perfect, Judgment::Great, Judgment::Good]
+            .into_iter()
+            .for_each(|judgment| {
+                let total = if judgment == Judgment::Good {
+                    120.0
+                } else {
+                    60.0
+                };
+                let mut g = gauge(Some(total), 100);
+                (0..99).for_each(|_| g.apply(judgment));
+                assert!(!g.is_clear());
+                g.apply(judgment);
+                assert_eq!(g.value(), 80.0);
+                assert!(g.is_clear());
+                g.apply(Judgment::Miss);
+                assert_eq!(g.value(), 74.0);
+                assert!(!g.is_clear());
+            });
+    }
+
+    #[test]
+    fn recovery_below_eighty_does_not_clear() {
+        let mut g = gauge(Some(59.99999999), 100);
+        (0..100).for_each(|_| g.apply(Judgment::Perfect));
+        assert!(g.value() < 80.0);
         assert!(!g.is_clear());
     }
 
