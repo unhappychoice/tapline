@@ -1,4 +1,4 @@
-use crate::chart::Chart;
+use crate::chart::{Chart, LnMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Judgment {
@@ -123,7 +123,7 @@ impl Game {
         }
     }
 
-    /// Release the LN currently held on `lane`, judging against its end_ms.
+    /// Release the long note currently held on `lane` using the chart mode.
     /// No-op if the lane isn't holding anything.
     pub fn release(&mut self, lane: usize, now_ms: f64) {
         if lane >= self.flash.last_lane_hit.len() {
@@ -141,7 +141,13 @@ impl Game {
             return;
         };
         let dt = (end_ms - now_ms).abs();
-        let j = if dt <= WINDOW_PERFECT {
+        let j = if self.chart.ln_mode == LnMode::Ln {
+            if now_ms >= end_ms {
+                Judgment::Perfect
+            } else {
+                Judgment::Miss
+            }
+        } else if dt <= WINDOW_PERFECT {
             Judgment::Perfect
         } else if dt <= WINDOW_GREAT {
             Judgment::Great
@@ -168,8 +174,7 @@ impl Game {
             self.chart.notes[i].hit = true;
             self.apply(Judgment::Miss, now_ms);
         }
-        // Long notes still held past their end + miss window → auto-release
-        // as Perfect (the player did hold long enough).
+        // LN completes at its end; CN/HCN retain the release-event grace window.
         let auto: Vec<usize> = self
             .chart
             .notes
@@ -180,7 +185,12 @@ impl Game {
                     return None;
                 }
                 let end = n.end_ms?;
-                (end + MISS_AFTER < now_ms).then_some(i)
+                (if self.chart.ln_mode == LnMode::Ln {
+                    end <= now_ms
+                } else {
+                    end + MISS_AFTER < now_ms
+                })
+                .then_some(i)
             })
             .collect();
         for i in auto {

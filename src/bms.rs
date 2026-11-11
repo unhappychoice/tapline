@@ -1,4 +1,4 @@
-use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, Mine, Note};
+use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, LnMode, Mine, Note};
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -148,6 +148,7 @@ fn build_chart(
         rank: pass.rank,
         total: pass.total,
         vol_wav: pass.vol_wav,
+        ln_mode: pass.ln_mode,
         notes,
         mines,
         p2_notes,
@@ -721,6 +722,7 @@ struct HeaderPass {
     bmp_defs: HashMap<u32, String>,
     lnobj: Option<u32>,
     lntype: u8,
+    ln_mode: LnMode,
 }
 
 impl Default for HeaderPass {
@@ -746,6 +748,7 @@ impl Default for HeaderPass {
             bmp_defs: HashMap::new(),
             lnobj: None,
             lntype: 1,
+            ln_mode: LnMode::default(),
         }
     }
 }
@@ -799,6 +802,12 @@ impl HeaderPass {
                     }
                 }
             }
+            "LNMODE" => match val.trim() {
+                "1" => self.ln_mode = LnMode::Ln,
+                "2" => self.ln_mode = LnMode::Cn,
+                "3" => self.ln_mode = LnMode::Hcn,
+                _ => {}
+            },
             "LNOBJ" => {
                 if let Ok(id) = u32::from_str_radix(val.trim(), 36) {
                     if id > 0 {

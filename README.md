@@ -104,7 +104,7 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
+| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE`, `#LNMODE` |
 | channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, plus 14K double-play when both sides fill 7 lanes each |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
@@ -113,12 +113,23 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 
 ### Long notes and landmines
 
-Long-note starts are judged like regular notes. On terminals that report key
+Long-note starts are judged like regular notes. `#LNMODE` selects the hold behavior:
+
+- `1` (LN): holding through the end automatically completes as PERFECT, without
+  judging release timing. Releasing before the end is a MISS.
+- `2` (CN): the release is judged against the end time as described below.
+- `3` (HCN): currently uses CN judgments. Continuous hold gauge gains/losses
+  are deferred until the gauge implementation (#44).
+
+Omitted or invalid `#LNMODE` defaults to CN to preserve existing behavior.
+Both long-note channels and `#LNOBJ` notes use this setting.
+
+For CN/HCN on terminals that report key
 release events, releasing a held long note is judged separately against its end:
 PERFECT within ±45 ms, GREAT within ±90 ms, GOOD within ±140 ms, and MISS
 outside ±140 ms. A release MISS resets the combo.
 
-If no release event arrives and the note remains held in the game, it
+For CN/HCN, if no release event arrives and the note remains held in the game, it
 automatically completes as PERFECT once the current time is more than 160 ms
 past its end. A long note whose start was never hit instead becomes a MISS
 more than 160 ms after its start.

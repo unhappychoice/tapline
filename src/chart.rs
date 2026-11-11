@@ -47,6 +47,14 @@ pub struct BgaEvent {
     pub bmp_id: u32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LnMode {
+    Ln,
+    #[default]
+    Cn,
+    Hcn,
+}
+
 pub struct Chart {
     pub title: String,
     pub subtitle: String,
@@ -62,6 +70,7 @@ pub struct Chart {
     pub rank: Option<u8>,
     pub total: Option<f64>,
     pub vol_wav: Option<u8>,
+    pub ln_mode: LnMode,
     pub notes: Vec<Note>,
     pub mines: Vec<Mine>,
     pub p2_notes: Vec<Note>,
@@ -92,6 +101,7 @@ impl Default for Chart {
             rank: None,
             total: None,
             vol_wav: None,
+            ln_mode: LnMode::default(),
             notes: Vec::new(),
             mines: Vec::new(),
             p2_notes: Vec::new(),
