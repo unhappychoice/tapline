@@ -15,12 +15,12 @@ pub struct Args {
     #[arg(short, long)]
     pub dir: Option<PathBuf>,
 
-    /// BPM for the built-in chart (ignored when a BMS chart is loaded).
-    #[arg(short, long, default_value_t = 120.0)]
+    /// Finite, positive BPM for the built-in chart (ignored when a BMS chart is loaded).
+    #[arg(short, long, default_value_t = 120.0, value_parser = parse_bpm)]
     pub bpm: f64,
 
-    /// Countdown before the song starts.
-    #[arg(long, default_value_t = 2000.0)]
+    /// Finite, non-negative countdown in milliseconds before the song starts.
+    #[arg(long, default_value_t = 2000.0, value_parser = parse_countdown)]
     pub countdown_ms: f64,
 
     /// Play the built-in chart, skipping the selector.
@@ -83,6 +83,24 @@ pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::cha
         ChartChoice::File(p) => Ok(Some(bms::load(p, args.countdown_ms)?)),
         ChartChoice::BuiltIn => Ok(Some(crate::chart::built_in(args.bpm, args.countdown_ms))),
         ChartChoice::Cancelled => Ok(None),
+    }
+}
+
+fn parse_bpm(value: &str) -> Result<f64, String> {
+    let bpm = value.parse::<f64>().map_err(|err| err.to_string())?;
+    if bpm.is_finite() && bpm > 0.0 {
+        Ok(bpm)
+    } else {
+        Err("BPM must be finite and greater than zero".into())
+    }
+}
+
+fn parse_countdown(value: &str) -> Result<f64, String> {
+    let countdown = value.parse::<f64>().map_err(|err| err.to_string())?;
+    if countdown.is_finite() && countdown >= 0.0 {
+        Ok(countdown)
+    } else {
+        Err("countdown must be finite and non-negative".into())
     }
 }
 
@@ -166,6 +184,20 @@ mod tests {
         assert_eq!(a.bpm, 180.0);
         assert_eq!(a.file.as_deref(), Some(Path::new("song.bms")));
         assert_eq!(a.dir.as_deref(), Some(Path::new("/x")));
+    }
+
+    #[test]
+    fn args_accept_positive_bpm_and_non_negative_countdown() {
+        ["0", "-0", "0.5", "2000"].iter().for_each(|countdown| {
+            let args = Args::try_parse_from([
+                "tapline",
+                "--bpm=0.5",
+                &format!("--countdown-ms={countdown}"),
+            ])
+            .unwrap();
+            assert_eq!(args.bpm, 0.5);
+            assert_eq!(args.countdown_ms, countdown.parse::<f64>().unwrap());
+        });
     }
 
     fn base_args() -> Args {

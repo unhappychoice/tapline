@@ -104,3 +104,50 @@ fn test_tone_flag_exits_cleanly_on_ci_without_audio_backend() {
         );
     }
 }
+
+#[test]
+fn invalid_chart_timing_is_rejected_before_terminal_setup() {
+    [
+        ("--bpm", "BPM must be finite and greater than zero", true),
+        (
+            "--countdown-ms",
+            "countdown must be finite and non-negative",
+            false,
+        ),
+    ]
+    .iter()
+    .for_each(|(flag, message, reject_zero)| {
+        [
+            "NaN", "inf", "+inf", "-inf", "infinity", "-1", "-0.5", "abc", "0", "-0",
+        ]
+        .iter()
+        .filter(|value| *reject_zero || !["0", "-0"].contains(value))
+        .for_each(|value| {
+            let argument = format!("{flag}={value}");
+            let (code, stdout, stderr) = run_with(&["--built-in", "--no-audio", &argument]);
+            assert_eq!(code, 2, "expected CLI error for {argument}: {stderr}");
+            assert!(
+                stdout.is_empty(),
+                "terminal output for {argument}: {stdout:?}"
+            );
+            assert!(
+                stderr.contains(flag),
+                "missing flag for {argument}: {stderr}"
+            );
+            if *value != "abc" {
+                assert!(
+                    stderr.contains(message),
+                    "missing constraint for {argument}: {stderr}"
+                );
+            }
+            assert!(
+                !stderr.contains("panicked"),
+                "panic for {argument}: {stderr}"
+            );
+            assert!(
+                !stderr.contains('\x1b'),
+                "terminal escape for {argument}: {stderr:?}"
+            );
+        });
+    });
+}
