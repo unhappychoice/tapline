@@ -1066,13 +1066,9 @@ fn resolve_wavs(dir: &Path, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf
             if direct.exists() {
                 return Some((*id, direct));
             }
-            let stem = Path::new(name)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(name);
             ["wav", "ogg", "mp3", "flac"]
                 .iter()
-                .map(|ext| dir.join(format!("{stem}.{ext}")))
+                .map(|ext| direct.with_extension(ext))
                 .find(|p| p.exists())
                 .map(|p| (*id, p))
         })
@@ -1982,6 +1978,26 @@ mod tests {
     fn resolve_wavs_drops_entries_with_no_matching_file() {
         let dir = tempdir();
         let defs: HashMap<u32, String> = [(1u32, "missing.wav".to_string())].into();
+        let out = resolve_wavs(&dir, &defs);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn resolve_wavs_preserves_subdirectories_when_trying_alternate_extensions() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("audio")).unwrap();
+        std::fs::write(dir.join("audio/kick.ogg"), b"").unwrap();
+        std::fs::write(dir.join("kick.ogg"), b"").unwrap();
+        let defs: HashMap<u32, String> = [(1u32, "audio/kick.wav".to_string())].into();
+        let out = resolve_wavs(&dir, &defs);
+        assert_eq!(out.get(&1).unwrap(), &dir.join("audio/kick.ogg"));
+    }
+
+    #[test]
+    fn resolve_wavs_does_not_fall_back_to_chart_directory() {
+        let dir = tempdir();
+        std::fs::write(dir.join("kick.ogg"), b"").unwrap();
+        let defs: HashMap<u32, String> = [(1u32, "audio/kick.wav".to_string())].into();
         let out = resolve_wavs(&dir, &defs);
         assert!(out.is_empty());
     }

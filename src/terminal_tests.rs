@@ -44,17 +44,20 @@ fn check_in_child() {
         .output()
         .unwrap();
     let after = settings(&slave);
-    let restored_local_flags = after.c_lflag;
-    // Darwin sets PENDIN when ICANON is restored, even with no queued input.
-    #[cfg(target_os = "macos")]
-    let restored_local_flags =
-        (restored_local_flags & !libc::PENDIN) | (before.c_lflag & libc::PENDIN);
     drop(master);
     assert!(output.status.success(), "{output:?}");
     assert_eq!(before.c_iflag, after.c_iflag);
     assert_eq!(before.c_oflag, after.c_oflag);
     assert_eq!(before.c_cflag, after.c_cflag);
-    assert_eq!(before.c_lflag, restored_local_flags);
+    // macOS sets PENDIN when restoring ICANON, even with no queued input.
+    #[cfg(target_os = "macos")]
+    let local_flags_mask = !libc::PENDIN;
+    #[cfg(not(target_os = "macos"))]
+    let local_flags_mask = !0;
+    assert_eq!(
+        before.c_lflag & local_flags_mask,
+        after.c_lflag & local_flags_mask
+    );
     assert_eq!(before.c_cc, after.c_cc);
     assert_eq!(unsafe { libc::cfgetispeed(&before) }, unsafe {
         libc::cfgetispeed(&after)
