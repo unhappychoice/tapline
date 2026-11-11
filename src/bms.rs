@@ -1,4 +1,4 @@
-use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, Mine, Note};
+use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, Mine, Note, ScrollEvent};
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -96,6 +96,8 @@ fn build_chart(
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true);
     let mut bga = collect_bga_events(&raw, &timeline);
+    let scroll = collect_scroll_events(&raw, &timeline, "SC", &pass.scroll_defs);
+    let speed = collect_scroll_events(&raw, &timeline, "SP", &pass.speed_defs);
     let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
     let lane_count = playable_lane_count(&acc, &p2_acc);
     let p1_lane_count = acc.lanes.count();
@@ -155,6 +157,8 @@ fn build_chart(
         bgm,
         bga,
         bmp_paths,
+        scroll,
+        speed,
         duration_ms,
         lane_count,
         keys: keys_for(lane_count),
@@ -374,6 +378,33 @@ fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
         "07" => Some(BgaLayer::Overlay),
         _ => None,
     }
+}
+
+fn collect_scroll_events(
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    channel: &str,
+    definitions: &HashMap<u32, f64>,
+) -> Vec<ScrollEvent> {
+    let mut events: Vec<_> = raw
+        .iter()
+        .filter(|(_, ch, _)| ch == channel)
+        .flat_map(|(measure, _, data)| {
+            let slots = parse_slots(data);
+            let count = slots.len();
+            slots.into_iter().enumerate().filter_map(move |(i, id)| {
+                definitions
+                    .get(&id)
+                    .filter(|_| id != 0)
+                    .map(|&multiplier| ScrollEvent {
+                        time_ms: timeline.time_at(*measure, i as f64 / count as f64),
+                        multiplier,
+                    })
+            })
+        })
+        .collect();
+    events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+    events
 }
 
 fn collect_bga_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec<BgaEvent> {
@@ -718,6 +749,8 @@ struct HeaderPass {
     wav_defs: HashMap<u32, String>,
     bpm_defs: HashMap<u32, f64>,
     stop_defs: HashMap<u32, f64>,
+    scroll_defs: HashMap<u32, f64>,
+    speed_defs: HashMap<u32, f64>,
     bmp_defs: HashMap<u32, String>,
     lnobj: Option<u32>,
     lntype: u8,
@@ -743,6 +776,8 @@ impl Default for HeaderPass {
             wav_defs: HashMap::new(),
             bpm_defs: HashMap::new(),
             stop_defs: HashMap::new(),
+            scroll_defs: HashMap::new(),
+            speed_defs: HashMap::new(),
             bmp_defs: HashMap::new(),
             lnobj: None,
             lntype: 1,
@@ -814,7 +849,24 @@ impl HeaderPass {
                 }
             }
             _ => {
-                if let Some(rest) = up.strip_prefix("WAV") {
+                if let Some((rest, definitions)) = up
+                    .strip_prefix("SCROLL")
+                    .map(|rest| (rest, &mut self.scroll_defs))
+                    .or_else(|| {
+                        up.strip_prefix("SPEED")
+                            .map(|rest| (rest, &mut self.speed_defs))
+                    })
+                {
+                    if rest.len() == 2 {
+                        if let (Ok(id), Ok(value)) =
+                            (u32::from_str_radix(rest, 36), val.trim().parse::<f64>())
+                        {
+                            if id != 0 && value.is_finite() {
+                                definitions.insert(id, value);
+                            }
+                        }
+                    }
+                } else if let Some(rest) = up.strip_prefix("WAV") {
                     if let Ok(id) = u32::from_str_radix(rest, 36) {
                         self.wav_defs.insert(id, val.trim().to_string());
                     }
@@ -1078,6 +1130,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn scroll_and_speed_preserve_judgment_and_audio_timing() {
+        let dir = tempdir();
+        let path = dir.join("scroll.bms");
+        let source =
+            "#BPM 120\n#STOP01 48\n#00109:01\n#00111:0101\n#00251:0101\n#00101:01\n#001D2:01\n";
+        std::fs::write(&path, source).unwrap();
+        let original = load(&path, 300.0).unwrap();
+        std::fs::write(
+            &path,
+            format!("{source}#SCROLLzz 0.5\n#SPEED01 2\n#001SC:zz\n#002SP:01\n"),
+        )
+        .unwrap();
+        let chart = load(&path, 300.0).unwrap();
+        assert_eq!(chart.scroll.len(), 1);
+        assert_eq!(chart.scroll[0].time_ms, 2800.0);
+        assert_eq!(chart.scroll[0].multiplier, 0.5);
+        assert_eq!(chart.speed[0].multiplier, 2.0);
+        assert_eq!(chart.duration_ms, original.duration_ms);
+        assert_eq!(chart.bgm[0].time_ms, original.bgm[0].time_ms);
+        assert_eq!(chart.mines[0].time_ms, original.mines[0].time_ms);
+        for (note, expected) in chart.notes.iter().zip(&original.notes) {
+            assert_eq!(note.time_ms, expected.time_ms);
+            assert_eq!(note.end_ms, expected.end_ms);
+        }
+        let time = chart.notes[0].time_ms;
+        let mut game = crate::game::Game::new(chart);
+        game.hit(0, time);
+        assert_eq!(game.perfect, 1);
+    }
+
+    #[test]
+    fn scroll_definitions_allow_zero_and_reverse_but_reject_nonfinite_values() {
+        let mut pass = HeaderPass::default();
+        [
+            "SCROLL01 0",
+            "SCROLL02 -1",
+            "SCROLL03 NaN",
+            "SPEED01 inf",
+            "SPEED02 0.5",
+            "SCROLL00 2",
+            "SCROLL001 3",
+        ]
+        .iter()
+        .for_each(|line| pass.absorb(line));
+        assert_eq!(pass.scroll_defs.len(), 2);
+        assert_eq!(pass.scroll_defs[&1], 0.0);
+        assert_eq!(pass.scroll_defs[&2], -1.0);
+        assert_eq!(pass.speed_defs.len(), 1);
     }
 
     #[test]

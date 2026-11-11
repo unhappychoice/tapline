@@ -71,8 +71,8 @@ impl PlayLayout {
     }
 }
 
-/// Vertical screen position for a note whose time offset from now is
-/// `remain` ms. `None` if the note is outside the approach or already
+/// Vertical screen position for a note whose scroll distance from now is
+/// `remain` normal-speed milliseconds. `None` if the note is outside the approach or already
 /// past the miss window.
 fn note_screen_y(remain: f64, layout: &PlayLayout) -> Option<u16> {
     if !(-60.0..=APPROACH_MS).contains(&remain) {
@@ -97,8 +97,8 @@ fn long_note_screen_range(
     if start_remain < -60.0 && end_remain < -60.0 {
         return None;
     }
-    let start_y = note_screen_y(start_remain, layout).unwrap_or(layout.judgment_row());
-    let end_y = note_screen_y(end_remain, layout).unwrap_or(layout.top);
+    let start_y = note_screen_y(start_remain.clamp(0.0, APPROACH_MS), layout)?;
+    let end_y = note_screen_y(end_remain.clamp(0.0, APPROACH_MS), layout)?;
     Some((start_y.min(end_y), start_y.max(end_y)))
 }
 
@@ -436,10 +436,11 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     }
 
     for mine in &game.chart.mines {
-        if mine.exploded {
+        if mine.exploded || mine.time_ms < now_ms - 60.0 {
             continue;
         }
-        let Some(y) = note_screen_y(mine.time_ms - now_ms, &layout) else {
+        let Some(y) = note_screen_y(game.chart.scroll_distance(mine.time_ms, now_ms), &layout)
+        else {
             continue;
         };
         let lx = x0 + 1 + mine.lane as u16 * LANE_WIDTH + 2;
@@ -455,14 +456,16 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     }
 
     for note in &game.chart.notes {
-        if note.hit {
+        if note.hit || note.end_ms.unwrap_or(note.time_ms) < now_ms - 60.0 {
             continue;
         }
         let lx = x0 + 1 + note.lane as u16 * LANE_WIDTH + 2;
         let base = lane_key_color(game, note.lane);
         match note.end_ms {
             None => {
-                let Some(y) = note_screen_y(note.time_ms - now_ms, &layout) else {
+                let Some(y) =
+                    note_screen_y(game.chart.scroll_distance(note.time_ms, now_ms), &layout)
+                else {
                     continue;
                 };
                 queue!(
@@ -482,8 +485,8 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
                 };
                 draw_long_note(
                     out,
-                    note.time_ms - now_ms,
-                    end_ms - now_ms,
+                    game.chart.scroll_distance(note.time_ms, now_ms),
+                    game.chart.scroll_distance(end_ms, now_ms),
                     &layout,
                     lx,
                     color,
@@ -698,6 +701,20 @@ mod tests {
             keys: keys_for(lane_count),
             ..Chart::default()
         }
+    }
+
+    #[test]
+    fn half_scroll_moves_notes_half_as_fast_and_extends_visibility() {
+        let mut chart = crate::chart::Chart::default();
+        chart.scroll.push(crate::chart::ScrollEvent {
+            time_ms: 0.0,
+            multiplier: 0.5,
+        });
+        let layout = PlayLayout::compute(80, 109, 4).unwrap();
+        let y = |time, now| note_screen_y(chart.scroll_distance(time, now), &layout).unwrap();
+        assert_eq!(y(1000.0, 200.0) - y(1000.0, 0.0), 10);
+        assert!(note_screen_y(chart.scroll_distance(1800.0, 0.0), &layout).is_some());
+        assert_eq!(y(1000.0, 1000.0), layout.judgment_row());
     }
 
     #[test]

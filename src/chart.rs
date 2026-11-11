@@ -47,6 +47,12 @@ pub struct BgaEvent {
     pub bmp_id: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ScrollEvent {
+    pub time_ms: f64,
+    pub multiplier: f64,
+}
+
 pub struct Chart {
     pub title: String,
     pub subtitle: String,
@@ -67,6 +73,8 @@ pub struct Chart {
     pub p2_notes: Vec<Note>,
     pub p2_mines: Vec<Mine>,
     pub bgm: Vec<BgmEvent>,
+    pub scroll: Vec<ScrollEvent>,
+    pub speed: Vec<ScrollEvent>,
     pub bga: Vec<BgaEvent>,
     pub bmp_paths: std::collections::HashMap<u32, PathBuf>,
     pub duration_ms: f64,
@@ -97,6 +105,8 @@ impl Default for Chart {
             p2_notes: Vec::new(),
             p2_mines: Vec::new(),
             bgm: Vec::new(),
+            scroll: Vec::new(),
+            speed: Vec::new(),
             bga: Vec::new(),
             bmp_paths: std::collections::HashMap::new(),
             duration_ms: 0.0,
@@ -104,6 +114,28 @@ impl Default for Chart {
             keys: keys_for(4),
             wav_paths: std::collections::HashMap::new(),
         }
+    }
+}
+
+impl Chart {
+    /// Display distance in normal-speed milliseconds; judgment stays time-based.
+    pub fn scroll_distance(&self, time_ms: f64, now_ms: f64) -> f64 {
+        let coordinate = |time: f64| {
+            let mut rate = 1.0;
+            let mut distance = time;
+            for event in self.scroll.iter().take_while(|e| e.time_ms <= time) {
+                distance += (time - event.time_ms) * (event.multiplier - rate);
+                rate = event.multiplier;
+            }
+            distance
+        };
+        let speed = self
+            .speed
+            .iter()
+            .rev()
+            .find(|e| e.time_ms <= now_ms)
+            .map_or(1.0, |e| e.multiplier);
+        (coordinate(time_ms) - coordinate(now_ms)) * speed
     }
 }
 
@@ -253,6 +285,35 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scroll_integrates_changes_and_speed_scales_current_spacing() {
+        let mut chart = Chart::default();
+        assert_eq!(chart.scroll_distance(2000.0, 500.0), 1500.0);
+        chart.scroll = vec![
+            ScrollEvent {
+                time_ms: 1000.0,
+                multiplier: 0.5,
+            },
+            ScrollEvent {
+                time_ms: 2000.0,
+                multiplier: 0.0,
+            },
+            ScrollEvent {
+                time_ms: 3000.0,
+                multiplier: -1.0,
+            },
+        ];
+        assert_eq!(chart.scroll_distance(2000.0, 500.0), 1000.0);
+        assert_eq!(chart.scroll_distance(3000.0, 2000.0), 0.0);
+        assert_eq!(chart.scroll_distance(3500.0, 3000.0), -500.0);
+        chart.speed.push(ScrollEvent {
+            time_ms: 500.0,
+            multiplier: 2.0,
+        });
+        assert_eq!(chart.scroll_distance(2000.0, 500.0), 2000.0);
+        assert_eq!(chart.scroll_distance(2000.0, 0.0), 1500.0);
+    }
 
     #[test]
     fn keys_for_4k_is_dj_max_outer_2_plus_2() {
