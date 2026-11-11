@@ -86,7 +86,7 @@ pub fn choose_chart(out: &mut Stdout, args: &Args) -> Result<ChartChoice> {
     if charts.is_empty() {
         return Ok(ChartChoice::BuiltIn);
     }
-    Ok(match select::run(out, &charts)? {
+    Ok(match select::run(out, &charts, args.no_audio)? {
         Some(p) => ChartChoice::File(p),
         None => ChartChoice::Cancelled,
     })

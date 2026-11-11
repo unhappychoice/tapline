@@ -11,6 +11,7 @@ pub struct ChartMeta {
     pub artist: String,
     pub subartist: String,
     pub genre: String,
+    pub preview: Option<PathBuf>,
     pub bpm: f64,
     pub playlevel: Option<u8>,
     pub difficulty: Option<u8>,
@@ -31,6 +32,11 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
     }
     let (_, acc, p2_acc) = collect_chart_sides(&raw, &pass, 0.0, false);
     Ok(ChartMeta {
+        preview: pass.preview.filter(|name| !name.is_empty()).map(|name| {
+            path.parent()
+                .unwrap_or(Path::new("."))
+                .join(name.replace('\\', "/"))
+        }),
         path: path.to_path_buf(),
         title: pass.title,
         subtitle: pass.subtitle,
@@ -706,6 +712,7 @@ struct HeaderPass {
     artist: String,
     subartist: String,
     genre: String,
+    preview: Option<String>,
     stagefile: String,
     banner: String,
     maker: String,
@@ -731,6 +738,7 @@ impl Default for HeaderPass {
             artist: String::new(),
             subartist: String::new(),
             genre: String::new(),
+            preview: None,
             stagefile: String::new(),
             banner: String::new(),
             maker: String::new(),
@@ -760,6 +768,7 @@ impl HeaderPass {
             "ARTIST" => self.artist = val.to_string(),
             "SUBARTIST" => self.subartist = val.to_string(),
             "GENRE" => self.genre = val.to_string(),
+            "PREVIEW" => self.preview = Some(val.to_string()),
             "STAGEFILE" => self.stagefile = val.trim().to_string(),
             "BANNER" => self.banner = val.trim().to_string(),
             "MAKER" => self.maker = val.to_string(),
@@ -1078,6 +1087,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn read_meta_reads_preview_relative_to_chart_with_windows_separators() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(&path, "#TITLE Song\n#preview audio\\preview song.ogg\n").unwrap();
+        let meta = read_meta(&path).unwrap();
+        assert_eq!(meta.preview, Some(dir.join("audio/preview song.ogg")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn read_meta_has_no_preview_for_missing_or_empty_header() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        ["#TITLE Song\n", "#TITLE Song\n#PREVIEW \n"]
+            .iter()
+            .for_each(|text| {
+                std::fs::write(&path, text).unwrap();
+                assert!(read_meta(&path).unwrap().preview.is_none());
+            });
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
