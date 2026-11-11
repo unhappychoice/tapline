@@ -31,6 +31,8 @@ pub fn play_chart(out: &mut Stdout, args: &Args, mut chart: chart::Chart) -> Res
         audio::SampleBank::silent()
     } else {
         audio::SampleBank::with_settings(&chart.wav_paths, &chart.sample_settings)
+            .with_slices(&chart.sample_slices)
+            .with_layers(&chart.sound_layers)
     };
     chart.duration_ms = bank.chart_duration_ms(&chart, opts.auto_ks);
     let mut game = game::Game::new(chart);
