@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[derive(Clone)]
 struct DecodedSample {
     channels: u16,
     sample_rate: u32,
@@ -144,19 +145,30 @@ enum HitSound {
 }
 
 fn decode_all(wav_paths: &HashMap<u32, PathBuf>) -> (HashMap<u32, DecodedSample>, usize) {
-    wav_paths
+    decode_all_with(wav_paths, decode)
+}
+
+fn decode_all_with(
+    wav_paths: &HashMap<u32, PathBuf>,
+    decode_sample: impl Fn(&PathBuf) -> anyhow::Result<DecodedSample> + Sync,
+) -> (HashMap<u32, DecodedSample>, usize) {
+    let mut ids_by_path: HashMap<&PathBuf, Vec<u32>> = HashMap::new();
+    wav_paths.iter().for_each(|(&id, path)| {
+        ids_by_path.entry(path).or_default().push(id);
+    });
+    ids_by_path
         .par_iter()
-        .map(|(&id, path)| (id, decode(path)))
+        .map(|(path, ids)| (ids, decode_sample(path)))
         .collect::<Vec<_>>()
         .into_iter()
         .fold(
             (HashMap::new(), 0),
-            |(mut samples, failures), (id, result)| match result {
+            |(mut samples, failures), (ids, result)| match result {
                 Ok(sample) => {
-                    samples.insert(id, sample);
+                    samples.extend(ids.iter().map(|&id| (id, sample.clone())));
                     (samples, failures)
                 }
-                Err(_) => (samples, failures + 1),
+                Err(_) => (samples, failures + ids.len()),
             },
         )
 }
@@ -349,6 +361,68 @@ mod tests {
         for pair in LANE_PITCHES.windows(2) {
             assert!(pair[1] > pair[0], "lane pitches should climb monotonically");
         }
+    }
+
+    #[test]
+    fn duplicate_paths_decode_once_and_share_pcm_across_all_ids() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let paths = (1..=10)
+            .map(|id| (id, PathBuf::from("sample.wav")))
+            .collect();
+        let calls = AtomicUsize::new(0);
+        let (samples, failures) = decode_all_with(&paths, |path| {
+            assert_eq!(path, &PathBuf::from("sample.wav"));
+            calls.fetch_add(1, Ordering::Relaxed);
+            Ok(DecodedSample {
+                channels: 2,
+                sample_rate: 44_100,
+                data: Arc::new(vec![0.25, -0.25]),
+            })
+        });
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(failures, 0);
+        assert_eq!(samples.len(), 10);
+        (1..=10).for_each(|id| {
+            let sample = &samples[&id];
+            assert!(Arc::ptr_eq(&sample.data, &samples[&1].data));
+            let source = SharedSamples {
+                data: Arc::clone(&sample.data),
+                pos: 0,
+                channels: sample.channels,
+                sample_rate: sample.sample_rate,
+            };
+            assert_eq!(source.channels(), 2);
+            assert_eq!(source.sample_rate(), 44_100);
+            assert_eq!(source.collect::<Vec<_>>(), vec![0.25, -0.25]);
+        });
+    }
+
+    #[test]
+    fn duplicate_failures_are_counted_per_id_and_other_paths_still_load() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let paths = HashMap::from([
+            (1, PathBuf::from("missing.wav")),
+            (2, PathBuf::from("missing.wav")),
+            (3, PathBuf::from("valid.wav")),
+        ]);
+        let calls = AtomicUsize::new(0);
+        let (samples, failures) = decode_all_with(&paths, |path| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            anyhow::ensure!(path == &PathBuf::from("valid.wav"), "missing sample");
+            Ok(DecodedSample {
+                channels: 1,
+                sample_rate: 44_100,
+                data: Arc::new(vec![0.5]),
+            })
+        });
+
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        assert_eq!(failures, 2);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(*samples[&3].data, vec![0.5]);
     }
 
     #[test]
