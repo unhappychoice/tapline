@@ -49,6 +49,16 @@ fn silent_bank_constructor_creates_a_disabled_bank() {
 }
 
 #[test]
+fn backend_lifecycle_loads_samples_and_handles_missing_audio() {
+    // CPAL 0.15 caches a WASAPI COM enumerator process-wide. Keep every
+    // backend call on one thread so its COM apartment outlives all uses.
+    new_with_empty_map_never_panics_even_if_backend_is_absent();
+    new_drops_wav_entries_pointing_at_missing_files();
+    new_drops_wav_entries_that_are_not_valid_audio();
+    new_loads_a_hand_crafted_pcm_wav_without_panicking();
+    new_loads_the_same_wav_for_every_registered_id();
+}
+
 fn new_with_empty_map_never_panics_even_if_backend_is_absent() {
     let bank = SampleBank::new(&HashMap::new());
     // enabled may be true or false depending on the test runner's audio
@@ -61,7 +71,6 @@ fn new_with_empty_map_never_panics_even_if_backend_is_absent() {
     }
 }
 
-#[test]
 fn new_drops_wav_entries_pointing_at_missing_files() {
     let dir = tempdir();
     let mut wav_paths: HashMap<u32, PathBuf> = HashMap::new();
@@ -72,7 +81,6 @@ fn new_drops_wav_entries_pointing_at_missing_files() {
     bank.play(1);
 }
 
-#[test]
 fn new_drops_wav_entries_that_are_not_valid_audio() {
     let dir = tempdir();
     let broken = dir.join("broken.wav");
@@ -83,7 +91,6 @@ fn new_drops_wav_entries_that_are_not_valid_audio() {
     bank.play(1); // decode failure earlier → no-op now
 }
 
-#[test]
 fn new_loads_a_hand_crafted_pcm_wav_without_panicking() {
     let dir = tempdir();
     let wav = dir.join("tiny.wav");
@@ -95,7 +102,6 @@ fn new_loads_a_hand_crafted_pcm_wav_without_panicking() {
     bank.play(42);
 }
 
-#[test]
 fn new_loads_the_same_wav_for_every_registered_id() {
     let dir = tempdir();
     let wav = dir.join("shared.wav");
