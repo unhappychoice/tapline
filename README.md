@@ -104,12 +104,25 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
+| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
 | channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, plus 14K double-play when both sides fill 7 lanes each |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
 | control flow  | `#RANDOM`, `#SETRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF` (nesting supported) |
+
+Mode detection uses the extension, `#PLAYER`, and materialized note channels.
+`.bme` reserves seven keys per side even when channels `18`/`19` are unused;
+`.bms` and `.bml` infer seven keys from extended key channels, otherwise five.
+`#PLAYER 2` (Couple) and `#PLAYER 3` (DP) declare two sides. Without either
+header, the existing two-sided seven-key channel pattern still selects 14K.
+`.pms` identifies nine keys without scratch; BMS scratch usage is detected from
+channel `16`/`26` and their long-note/landmine equivalents.
+
+Detection does not add playback layouts: 9K and 10K retain the existing playable
+subset, scratch events are not playable yet, and sparse undeclared `.bms`/`.bml`
+charts retain the legacy 4K fallback. Detected 14K charts reserve all seven P1
+lanes and place P2 notes in lanes 7–13, including sparse DP charts.
 
 ### Long notes and landmines
 

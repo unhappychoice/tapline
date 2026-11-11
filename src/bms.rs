@@ -30,6 +30,7 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
         }
     }
     let (_, acc, p2_acc) = collect_chart_sides(&raw, &pass, 0.0, false);
+    let mode = detect_mode(path, pass.player, &raw, &acc, &p2_acc);
     Ok(ChartMeta {
         path: path.to_path_buf(),
         title: pass.title,
@@ -40,7 +41,7 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
         bpm: pass.bpm,
         playlevel: pass.playlevel,
         difficulty: pass.difficulty,
-        lane_count: playable_lane_count(&acc, &p2_acc),
+        lane_count: mode.playable_lane_count(&acc),
     })
 }
 
@@ -56,7 +57,7 @@ pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
             None => pass.absorb(line),
         }
     }
-    build_chart(pass, raw, dir, lead_in_ms)
+    build_chart(pass, raw, dir, path, lead_in_ms)
 }
 
 #[derive(Default)]
@@ -90,6 +91,7 @@ fn build_chart(
     pass: HeaderPass,
     raw: Vec<(u32, String, String)>,
     dir: PathBuf,
+    path: &Path,
     lead_in_ms: f64,
 ) -> Result<Chart> {
     let wav_paths = resolve_wavs(&dir, &pass.wav_defs);
@@ -97,9 +99,14 @@ fn build_chart(
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true);
     let mut bga = collect_bga_events(&raw, &timeline);
     let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
-    let lane_count = playable_lane_count(&acc, &p2_acc);
-    let p1_lane_count = acc.lanes.count();
-    let p2_lane_count = p2_acc.lanes.count();
+    let mode = detect_mode(path, pass.player, &raw, &acc, &p2_acc);
+    let lane_count = mode.playable_lane_count(&acc);
+    let p1_lane_count = if lane_count == 14 { 7 } else { lane_count };
+    let p2_lane_count = if lane_count == 14 {
+        7
+    } else {
+        p2_acc.lanes.count()
+    };
     let mut notes = acc.notes;
     let mut mines = acc.mines;
     let mut bgm = acc.bgm;
@@ -113,7 +120,7 @@ fn build_chart(
     mines.retain(|n| n.lane < p1_lane_count);
     p2_notes.retain(|n| n.lane < p2_lane_count);
     p2_mines.retain(|n| n.lane < p2_lane_count);
-    // Fold canonical 14K double-play into the primary pool: P2 notes/mines
+    // Fold detected 14K double-play into the primary pool: P2 notes/mines
     // shift into lanes 7..=13 and lane_count expands to 14. Non-canonical DP
     // (e.g. 5K+5K) is left split — the runtime plays P1 only.
     if lane_count == 14 {
@@ -177,11 +184,52 @@ fn collect_chart_sides(
     (timeline, acc, p2_acc)
 }
 
-fn playable_lane_count(acc: &ChartAcc, p2_acc: &ChartAcc) -> usize {
-    if acc.lanes.count() == 7 && p2_acc.lanes.count() == 7 && !p2_acc.notes.is_empty() {
-        14
-    } else {
-        acc.lanes.count()
+#[derive(Debug, PartialEq, Eq)]
+struct BmsMode {
+    keys_per_side: usize,
+    double_play: bool,
+    scratch: bool,
+}
+
+impl BmsMode {
+    fn playable_lane_count(&self, acc: &ChartAcc) -> usize {
+        match (self.keys_per_side, self.double_play) {
+            (7, true) => 14,
+            (7, false) => 7,
+            // Preserve the existing playable subset until 9K/10K support lands.
+            _ => acc.lanes.count(),
+        }
+    }
+}
+
+fn detect_mode(
+    path: &Path,
+    player: Option<u8>,
+    raw: &[(u32, String, String)],
+    acc: &ChartAcc,
+    p2_acc: &ChartAcc,
+) -> BmsMode {
+    let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if extension.eq_ignore_ascii_case("pms") {
+        return BmsMode {
+            keys_per_side: 9,
+            double_play: false,
+            scratch: false,
+        };
+    }
+    let extended = extension.eq_ignore_ascii_case("bme")
+        || acc.lanes.count() == 7
+        || (matches!(player, Some(2 | 3)) && p2_acc.lanes.count() == 7);
+    let double_play = matches!(player, Some(2 | 3))
+        || (acc.lanes.count() == 7 && p2_acc.lanes.count() == 7 && !p2_acc.notes.is_empty());
+    let scratch = raw.iter().any(|(_, ch, data)| {
+        matches!(ch.as_str(), "16" | "26" | "56" | "66" | "D6" | "E6")
+            && parse_slots(data).iter().any(|slot| *slot != 0)
+    });
+    BmsMode {
+        keys_per_side: if extended { 7 } else { 5 },
+        double_play,
+        scratch,
     }
 }
 
@@ -701,6 +749,7 @@ impl Timeline {
 }
 
 struct HeaderPass {
+    player: Option<u8>,
     title: String,
     subtitle: String,
     artist: String,
@@ -726,6 +775,7 @@ struct HeaderPass {
 impl Default for HeaderPass {
     fn default() -> Self {
         Self {
+            player: None,
             title: String::new(),
             subtitle: String::new(),
             artist: String::new(),
@@ -755,6 +805,11 @@ impl HeaderPass {
         let (cmd, val) = split_cmd_value(line);
         let up = cmd.to_ascii_uppercase();
         match up.as_str() {
+            "PLAYER" => {
+                if let Ok(value @ 1..=3) = val.trim().parse::<u8>() {
+                    self.player = Some(value);
+                }
+            }
             "TITLE" => self.title = val.to_string(),
             "SUBTITLE" => self.subtitle = val.to_string(),
             "ARTIST" => self.artist = val.to_string(),
@@ -1932,6 +1987,67 @@ mod tests {
     }
 
     #[test]
+    fn mode_detection_combines_extension_player_and_channels() {
+        let cases = [
+            ("song.bms", None, "15", 5, false, false),
+            ("song.bme", Some(1), "11", 7, false, false),
+            ("song.BME", Some(3), "11", 7, true, false),
+            ("song.bml", Some(3), "19", 7, true, false),
+            ("song.bms", Some(3), "11", 5, true, false),
+            ("song.bme", Some(2), "26", 7, true, true),
+            ("song.bml", None, "56", 5, false, true),
+            ("song.pms", Some(3), "16", 9, false, false),
+        ];
+        for (name, player, channel, keys_per_side, double_play, scratch) in cases {
+            let raw = vec![(1, channel.to_string(), "0101".to_string())];
+            let (_, acc, p2_acc) = collect_chart_sides(&raw, &HeaderPass::default(), 0.0, false);
+            assert_eq!(
+                detect_mode(Path::new(name), player, &raw, &acc, &p2_acc),
+                BmsMode {
+                    keys_per_side,
+                    double_play,
+                    scratch
+                },
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn sparse_bme_uses_declared_sides_in_metadata_and_playback() {
+        let dir = tempdir();
+        let path = dir.join("sparse.bme");
+        for (player, channels, expected) in [
+            (1, "#00111:01", 7),
+            (3, "#00111:01", 14),
+            (3, "#00111:01\n#00121:01", 14),
+            (2, "#00121:01", 14),
+        ] {
+            std::fs::write(&path, format!("#PLAYER {player}\n{channels}\n")).unwrap();
+            let chart = load(&path, 0.0).unwrap();
+            assert_eq!(chart.lane_count, expected);
+            assert_eq!(read_meta(&path).unwrap().lane_count, expected);
+            if channels.contains("21") {
+                assert!(chart.notes.iter().any(|note| note.lane == 7));
+            }
+        }
+    }
+
+    #[test]
+    fn header_pass_accepts_only_supported_player_values() {
+        let mut pass = HeaderPass::default();
+        assert_eq!(pass.player, None);
+        for value in 1..=3 {
+            pass.absorb(&format!("player {value}"));
+            assert_eq!(pass.player, Some(value));
+        }
+        for value in ["0", "4", "invalid"] {
+            pass.absorb(&format!("PLAYER {value}"));
+            assert_eq!(pass.player, Some(3));
+        }
+    }
+
+    #[test]
     fn lane_set_count_climbs_with_channel_max() {
         let mut s = LaneSet::default();
         s.observe_lane(0);
@@ -1942,7 +2058,7 @@ mod tests {
         // Lane 3 pushes us out of pure 4K into the 5K keymap.
         assert_eq!(s.count(), 5);
         s.observe_lane(6);
-        // Lane 6 is the 7K scratch column.
+        // Lane 6 is the seventh key.
         assert_eq!(s.count(), 7);
     }
 
