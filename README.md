@@ -109,7 +109,7 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, plus 14K double-play when both sides fill 7 lanes each |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
-| control flow  | `#RANDOM`, `#SETRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF` (nesting supported) |
+| control flow  | `#RANDOM`, `#SETRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF`, `#SWITCH`, `#SETSWITCH`, `#CASE`, `#SKIP`, `#DEF`, `#ENDSW` (nesting and switch fallthrough supported) |
 
 ### Long notes and landmines
 
@@ -130,7 +130,6 @@ The parsed `damage` value does not scale the penalty or subtract score.
 ### Not yet supported (v1)
 
 - Landmine penalties proportional to the parsed `damage` value
-- `#SWITCH` / `#CASE` (the `#IF`-style variants are supported)
 - BGA rendering (channels `04` / `06` / `07` and `#BMPxx` are parsed and stored on `Chart.bga` / `Chart.bmp_paths`, but the terminal renderer does not draw them yet)
 - Non-canonical double-play like 5K DP or asymmetric side counts (only 7K + 7K is folded into the 14-lane playable pool; other DP shapes are still parsed into `Chart.p2_notes` but not merged)
 
