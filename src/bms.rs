@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct ChartMeta {
     pub path: PathBuf,
+    /// Reuse this seed when loading the selected chart.
+    pub random_seed: u64,
     pub title: String,
     pub subtitle: String,
     pub artist: String,
@@ -18,8 +20,13 @@ pub struct ChartMeta {
 }
 
 pub fn read_meta(path: &Path) -> Result<ChartMeta> {
+    read_meta_with_seed(path, random_seed())
+}
+
+/// Read metadata using an explicit seed instead of the environment override.
+pub fn read_meta_with_seed(path: &Path, seed: u64) -> Result<ChartMeta> {
     let text = read_text(path)?;
-    let text = resolve_control_flow(&text, random_seed_for(path));
+    let text = resolve_control_flow(&text, seed);
     let mut pass = HeaderPass::default();
     let mut raw = Vec::new();
     for line in header_lines(&text) {
@@ -32,6 +39,7 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
     let (_, acc, p2_acc) = collect_chart_sides(&raw, &pass, 0.0, false, is_pms(path));
     Ok(ChartMeta {
         path: path.to_path_buf(),
+        random_seed: seed,
         title: pass.title,
         subtitle: pass.subtitle,
         artist: pass.artist,
@@ -45,8 +53,13 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
 }
 
 pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
+    load_with_seed(path, lead_in_ms, random_seed())
+}
+
+/// Load the same control-flow branches used by metadata with this seed.
+pub fn load_with_seed(path: &Path, lead_in_ms: f64, seed: u64) -> Result<Chart> {
     let text = read_text(path)?;
-    let text = resolve_control_flow(&text, random_seed_for(path));
+    let text = resolve_control_flow(&text, seed);
     let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut pass = HeaderPass::default();
     let mut raw: Vec<(u32, String, String)> = Vec::new();
@@ -939,16 +952,16 @@ impl LaneSet {
     }
 }
 
-fn random_seed_for(path: &Path) -> u64 {
-    if let Ok(v) = std::env::var("TAPLINE_RANDOM_SEED") {
-        if let Ok(n) = v.parse::<u64>() {
-            return n;
-        }
-    }
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.to_string_lossy().hash(&mut hasher);
-    hasher.finish()
+fn random_seed() -> u64 {
+    std::env::var("TAPLINE_RANDOM_SEED")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| {
+            use std::hash::{BuildHasher, Hasher};
+            std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish()
+        })
 }
 
 fn resolve_control_flow(text: &str, seed: u64) -> String {

@@ -115,6 +115,10 @@ PMS mode is selected by the `.pms` extension (case-insensitive) and always uses
 nine lanes. Long notes (`51–55 + 62–65`) and landmines (`D1–D5 + E2–E5`)
 follow the same button order as visible notes.
 
+`#RANDOM` branches are drawn afresh for each play. The selector and chart loader
+share the same draw so displayed metadata matches gameplay. Set
+`TAPLINE_RANDOM_SEED` to an unsigned 64-bit integer for reproducible branches.
+
 ### Long notes and landmines
 
 Long-note starts are judged like regular notes. On terminals that report key

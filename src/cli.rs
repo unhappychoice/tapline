@@ -68,6 +68,7 @@ impl Args {
 
 pub enum ChartChoice {
     File(PathBuf),
+    Selected(bms::ChartMeta),
     Cancelled,
     BuiltIn,
 }
@@ -87,7 +88,7 @@ pub fn choose_chart(out: &mut Stdout, args: &Args) -> Result<ChartChoice> {
         return Ok(ChartChoice::BuiltIn);
     }
     Ok(match select::run(out, &charts)? {
-        Some(p) => ChartChoice::File(p),
+        Some(meta) => ChartChoice::Selected(meta),
         None => ChartChoice::Cancelled,
     })
 }
@@ -95,6 +96,11 @@ pub fn choose_chart(out: &mut Stdout, args: &Args) -> Result<ChartChoice> {
 pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::chart::Chart>> {
     match choice {
         ChartChoice::File(p) => Ok(Some(bms::load(p, args.countdown_ms)?)),
+        ChartChoice::Selected(meta) => Ok(Some(bms::load_with_seed(
+            &meta.path,
+            args.countdown_ms,
+            meta.random_seed,
+        )?)),
         ChartChoice::BuiltIn => Ok(Some(crate::chart::built_in(args.bpm, args.countdown_ms))),
         ChartChoice::Cancelled => Ok(None),
     }
