@@ -98,7 +98,8 @@ All charts play with the synth fallback — no WAV assets required.
 
 ## BMS support
 
-Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
+Encoding is auto-detected (UTF-8 → fallback Shift-JIS). Object IDs default to
+case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 
 ### Supported
 

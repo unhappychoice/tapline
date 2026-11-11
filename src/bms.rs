@@ -20,7 +20,7 @@ pub struct ChartMeta {
 pub fn read_meta(path: &Path) -> Result<ChartMeta> {
     let text = read_text(path)?;
     let text = resolve_control_flow(&text, random_seed_for(path));
-    let mut pass = HeaderPass::default();
+    let mut pass = HeaderPass::for_text(&text);
     let mut raw = Vec::new();
     for line in header_lines(&text) {
         if let Some(parsed) = parse_channel_line(line) {
@@ -48,7 +48,7 @@ pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
     let text = read_text(path)?;
     let text = resolve_control_flow(&text, random_seed_for(path));
     let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let mut pass = HeaderPass::default();
+    let mut pass = HeaderPass::for_text(&text);
     let mut raw: Vec<(u32, String, String)> = Vec::new();
     for line in header_lines(&text) {
         match parse_channel_line(line) {
@@ -95,7 +95,7 @@ fn build_chart(
     let wav_paths = resolve_wavs(&dir, &pass.wav_defs);
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true);
-    let mut bga = collect_bga_events(&raw, &timeline);
+    let mut bga = collect_bga_events(&raw, &timeline, pass.base);
     let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
     let lane_count = playable_lane_count(&acc, &p2_acc);
     let p1_lane_count = acc.lanes.count();
@@ -170,10 +170,10 @@ fn collect_chart_sides(
 ) -> (Timeline, ChartAcc, ChartAcc) {
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let scales = collect_measure_scales(raw);
-    let events = collect_timing_events(raw, &pass.bpm_defs, &pass.stop_defs);
+    let events = collect_timing_events(raw, &pass.bpm_defs, &pass.stop_defs, pass.base);
     let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
-    let acc = accumulate_side(raw, &timeline, P1_LANES, collect_bgm);
-    let p2_acc = accumulate_side(raw, &timeline, P2_LANES, false);
+    let acc = accumulate_side(raw, &timeline, P1_LANES, collect_bgm, pass.base);
+    let p2_acc = accumulate_side(raw, &timeline, P2_LANES, false, pass.base);
     (timeline, acc, p2_acc)
 }
 
@@ -229,16 +229,17 @@ fn accumulate_side(
     timeline: &Timeline,
     lanes: LaneMap,
     collect_bgm: bool,
+    base: u32,
 ) -> ChartAcc {
     let mut acc = ChartAcc::default();
     for (measure, ch, data) in raw {
         if let Some(lane) = (lanes.normal)(ch) {
-            push_normal_slots(&mut acc, lane, ch, *measure, data, timeline);
+            push_normal_slots(&mut acc, lane, *measure, data, timeline, base);
         } else if collect_bgm && ch == "01" {
-            push_bgm_slots(&mut acc, *measure, data, timeline);
+            push_bgm_slots(&mut acc, *measure, data, timeline, base);
         }
     }
-    materialize_long_notes_with(&mut acc, raw, timeline, lanes.long);
+    materialize_long_notes_with(&mut acc, raw, timeline, lanes.long, base);
     materialize_mines_with(&mut acc, raw, timeline, lanes.mine);
     acc
 }
@@ -246,12 +247,12 @@ fn accumulate_side(
 fn push_normal_slots(
     acc: &mut ChartAcc,
     lane: usize,
-    _ch: &str,
     measure: u32,
     data: &str,
     timeline: &Timeline,
+    base: u32,
 ) {
-    let slots = parse_slots(data);
+    let slots = parse_slots(data, base);
     let n = slots.len();
     if n == 0 {
         return;
@@ -273,8 +274,8 @@ fn push_normal_slots(
     }
 }
 
-fn push_bgm_slots(acc: &mut ChartAcc, measure: u32, data: &str, timeline: &Timeline) {
-    let slots = parse_slots(data);
+fn push_bgm_slots(acc: &mut ChartAcc, measure: u32, data: &str, timeline: &Timeline, base: u32) {
+    let slots = parse_slots(data, base);
     let n = slots.len();
     if n == 0 {
         return;
@@ -296,13 +297,14 @@ fn materialize_long_notes_with(
     raw: &[(u32, String, String)],
     timeline: &Timeline,
     lane_of: fn(&str) -> Option<usize>,
+    base: u32,
 ) {
     let mut per_lane: HashMap<usize, Vec<(f64, u32)>> = HashMap::new();
     for (measure, ch, data) in raw {
         let Some(lane) = lane_of(ch) else {
             continue;
         };
-        let slots = parse_slots(data);
+        let slots = parse_slots(data, base);
         let n = slots.len();
         if n == 0 {
             continue;
@@ -376,13 +378,17 @@ fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
     }
 }
 
-fn collect_bga_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec<BgaEvent> {
+fn collect_bga_events(
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    base: u32,
+) -> Vec<BgaEvent> {
     let mut out: Vec<BgaEvent> = Vec::new();
     for (measure, ch, data) in raw {
         let Some(layer) = bga_channel_to_layer(ch) else {
             continue;
         };
-        let slots = parse_slots(data);
+        let slots = parse_slots(data, base);
         let n = slots.len();
         if n == 0 {
             continue;
@@ -523,6 +529,7 @@ fn collect_timing_events(
     raw: &[(u32, String, String)],
     bpm_defs: &HashMap<u32, f64>,
     stop_defs: &HashMap<u32, f64>,
+    base: u32,
 ) -> Vec<TimingEvent> {
     type TimingResolver<'a> = Box<dyn Fn(u32) -> Option<TimingEventKind> + 'a>;
     let mut out: Vec<TimingEvent> = Vec::new();
@@ -533,11 +540,11 @@ fn collect_timing_events(
                 Box::new(|v| Some(TimingEventKind::Bpm(v as f64))),
             ),
             "08" => (
-                parse_slots(data),
+                parse_slots(data, base),
                 Box::new(|v| bpm_defs.get(&v).copied().map(TimingEventKind::Bpm)),
             ),
             "09" => (
-                parse_slots(data),
+                parse_slots(data, base),
                 Box::new(|v| stop_defs.get(&v).copied().map(TimingEventKind::Stop)),
             ),
             _ => continue,
@@ -701,6 +708,7 @@ impl Timeline {
 }
 
 struct HeaderPass {
+    base: u32,
     title: String,
     subtitle: String,
     artist: String,
@@ -726,6 +734,7 @@ struct HeaderPass {
 impl Default for HeaderPass {
     fn default() -> Self {
         Self {
+            base: 36,
             title: String::new(),
             subtitle: String::new(),
             artist: String::new(),
@@ -751,6 +760,23 @@ impl Default for HeaderPass {
 }
 
 impl HeaderPass {
+    fn for_text(text: &str) -> Self {
+        let base = header_lines(text)
+            .filter_map(|line| {
+                let (cmd, val) = split_cmd_value(line);
+                cmd.eq_ignore_ascii_case("BASE")
+                    .then(|| val.trim().parse::<u32>().ok())
+                    .flatten()
+                    .filter(|base| matches!(base, 36 | 62))
+            })
+            .last()
+            .unwrap_or(36);
+        Self {
+            base,
+            ..Self::default()
+        }
+    }
+
     fn absorb(&mut self, line: &str) {
         let (cmd, val) = split_cmd_value(line);
         let up = cmd.to_ascii_uppercase();
@@ -800,7 +826,7 @@ impl HeaderPass {
                 }
             }
             "LNOBJ" => {
-                if let Ok(id) = u32::from_str_radix(val.trim(), 36) {
+                if let Some(id) = parse_id(val.trim(), self.base) {
                     if id > 0 {
                         self.lnobj = Some(id);
                     }
@@ -814,33 +840,33 @@ impl HeaderPass {
                 }
             }
             _ => {
-                if let Some(rest) = up.strip_prefix("WAV") {
-                    if let Ok(id) = u32::from_str_radix(rest, 36) {
+                if let Some(rest) = up.strip_prefix("WAV").and_then(|_| cmd.get(3..)) {
+                    if let Some(id) = parse_id(rest, self.base) {
                         self.wav_defs.insert(id, val.trim().to_string());
                     }
-                } else if let Some(rest) = up.strip_prefix("BPM") {
+                } else if let Some(rest) = up.strip_prefix("BPM").and_then(|_| cmd.get(3..)) {
                     if !rest.is_empty() {
-                        if let (Ok(id), Ok(v)) =
-                            (u32::from_str_radix(rest, 36), val.trim().parse::<f64>())
+                        if let (Some(id), Ok(v)) =
+                            (parse_id(rest, self.base), val.trim().parse::<f64>())
                         {
                             if v > 0.0 {
                                 self.bpm_defs.insert(id, v);
                             }
                         }
                     }
-                } else if let Some(rest) = up.strip_prefix("STOP") {
+                } else if let Some(rest) = up.strip_prefix("STOP").and_then(|_| cmd.get(4..)) {
                     if !rest.is_empty() {
-                        if let (Ok(id), Ok(v)) =
-                            (u32::from_str_radix(rest, 36), val.trim().parse::<f64>())
+                        if let (Some(id), Ok(v)) =
+                            (parse_id(rest, self.base), val.trim().parse::<f64>())
                         {
                             if v > 0.0 {
                                 self.stop_defs.insert(id, v);
                             }
                         }
                     }
-                } else if let Some(rest) = up.strip_prefix("BMP") {
+                } else if let Some(rest) = up.strip_prefix("BMP").and_then(|_| cmd.get(3..)) {
                     if !rest.is_empty() {
-                        if let Ok(id) = u32::from_str_radix(rest, 36) {
+                        if let Some(id) = parse_id(rest, self.base) {
                             self.bmp_defs.insert(id, val.trim().to_string());
                         }
                     }
@@ -1022,7 +1048,25 @@ fn split_cmd_value(body: &str) -> (&str, &str) {
     }
 }
 
-fn parse_slots(data: &str) -> Vec<u32> {
+fn parse_id(value: &str, base: u32) -> Option<u32> {
+    if base == 36 {
+        return u32::from_str_radix(value, 36).ok();
+    }
+    if value.is_empty() {
+        return None;
+    }
+    value.bytes().try_fold(0u32, |id, byte| {
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'A'..=b'Z' => byte - b'A' + 10,
+            b'a'..=b'z' => byte - b'a' + 36,
+            _ => return None,
+        };
+        id.checked_mul(base)?.checked_add(u32::from(digit))
+    })
+}
+
+fn parse_slots(data: &str, base: u32) -> Vec<u32> {
     let bytes = data.as_bytes();
     let take = bytes.len() - (bytes.len() % 2);
     (0..take)
@@ -1030,7 +1074,7 @@ fn parse_slots(data: &str) -> Vec<u32> {
         .map(|i| {
             std::str::from_utf8(&bytes[i..i + 2])
                 .ok()
-                .and_then(|s| u32::from_str_radix(s, 36).ok())
+                .and_then(|s| parse_id(s, base))
                 .unwrap_or(0)
         })
         .collect()
@@ -1081,23 +1125,162 @@ mod tests {
     }
 
     #[test]
+    fn parse_slots_distinguishes_base62_letters_and_keeps_base36_case_insensitive() {
+        assert_eq!(parse_slots("0A0aZZzz10", 62), vec![10, 36, 2205, 3843, 62]);
+        assert_eq!(parse_slots("0A0aZZzz10", 36), vec![10, 10, 1295, 1295, 36]);
+        assert_eq!(parse_slots("!!é0?", 62), vec![0, 0, 0]);
+        assert_eq!(parse_id("", 62), None);
+        assert_eq!(parse_id("zzzzzzzz", 62), None);
+    }
+
+    #[test]
+    fn header_prescan_uses_the_last_supported_base_in_active_control_flow() {
+        let text = resolve_control_flow(
+            "#BASE 62\n#SETRANDOM 1\n#IF 2\n#BASE 36\n#ENDIF\n#BASE 16\n",
+            0,
+        );
+        assert_eq!(HeaderPass::for_text(&text).base, 62);
+        assert_eq!(HeaderPass::for_text("#BASE 62\n#BASE 36").base, 36);
+        assert_eq!(HeaderPass::for_text("#BASE invalid").base, 36);
+    }
+
+    #[test]
+    fn load_prescans_base62_and_preserves_object_ids_across_channels() {
+        let dir = tempdir();
+        let path = dir.join("base62.bms");
+        ["upper.wav", "lower.wav", "upper.png", "lower.png"]
+            .iter()
+            .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        std::fs::write(
+            &path,
+            "#BPM 60
+#wav0A upper.wav
+#WaV0a lower.wav
+#BMP0A upper.png
+#bmp0a lower.png
+#BPM0A 120
+#bpm0a 240
+#STOP0A 48
+#stop0a 96
+#LNOBJ 0a
+#00011:0A0a
+#00021:0a
+#00052:0a0A
+#00062:0a0A
+#00001:0A0a
+#00004:0A0a
+#00008:0A0a
+#00009:0A0a
+#00003:0a
+#000D1:0a
+#bAsE 62
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.wav_paths[&10], dir.join("upper.wav"));
+        assert_eq!(chart.wav_paths[&36], dir.join("lower.wav"));
+        assert_eq!(chart.bmp_paths[&10], dir.join("upper.png"));
+        assert_eq!(chart.bmp_paths[&36], dir.join("lower.png"));
+        assert_eq!(
+            chart.bgm.iter().map(|e| e.keysound).collect::<Vec<_>>(),
+            vec![10, 36]
+        );
+        assert_eq!(
+            chart.bga.iter().map(|e| e.bmp_id).collect::<Vec<_>>(),
+            vec![10, 36]
+        );
+        assert!(chart
+            .notes
+            .iter()
+            .any(|n| n.keysound == Some(10) && n.end_ms.is_some()));
+        assert!(chart
+            .notes
+            .iter()
+            .any(|n| n.keysound == Some(36) && n.end_ms.is_some()));
+        assert!(chart.p2_notes.iter().all(|n| n.keysound == Some(36)));
+        assert_eq!(chart.mines[0].damage, 10);
+        assert_eq!(read_meta(&path).unwrap().lane_count, chart.lane_count);
+    }
+
+    #[test]
+    fn base62_timing_references_are_case_sensitive_and_direct_bpm_stays_hexadecimal() {
+        let text = "#BPM0A 120\n#bpm0a 240\n#STOP0A 48\n#stop0a 96\n#BASE 62";
+        let mut pass = HeaderPass::for_text(text);
+        header_lines(text).for_each(|line| pass.absorb(line));
+        assert_eq!(pass.bpm_defs[&10], 120.0);
+        assert_eq!(pass.bpm_defs[&36], 240.0);
+        assert_eq!(pass.stop_defs[&10], 48.0);
+        assert_eq!(pass.stop_defs[&36], 96.0);
+        let raw = vec![
+            (0, "08".into(), "0A0a".into()),
+            (0, "09".into(), "0A0a".into()),
+        ];
+        let events = collect_timing_events(&raw, &pass.bpm_defs, &pass.stop_defs, pass.base);
+        assert!(matches!(events[0].kind, TimingEventKind::Bpm(120.0)));
+        assert!(matches!(events[2].kind, TimingEventKind::Bpm(240.0)));
+        assert!(matches!(events[1].kind, TimingEventKind::Stop(48.0)));
+        assert!(matches!(events[3].kind, TimingEventKind::Stop(96.0)));
+        let hex = collect_timing_events(
+            &[(0, "03".into(), "0a".into())],
+            &pass.bpm_defs,
+            &pass.stop_defs,
+            pass.base,
+        );
+        assert!(matches!(hex[0].kind, TimingEventKind::Bpm(10.0)));
+    }
+
+    #[test]
+    fn load_base62_keeps_uppercase_and_lowercase_notes_separate() {
+        let dir = tempdir();
+        let path = dir.join("notes.bms");
+        std::fs::write(&path, "#00011:0A0a\n#BASE 62").unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(
+            chart.notes.iter().map(|n| n.keysound).collect::<Vec<_>>(),
+            vec![Some(10), Some(36)]
+        );
+    }
+
+    #[test]
+    fn load_keeps_default_and_explicit_base36_ids_case_insensitive() {
+        let dir = tempdir();
+        let path = dir.join("base36.bms");
+        std::fs::write(dir.join("last.wav"), b"").unwrap();
+        for base in ["", "#BASE 36"] {
+            std::fs::write(
+                &path,
+                format!("#WAV0A first.wav\n#WAV0a last.wav\n#00011:0A0a\n{base}"),
+            )
+            .unwrap();
+            let chart = load(&path, 0.0).unwrap();
+            assert_eq!(chart.wav_paths.len(), 1);
+            assert_eq!(chart.wav_paths[&10], dir.join("last.wav"));
+            assert_eq!(
+                chart.notes.iter().map(|n| n.keysound).collect::<Vec<_>>(),
+                vec![Some(10), Some(10)]
+            );
+        }
+    }
+
+    #[test]
     fn parse_slots_reads_base36_pairs() {
-        assert_eq!(parse_slots("00010203"), vec![0, 1, 2, 3]);
+        assert_eq!(parse_slots("00010203", 36), vec![0, 1, 2, 3]);
     }
 
     #[test]
     fn parse_slots_handles_base36_letters() {
-        assert_eq!(parse_slots("0AZZ10"), vec![10, 1295, 36]);
+        assert_eq!(parse_slots("0AZZ10", 36), vec![10, 1295, 36]);
     }
 
     #[test]
     fn parse_slots_drops_a_trailing_odd_char() {
-        assert_eq!(parse_slots("010"), vec![1]);
+        assert_eq!(parse_slots("010", 36), vec![1]);
     }
 
     #[test]
     fn parse_slots_treats_bad_hex_as_zero() {
-        assert_eq!(parse_slots("!!!!"), vec![0, 0]);
+        assert_eq!(parse_slots("!!!!", 36), vec![0, 0]);
     }
 
     #[test]
@@ -1343,7 +1526,7 @@ mod tests {
         ];
         let bpm_defs: HashMap<u32, f64> = [(1u32, 175.5)].into();
         let stop_defs: HashMap<u32, f64> = [(1u32, 96.0)].into();
-        let evs = collect_timing_events(&raw, &bpm_defs, &stop_defs);
+        let evs = collect_timing_events(&raw, &bpm_defs, &stop_defs, 36);
         assert_eq!(evs.len(), 3);
         assert!(matches!(evs[0].kind, TimingEventKind::Bpm(v) if (v - 120.0).abs() < 1e-6));
         assert!(matches!(evs[1].kind, TimingEventKind::Bpm(v) if (v - 175.5).abs() < 1e-6));
@@ -1357,7 +1540,7 @@ mod tests {
             (2u32, "09".to_string(), "0099".to_string()),
         ];
         let empty: HashMap<u32, f64> = HashMap::new();
-        assert!(collect_timing_events(&raw, &empty, &empty).is_empty());
+        assert!(collect_timing_events(&raw, &empty, &empty, 36).is_empty());
     }
 
     #[test]
