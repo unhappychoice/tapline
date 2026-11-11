@@ -17,14 +17,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Install ALSA dev headers (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i -E '\|^https://archive\.ubuntu\.com/ubuntu/?([[:space:]].*)?$| {
+              s/[[:blank:]]+priority:[0-9]+//g
+              s/$/\tpriority:0/
+            }' /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any \
+            -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources \
+            -o Dir::Etc::sourceparts=- update
+          sudo apt-get -o Acquire::Retries=3 install -y libasound2-dev
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -38,13 +48,23 @@ jobs:
 
   lint:
     name: fmt & clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
       - name: Install ALSA dev headers
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i -E '\|^https://archive\.ubuntu\.com/ubuntu/?([[:space:]].*)?$| {
+              s/[[:blank:]]+priority:[0-9]+//g
+              s/$/\tpriority:0/
+            }' /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any \
+            -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources \
+            -o Dir::Etc::sourceparts=- update
+          sudo apt-get -o Acquire::Retries=3 install -y libasound2-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -60,13 +80,23 @@ jobs:
 
   coverage:
     name: coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
       - name: Install ALSA dev headers
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i -E '\|^https://archive\.ubuntu\.com/ubuntu/?([[:space:]].*)?$| {
+              s/[[:blank:]]+priority:[0-9]+//g
+              s/$/\tpriority:0/
+            }' /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any \
+            -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources \
+            -o Dir::Etc::sourceparts=- update
+          sudo apt-get -o Acquire::Retries=3 install -y libasound2-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
