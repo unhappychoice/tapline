@@ -43,7 +43,7 @@ cargo install --path .
 ```sh
 tapline                                # open the chart selector (see "Song discovery")
 tapline --dir ~/bms                    # open selector on a specific directory
-tapline --file song.bms                # skip selector, play one chart (auto 4/5/7-lane)
+tapline --file song.bms                # skip selector, play one chart (auto 4/5/7/9/14-lane)
 tapline --file song.bms --no-audio     # play a chart, silent
 tapline --built-in --bpm 160           # play the built-in practice chart
 ```
@@ -104,12 +104,23 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
-| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
-| lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, plus 14K double-play when both sides fill 7 lanes each |
+| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
+| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
+| lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, 9K PMS (`.pms`: `11–15 + 22–25`), plus 14K double-play when both sides fill 7 lanes each |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
-| control flow  | `#RANDOM`, `#SETRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF` (nesting supported) |
+| control flow  | `#RANDOM`, `#SETRANDOM`, `#ENDRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF` (nesting supported) |
+
+PMS mode is selected by the `.pms` extension (case-insensitive) and always uses
+nine lanes. Long notes (`51–55 + 62–65`) and landmines (`D1–D5 + E2–E5`)
+follow the same button order as visible notes.
+
+`#RANDOM` branches are drawn afresh for each play. The selector and chart loader
+share the same draw so displayed metadata matches gameplay. Set
+`TAPLINE_RANDOM_SEED` to an unsigned 64-bit integer for reproducible branches.
+
+Invisible notes update the lane keysound for empty presses without being drawn,
+judged, counted as notes, or played automatically.
 
 ### Long notes and landmines
 
@@ -155,6 +166,7 @@ whichever finger is closer.
 | 4     | `S D       K L`               | outer 2+2, index fingers rest     |
 | 5     | `S D  F/J  K L`               | center lane bound to both F and J |
 | 7     | `S D  F SPACE J  K L`         | spacebar is the center            |
+| 9     | `A S D F SPACE J K L ;`        | PMS buttons 1–9; spacebar is the center |
 | 14    | `S D F SPACE J K L / Z X C V B N M` | 7K SP layout on the home row for P1, ZXCVBNM below for P2 |
 
 ## License
