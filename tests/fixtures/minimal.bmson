@@ -1,0 +1,19 @@
+{
+  "version": "1.0.0",
+  "info": {
+    "title": "Minimal bmson",
+    "artist": "tapline test",
+    "init_bpm": 120,
+    "mode_hint": "generic-4keys",
+    "level": 1
+  },
+  "bpm_events": [{"y": 240, "bpm": 240}],
+  "sound_channels": [{
+    "name": "tone.wav",
+    "notes": [
+      {"x": 1, "y": 0, "l": 0, "c": false},
+      {"x": 2, "y": 240, "l": 240, "c": true},
+      {"x": 0, "y": 480, "l": 0, "c": false}
+    ]
+  }]
+}

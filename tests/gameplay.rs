@@ -173,3 +173,78 @@ fn playing_a_shipped_chart_through_hits_the_full_note_count() {
     assert_eq!(game.miss, 0);
     assert_eq!(game.combo, total_notes as u32);
 }
+
+#[test]
+fn invisible_notes_update_empty_press_sounds_without_judgment() {
+    let chart = write_and_load(
+        "#BPM 60\n#00011:01\n#00031:000Z0000\n#00031:00020000\n#00031:00000003\n#00111:04\n",
+    );
+    assert_eq!(chart.notes.len(), 2);
+    assert_eq!(chart.invisible_notes.len(), 2);
+    assert_eq!(chart.invisible_notes[0].keysound, 2);
+    assert_eq!(chart.invisible_notes[0].time_ms, 1000.0);
+    assert!(chart.bgm.is_empty());
+    let mut game = Game::new(chart);
+    assert_eq!(game.hit(0, 0.0), Some(1));
+    assert_eq!(game.hit(0, 999.0), Some(1));
+    assert_eq!(game.hit(0, 1000.0), Some(2));
+    game.check_misses(3001.0);
+    assert_eq!(game.hit(0, 3001.0), Some(3));
+    assert_eq!(game.hit(1, 3001.0), None);
+    assert_eq!(game.hit(0, 4000.0), Some(4));
+    game.check_misses(6000.0);
+    assert_eq!((game.score, game.combo, game.max_combo), (603, 2, 2));
+    assert_eq!(
+        (game.perfect, game.great, game.good, game.miss),
+        (2, 0, 0, 0)
+    );
+}
+
+#[test]
+fn invisible_only_lanes_are_available_without_creating_playable_notes() {
+    let chart = write_and_load("#BPM 60\n#00039:0Z\n#00049:02\n");
+    assert_eq!(chart.lane_count, 7);
+    assert!(chart.notes.is_empty());
+    assert!(chart.p2_notes.is_empty());
+    assert_eq!(chart.p2_invisible_notes.len(), 1);
+    assert_eq!(chart.p2_invisible_notes[0].lane, 6);
+    let mut game = Game::new(chart);
+    assert_eq!(game.hit(6, 1.0), Some(35));
+    game.check_misses(5000.0);
+    assert_eq!(
+        (game.score, game.combo, game.miss, game.perfect),
+        (0, 0, 0, 0)
+    );
+}
+
+#[test]
+fn double_play_invisible_notes_use_the_second_side_lanes() {
+    let chart = write_and_load("#BPM 60\n#00019:01\n#00029:02\n#00039:0003\n#00049:0004\n");
+    assert_eq!(chart.lane_count, 14);
+    assert!(chart.p2_invisible_notes.is_empty());
+    let mut game = Game::new(chart);
+    assert_eq!(game.hit(6, 0.0), Some(1));
+    assert_eq!(game.hit(13, 0.0), Some(2));
+    assert_eq!(game.hit(6, 2001.0), Some(3));
+    assert_eq!(game.hit(13, 2001.0), Some(4));
+    assert_eq!(game.perfect, 2);
+}
+
+#[test]
+fn pms_invisible_notes_follow_the_nine_button_mapping() {
+    let dir = tempdir();
+    let path = dir.join("song.pms");
+    std::fs::write(&path, "#BPM 60\n#00035:01\n#00042:02\n#00045:03\n").unwrap();
+    let chart = bms::load(&path, 500.0).unwrap();
+    assert_eq!(chart.lane_count, 9);
+    assert!(chart.notes.is_empty());
+    assert!(chart.p2_invisible_notes.is_empty());
+    assert_eq!(
+        chart
+            .invisible_notes
+            .iter()
+            .map(|n| (n.lane, n.time_ms))
+            .collect::<Vec<_>>(),
+        vec![(4, 500.0), (5, 500.0), (8, 500.0)]
+    );
+}
