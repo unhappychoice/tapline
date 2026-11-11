@@ -1053,7 +1053,10 @@ impl AssetIndex {
         defs.iter()
             .filter_map(|(id, name)| {
                 let normalized = name.replace('\\', "/");
-                let path: PathBuf = Path::new(&normalized).components().collect();
+                let path: PathBuf = Path::new(&normalized)
+                    .components()
+                    .filter(|component| *component != std::path::Component::CurDir)
+                    .collect();
                 self.find(&path)
                     .or_else(|| {
                         extensions
@@ -2006,6 +2009,39 @@ mod tests {
             chart.bmp_paths.get(&2),
             Some(&dir.join("sub/Background.JPG"))
         );
+    }
+
+    #[test]
+    fn resolve_assets_normalizes_leading_current_directory_components() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        [
+            "kick.wav",
+            "Cover.PNG",
+            "sub/Snare.OGG",
+            "sub/Background.JPG",
+        ]
+        .iter()
+        .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        let assets = AssetIndex::new(&dir);
+        ["./", ".\\", "././", ".\\.\\"].iter().for_each(|prefix| {
+            let wavs = [
+                (1, format!("{prefix}kick.wav")),
+                (2, format!("{prefix}SUB\\SNARE.WAV")),
+            ]
+            .into();
+            let bmps = [
+                (1, format!("{prefix}cover.png")),
+                (2, format!("{prefix}SUB\\BACKGROUND.BMP")),
+            ]
+            .into();
+            let wav_paths = resolve_wavs(&assets, &wavs);
+            let bmp_paths = resolve_bmp_paths(&assets, &bmps);
+            assert_eq!(wav_paths.get(&1), Some(&dir.join("kick.wav")));
+            assert_eq!(wav_paths.get(&2), Some(&dir.join("sub/Snare.OGG")));
+            assert_eq!(bmp_paths.get(&1), Some(&dir.join("Cover.PNG")));
+            assert_eq!(bmp_paths.get(&2), Some(&dir.join("sub/Background.JPG")));
+        });
     }
 
     #[test]
