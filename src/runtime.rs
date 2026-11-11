@@ -165,7 +165,11 @@ fn pump_input(
         if !event::poll(next_frame - inst)? {
             return Ok(());
         }
-        let Event::Key(k) = event::read()? else {
+        let input = event::read()?;
+        if matches!(input, Event::Resize(..)) {
+            execute!(out, terminal::Clear(terminal::ClearType::All))?;
+        }
+        let Event::Key(k) = input else {
             continue;
         };
         if k.kind == KeyEventKind::Repeat {
