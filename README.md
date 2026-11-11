@@ -105,11 +105,17 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
 | headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
-| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
+| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `97`/`98` (BGM/keysound volume), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, plus 14K double-play when both sides fill 7 lanes each |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
 | control flow  | `#RANDOM`, `#SETRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF` (nesting supported) |
+
+`#VOLWAV` scales sample and synth playback by a percentage (default 100).
+Channels `97` (BGM) and `98` (keysounds) set independent volume multipliers
+for sounds triggered at or after each event: hexadecimal `01`–`FF`, with
+`FF` at full volume and `00` leaving the volume unchanged. These multipliers
+combine with `#VOLWAV`; already playing sounds retain their starting gain.
 
 ### Long notes and landmines
 

@@ -1,3 +1,4 @@
+use crate::chart::{Chart, VolumeTarget};
 use rayon::prelude::*;
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Source};
@@ -7,6 +8,16 @@ use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+pub fn playback_gain(chart: &Chart, target: VolumeTarget, time_ms: f64) -> f32 {
+    let volume = chart
+        .volume_events
+        .iter()
+        .rev()
+        .find(|event| event.target == target && event.time_ms <= time_ms)
+        .map_or(255, |event| event.volume);
+    chart.vol_wav.unwrap_or(100) as f32 / 100.0 * volume as f32 / 255.0
+}
 
 #[derive(Clone)]
 struct DecodedSample {
@@ -90,6 +101,10 @@ impl SampleBank {
     }
 
     pub fn play(&self, id: u32) {
+        self.play_with_gain(id, 1.0);
+    }
+
+    pub fn play_with_gain(&self, id: u32, gain: f32) {
         let Some(handle) = &self.handle else {
             return;
         };
@@ -102,26 +117,40 @@ impl SampleBank {
             channels: s.channels,
             sample_rate: s.sample_rate,
         };
-        let _ = handle.play_raw(source);
+        let _ = handle.play_raw(source.amplify(gain));
     }
 
     pub fn play_synth(&self, freq: f32, duration_ms: u32) {
+        self.play_synth_with_gain(freq, duration_ms, 1.0);
+    }
+
+    fn play_synth_with_gain(&self, freq: f32, duration_ms: u32, gain: f32) {
         let Some(handle) = &self.handle else {
             return;
         };
         let sr: u32 = 44_100;
         let data = synth_ping(freq, duration_ms, sr);
         let buf = SamplesBuffer::new(1, sr, data);
-        let _ = handle.play_raw(buf);
+        let _ = handle.play_raw(buf.amplify(gain));
     }
 
     pub fn play_hit(&self, lane: usize, keysound: Option<u32>, synth_mode: bool) {
+        self.play_hit_with_gain(lane, keysound, synth_mode, 1.0);
+    }
+
+    pub fn play_hit_with_gain(
+        &self,
+        lane: usize,
+        keysound: Option<u32>,
+        synth_mode: bool,
+        gain: f32,
+    ) {
         match self.hit_sound(keysound, synth_mode) {
             HitSound::Synth => {
                 let f = LANE_PITCHES[lane % LANE_PITCHES.len()];
-                self.play_synth(f, 80);
+                self.play_synth_with_gain(f, 80, gain);
             }
-            HitSound::Sample(id) => self.play(id),
+            HitSound::Sample(id) => self.play_with_gain(id, gain),
             HitSound::Silent => {}
         }
     }
@@ -234,6 +263,50 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playback_gain_defaults_to_unity_and_applies_volwav() {
+        let mut chart = Chart::default();
+        assert_eq!(playback_gain(&chart, VolumeTarget::Bgm, 0.0), 1.0);
+        chart.vol_wav = Some(50);
+        [VolumeTarget::Bgm, VolumeTarget::Key]
+            .into_iter()
+            .for_each(|target| {
+                assert_eq!(playback_gain(&chart, target, 0.0), 0.5);
+            });
+        chart.vol_wav = Some(0);
+        assert_eq!(playback_gain(&chart, VolumeTarget::Key, 0.0), 0.0);
+    }
+
+    #[test]
+    fn parsed_volume_events_change_each_target_from_the_event_time() {
+        let path = std::env::temp_dir().join(format!("tapline-volume-{}.bms", std::process::id()));
+        std::fs::write(
+            &path,
+            "#BPM 120\n#VOLWAV 50\n#00197:0040\n#00198:0080\n#00297:FF\n#00398:FF\n",
+        )
+        .unwrap();
+        let chart = crate::bms::load(&path, 100.0).unwrap();
+        std::fs::remove_file(path).unwrap();
+        [VolumeTarget::Bgm, VolumeTarget::Key]
+            .into_iter()
+            .for_each(|target| {
+                assert_eq!(playback_gain(&chart, target, 3099.0), 0.5);
+                let level = if target == VolumeTarget::Bgm {
+                    64.0
+                } else {
+                    128.0
+                };
+                assert_eq!(playback_gain(&chart, target, 3100.0), 0.5 * level / 255.0);
+                assert_eq!(playback_gain(&chart, target, 4000.0), 0.5 * level / 255.0);
+            });
+        assert_eq!(playback_gain(&chart, VolumeTarget::Bgm, 4100.0), 0.5);
+        assert_eq!(
+            playback_gain(&chart, VolumeTarget::Key, 4100.0),
+            0.5 * 128.0 / 255.0
+        );
+        assert_eq!(playback_gain(&chart, VolumeTarget::Key, 6100.0), 0.5);
+    }
 
     #[test]
     fn hit_sound_selection_uses_decoded_samples_and_synth_override() {
