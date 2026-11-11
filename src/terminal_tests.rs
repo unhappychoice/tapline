@@ -49,7 +49,16 @@ fn check_in_child() {
     assert_eq!(before.c_iflag, after.c_iflag);
     assert_eq!(before.c_oflag, after.c_oflag);
     assert_eq!(before.c_cflag, after.c_cflag);
-    assert_eq!(before.c_lflag, after.c_lflag);
+    // Darwin sets PENDIN when ICANON is restored; it is pending-input state,
+    // not a terminal mode that raw-mode cleanup failed to restore.
+    #[cfg(target_os = "macos")]
+    let local_flag_mask = !libc::PENDIN;
+    #[cfg(not(target_os = "macos"))]
+    let local_flag_mask = !0;
+    assert_eq!(
+        before.c_lflag & local_flag_mask,
+        after.c_lflag & local_flag_mask
+    );
     assert_eq!(before.c_cc, after.c_cc);
     assert_eq!(unsafe { libc::cfgetispeed(&before) }, unsafe {
         libc::cfgetispeed(&after)
