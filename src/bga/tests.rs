@@ -131,3 +131,34 @@ fn preloaded_images_survive_deleted_files_and_bad_files_are_skipped() {
     assert_eq!(bank.0[&1].get_pixel(0, 0).0[3], 0);
     assert_eq!(bank.0[&1].get_pixel(32, 32).0, [255, 0, 0, 255]);
 }
+
+#[test]
+fn bmson_images_are_loaded_and_rendered_through_game() {
+    let dir = std::env::temp_dir().join(format!("tapline-bga-bmson-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    RgbaImage::from_pixel(2, 2, Rgba([12, 34, 56, 255]))
+        .save(dir.join("image.png"))
+        .unwrap();
+    let path = dir.join("chart.bmson");
+    std::fs::write(
+        &path,
+        r#"{"version":"1.0.0","info":{"title":"BGA","artist":"Test","init_bpm":120},
+        "sound_channels":[],"bga":{"bga_header":[{"id":42,"name":"image.png"}],
+        "bga_events":[{"y":0,"id":42}]}}"#,
+    )
+    .unwrap();
+    let game = Game::new(crate::bmson::load(&path, 1000.0).unwrap());
+    std::fs::remove_dir_all(dir).unwrap();
+    assert_eq!(
+        game.bga.frame(&game, 999.0).get_pixel(0, 0).0,
+        [0, 0, 0, 255]
+    );
+    assert_eq!(
+        game.bga.frame(&game, 1000.0).get_pixel(0, 0).0,
+        [12, 34, 56, 255]
+    );
+    let mut out = Vec::new();
+    draw(&mut out, &game, 1000.0, 18, 4, 16).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert_eq!(text.matches('▀').count(), 16 * 8);
+}

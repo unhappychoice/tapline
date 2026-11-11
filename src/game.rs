@@ -50,11 +50,54 @@ pub const MISS_AFTER: f64 = 160.0;
 /// happens to sit close to a mine doesn't accidentally punish the player.
 pub const MINE_WINDOW: f64 = 40.0;
 
+#[derive(Clone, Copy)]
+struct JudgmentWindows {
+    perfect: f64,
+    great: f64,
+    good: f64,
+    miss_after: f64,
+}
+
+impl JudgmentWindows {
+    fn for_rank(rank: Option<u8>) -> Self {
+        // Scale tapline's NORMAL windows consistently across all tiers.
+        const RANK_SCALES: [f64; 5] = [0.5, 0.75, 1.0, 1.25, 1.5];
+        let scale = rank
+            .and_then(|rank| RANK_SCALES.get(usize::from(rank)))
+            .copied()
+            .unwrap_or(1.0);
+        Self {
+            perfect: WINDOW_PERFECT * scale,
+            great: WINDOW_GREAT * scale,
+            good: WINDOW_GOOD * scale,
+            miss_after: MISS_AFTER * scale,
+        }
+    }
+
+    fn judge(self, dt: f64) -> Judgment {
+        if dt <= self.perfect {
+            Judgment::Perfect
+        } else if dt <= self.great {
+            Judgment::Great
+        } else if dt <= self.good {
+            Judgment::Good
+        } else {
+            Judgment::Miss
+        }
+    }
+}
+
 impl Game {
     pub fn new(chart: Chart) -> Self {
         let lane_count = chart.lane_count;
         let bga = crate::bga::ImageBank::load(&chart.bmp_paths);
         let mut events = chart.notes.clone();
+        events.extend(chart.invisible_notes.iter().map(|note| Note {
+            time_ms: note.time_ms,
+            lane: note.lane,
+            keysound: Some(note.keysound),
+            ..Note::default()
+        }));
         events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
         let mut lane_keysounds = vec![None; lane_count];
         events.iter().rev().for_each(|note| {
@@ -87,6 +130,7 @@ impl Game {
         if lane >= self.flash.last_lane_hit.len() {
             return None;
         }
+        let windows = JudgmentWindows::for_rank(self.chart.rank);
         self.update_keysounds(now_ms);
         self.trigger_mines(lane, now_ms);
         let mut best: Option<(usize, f64)> = None;
@@ -95,7 +139,7 @@ impl Game {
                 continue;
             }
             let dt = (n.time_ms - now_ms).abs();
-            if dt > WINDOW_GOOD {
+            if dt > windows.good {
                 continue;
             }
             if best.is_none_or(|(_, b)| dt < b) {
@@ -106,13 +150,7 @@ impl Game {
         if let Some((i, dt)) = best {
             let keysound = self.chart.notes[i].keysound;
             let is_ln = self.chart.notes[i].end_ms.is_some();
-            let j = if dt <= WINDOW_PERFECT {
-                Judgment::Perfect
-            } else if dt <= WINDOW_GREAT {
-                Judgment::Great
-            } else {
-                Judgment::Good
-            };
+            let j = windows.judge(dt);
             if is_ln {
                 self.chart.notes[i].held_since = Some(now_ms);
             } else {
@@ -167,28 +205,21 @@ impl Game {
             return;
         };
         let dt = (end_ms - now_ms).abs();
-        let j = if dt <= WINDOW_PERFECT {
-            Judgment::Perfect
-        } else if dt <= WINDOW_GREAT {
-            Judgment::Great
-        } else if dt <= WINDOW_GOOD {
-            Judgment::Good
-        } else {
-            Judgment::Miss
-        };
+        let j = JudgmentWindows::for_rank(self.chart.rank).judge(dt);
         self.chart.notes[i].hit = true;
         self.chart.notes[i].held_since = None;
         self.apply(j, now_ms);
     }
 
     pub fn check_misses(&mut self, now_ms: f64) {
+        let miss_after = JudgmentWindows::for_rank(self.chart.rank).miss_after;
         self.update_keysounds(now_ms);
         let missed: Vec<usize> = self
             .chart
             .notes
             .iter()
             .enumerate()
-            .filter(|(_, n)| !n.hit && n.held_since.is_none() && n.time_ms + MISS_AFTER < now_ms)
+            .filter(|(_, n)| !n.hit && n.held_since.is_none() && n.time_ms + miss_after < now_ms)
             .map(|(i, _)| i)
             .collect();
         for i in missed {
@@ -207,7 +238,7 @@ impl Game {
                     return None;
                 }
                 let end = n.end_ms?;
-                (end + MISS_AFTER < now_ms).then_some(i)
+                (end + miss_after < now_ms).then_some(i)
             })
             .collect();
         for i in auto {
@@ -275,10 +306,133 @@ mod tests {
         }
     }
 
+    fn ranked_game(rank: Option<u8>, long: bool) -> Game {
+        let notes = vec![if long {
+            ln(1000.0, 2000.0, 0)
+        } else {
+            note(1000.0, 0)
+        }];
+        let mut chart = chart_with(notes, 4);
+        chart.rank = rank;
+        Game::new(chart)
+    }
+
+    #[test]
+    fn very_hard_downgrades_a_normal_perfect_to_great() {
+        for (rank, expected) in [
+            (Some(0), Judgment::Great),
+            (Some(2), Judgment::Perfect),
+            (None, Judgment::Perfect),
+        ] {
+            let mut game = ranked_game(rank, false);
+            game.hit(0, 1030.0);
+            assert_eq!(game.flash.last_judgment, Some(expected));
+        }
+    }
+
+    #[test]
+    fn rank_windows_apply_at_both_sides_of_hit_and_release_boundaries() {
+        let rows = [
+            (Some(0), [22.5, 45.0, 70.0]),
+            (Some(1), [33.75, 67.5, 105.0]),
+            (Some(2), [45.0, 90.0, 140.0]),
+            (Some(3), [56.25, 112.5, 175.0]),
+            (Some(4), [67.5, 135.0, 210.0]),
+            (None, [45.0, 90.0, 140.0]),
+            (Some(255), [45.0, 90.0, 140.0]),
+        ];
+        for (rank, boundaries) in rows {
+            for (boundary, within, outside) in [
+                (boundaries[0], Judgment::Perfect, Judgment::Great),
+                (boundaries[1], Judgment::Great, Judgment::Good),
+                (boundaries[2], Judgment::Good, Judgment::Miss),
+            ] {
+                for sign in [-1.0, 1.0] {
+                    for (offset, expected) in [(boundary, within), (boundary + 0.5, outside)] {
+                        for long in [false, true] {
+                            let mut game = ranked_game(rank, long);
+                            if long {
+                                game.hit(0, 1000.0);
+                                game.release(0, 2000.0 + sign * offset);
+                                assert!(game.chart.notes[0].hit);
+                                assert!(game.chart.notes[0].held_since.is_none());
+                            } else {
+                                game.hit(0, 1000.0 + sign * offset);
+                            }
+                            let expected = if !long && expected == Judgment::Miss {
+                                None
+                            } else {
+                                Some(expected)
+                            };
+                            assert_eq!(
+                                game.flash.last_judgment, expected,
+                                "rank={rank:?}, offset={offset}, sign={sign}, long={long}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rank_miss_delays_apply_to_taps_unstarted_and_held_long_notes() {
+        for (rank, delay) in [
+            (Some(0), 80.0),
+            (Some(1), 120.0),
+            (Some(2), 160.0),
+            (Some(3), 200.0),
+            (Some(4), 240.0),
+            (None, 160.0),
+            (Some(255), 160.0),
+        ] {
+            for (long, held) in [(false, false), (true, false), (true, true)] {
+                let mut game = ranked_game(rank, long);
+                let time = if held {
+                    game.hit(0, 1000.0);
+                    2000.0
+                } else {
+                    1000.0
+                };
+                game.check_misses(time + delay);
+                assert!(!game.chart.notes[0].hit);
+                game.check_misses(time + delay + 0.5);
+                assert!(game.chart.notes[0].hit);
+                assert!(game.chart.notes[0].held_since.is_none());
+                assert_eq!(
+                    game.flash.last_judgment,
+                    Some(if held {
+                        Judgment::Perfect
+                    } else {
+                        Judgment::Miss
+                    })
+                );
+                let score = game.score;
+                game.check_misses(time + delay + 1.0);
+                assert_eq!(game.score, score);
+            }
+        }
+    }
+
     fn sound_note(time_ms: f64, lane: usize, keysound: Option<u32>) -> Note {
         Note {
             keysound,
             ..note(time_ms, lane)
+        }
+    }
+
+    #[test]
+    fn rank_windows_preserve_passed_keysounds_on_empty_presses() {
+        for (rank, offset, judged) in [(0, 100.0, false), (4, 180.0, true)] {
+            let mut chart = chart_with(vec![note(1000.0, 0), sound_note(2000.0, 0, Some(2))], 4);
+            chart.rank = Some(rank);
+            let mut game = Game::new(chart);
+            assert_eq!(game.hit(0, 2000.0 + offset), Some(2));
+            assert_eq!(game.chart.notes[1].hit, judged);
+            assert_eq!(game.good, u32::from(judged));
+            game.check_misses(2500.0);
+            assert_eq!(game.miss, if judged { 1 } else { 2 });
+            assert_eq!(game.hit(0, 3000.0), Some(2));
         }
     }
 
