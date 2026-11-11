@@ -6,3 +6,5 @@ pub mod game;
 pub mod render;
 pub mod runtime;
 pub mod select;
+
+mod terminal_text;

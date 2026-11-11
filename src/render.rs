@@ -281,7 +281,9 @@ fn bmp_id_label(id: u32) -> String {
 
 /// Appends the subtitle in `~…~` after the title when present.
 pub fn format_title_line(title: &str, subtitle: &str) -> String {
-    let t = if title.is_empty() { "TAPLINE" } else { title };
+    let title = crate::terminal_text::sanitize(title);
+    let subtitle = crate::terminal_text::sanitize(subtitle);
+    let t = if title.is_empty() { "TAPLINE" } else { &title };
     if subtitle.is_empty() {
         t.to_string()
     } else {
@@ -291,6 +293,8 @@ pub fn format_title_line(title: &str, subtitle: &str) -> String {
 
 /// Formats the artist line (with optional subartist) as `— artist / subartist`.
 pub fn format_artist_line(artist: &str, subartist: &str) -> Option<String> {
+    let artist = crate::terminal_text::sanitize(artist);
+    let subartist = crate::terminal_text::sanitize(subartist);
     if artist.is_empty() && subartist.is_empty() {
         return None;
     }
@@ -319,7 +323,7 @@ fn format_difficulty_badge(game: &Game) -> String {
     parts.push(bpm);
     parts.push(format!("{}K", game.chart.lane_count));
     if !game.chart.genre.is_empty() {
-        parts.push(game.chart.genre.clone());
+        parts.push(crate::terminal_text::sanitize(&game.chart.genre));
     }
     parts.join("  ·  ")
 }
@@ -694,6 +698,26 @@ mod tests {
             keys: keys_for(lane_count),
             ..Chart::default()
         }
+    }
+
+    #[test]
+    fn display_metadata_removes_terminal_controls_and_preserves_unicode() {
+        let payload = "\x1b]52;c;VEVTVA==\x07\u{9b}2J\r\n\t\x7f";
+        let unsafe_text = format!("日本語{payload}");
+        let safe_text = "日本語]52;c;VEVTVA==2J";
+        assert_eq!(
+            format_title_line(&unsafe_text, &unsafe_text),
+            format!("{safe_text}  ~{safe_text}~")
+        );
+        assert_eq!(
+            format_artist_line(&unsafe_text, &unsafe_text),
+            Some(format!("— {safe_text} / {safe_text}"))
+        );
+        let mut chart = base_chart(4);
+        chart.genre = unsafe_text;
+        let badge = format_difficulty_badge(&Game::new(chart));
+        assert!(badge.ends_with(safe_text));
+        assert!(!badge.chars().any(char::is_control));
     }
 
     #[test]
