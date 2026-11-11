@@ -111,3 +111,39 @@ fn scratch_layouts_bind_every_lane_without_conflicts() {
         });
     });
 }
+
+#[test]
+fn invisible_scratch_sounds_follow_compacted_and_double_play_lanes() {
+    [
+        ("#00136:02", 6, vec![5]),
+        ("#00119:01\n#00136:02", 8, vec![7]),
+        (
+            "#00116:01\n#00126:01\n#00136:02\n#00146:03",
+            12,
+            vec![5, 11],
+        ),
+        (
+            "#00119:01\n#00129:01\n#00136:02\n#00146:03",
+            16,
+            vec![7, 15],
+        ),
+    ]
+    .iter()
+    .for_each(|(channels, count, lanes)| {
+        let chart = load(channels, *count);
+        assert!(chart.p2_invisible_notes.is_empty());
+        assert_eq!(
+            chart
+                .invisible_notes
+                .iter()
+                .map(|n| n.lane)
+                .collect::<Vec<_>>(),
+            *lanes
+        );
+        let mut game = Game::new(chart);
+        lanes.iter().enumerate().for_each(|(side, lane)| {
+            game.hit(*lane, 4000.0);
+            assert_eq!(game.hit(*lane, 4001.0), Some(2 + side as u32));
+        });
+    });
+}
