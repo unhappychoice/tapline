@@ -348,15 +348,15 @@ fn draw_song_text(
         terminal::Clear(terminal::ClearType::CurrentLine)
     )?;
     if let Some(text) = song_text_at(events, now_ms) {
-        // Reserve two cells per character so wide Unicode text cannot wrap.
-        queue!(
-            out,
-            Print(
-                text.chars()
-                    .take(cols.saturating_sub(1) as usize / 2)
-                    .collect::<String>()
-            )
-        )?;
+        let mut width = 0;
+        let visible: String = text
+            .chars()
+            .take_while(|c| {
+                width += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+                width <= usize::from(cols)
+            })
+            .collect();
+        queue!(out, Print(visible))?;
     }
     Ok(())
 }
@@ -771,6 +771,31 @@ mod tests {
         let mut narrow = Vec::new();
         draw_song_text(&mut narrow, &events, 0.0, 1).unwrap();
         assert!(!String::from_utf8(narrow).unwrap().contains('日'));
+    }
+
+    #[test]
+    fn song_text_hud_uses_all_available_columns() {
+        [
+            ("Hello", 5, "Hello"),
+            ("日本語", 6, "日本語"),
+            ("a日本", 4, "a日"),
+            ("e\u{301}x", 1, "e\u{301}"),
+            ("x", 1, "x"),
+            ("x", 0, ""),
+        ]
+        .into_iter()
+        .for_each(|(text, cols, expected)| {
+            let events = [TextEvent {
+                time_ms: 0.0,
+                text: text.into(),
+            }];
+            let mut out = Vec::new();
+            draw_song_text(&mut out, &events, 0.0, cols).unwrap();
+            assert_eq!(
+                String::from_utf8(out).unwrap(),
+                format!("\x1b[1;1H\x1b[2K{expected}")
+            );
+        });
     }
 
     #[test]
