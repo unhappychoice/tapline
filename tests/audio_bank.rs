@@ -1,12 +1,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
 use tapline::audio::SampleBank;
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
-// Keep native audio device initialization, playback, and teardown isolated.
-static AUDIO_BACKEND: Mutex<()> = Mutex::new(());
 
 fn tempdir() -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -51,9 +48,21 @@ fn silent_bank_constructor_creates_a_disabled_bank() {
     assert!(!bank.enabled);
 }
 
+// CPAL caches the WASAPI enumerator globally, but its COM apartment belongs
+// to the first calling thread. A mutex cannot keep that apartment alive after
+// a harness thread exits. Keep every native audio case on this one thread.
+// https://github.com/RustAudio/cpal/issues/1302
 #[test]
+fn native_audio_bank_lifecycle_stays_on_one_thread() {
+    new_with_empty_map_never_panics_even_if_backend_is_absent();
+    new_drops_wav_entries_pointing_at_missing_files();
+    new_drops_wav_entries_that_are_not_valid_audio();
+    new_loads_a_hand_crafted_pcm_wav_without_panicking();
+    new_loads_the_same_wav_for_every_registered_id();
+    new_with_empty_map_never_panics_even_if_backend_is_absent();
+}
+
 fn new_with_empty_map_never_panics_even_if_backend_is_absent() {
-    let _backend = AUDIO_BACKEND.lock().unwrap();
     let bank = SampleBank::new(&HashMap::new());
     // enabled may be true or false depending on the test runner's audio
     // backend; the important guarantee is that construction doesn't panic
@@ -65,46 +74,44 @@ fn new_with_empty_map_never_panics_even_if_backend_is_absent() {
     }
 }
 
-#[test]
 fn new_drops_wav_entries_pointing_at_missing_files() {
-    let _backend = AUDIO_BACKEND.lock().unwrap();
     let dir = tempdir();
     let mut wav_paths: HashMap<u32, PathBuf> = HashMap::new();
     wav_paths.insert(1, dir.join("missing.wav"));
     let bank = SampleBank::new(&wav_paths);
+    assert_eq!(bank.sample_count(), 0);
+    assert_eq!(bank.decode_failures, 1);
     // The missing WAV never made it into the bank; calling play with its id
     // is a no-op instead of a decode attempt.
     bank.play(1);
 }
 
-#[test]
 fn new_drops_wav_entries_that_are_not_valid_audio() {
-    let _backend = AUDIO_BACKEND.lock().unwrap();
     let dir = tempdir();
     let broken = dir.join("broken.wav");
     std::fs::write(&broken, b"not a wav at all").unwrap();
     let mut wav_paths: HashMap<u32, PathBuf> = HashMap::new();
     wav_paths.insert(1, broken);
     let bank = SampleBank::new(&wav_paths);
+    assert_eq!(bank.sample_count(), 0);
+    assert_eq!(bank.decode_failures, 1);
     bank.play(1); // decode failure earlier → no-op now
 }
 
-#[test]
 fn new_loads_a_hand_crafted_pcm_wav_without_panicking() {
-    let _backend = AUDIO_BACKEND.lock().unwrap();
     let dir = tempdir();
     let wav = dir.join("tiny.wav");
     std::fs::write(&wav, silent_wav_bytes(64)).unwrap();
     let mut wav_paths: HashMap<u32, PathBuf> = HashMap::new();
     wav_paths.insert(42, wav);
     let bank = SampleBank::new(&wav_paths);
+    assert_eq!(bank.sample_count(), 1);
+    assert_eq!(bank.decode_failures, 0);
     // Sample loaded → play should route through the WAV path.
     bank.play(42);
 }
 
-#[test]
 fn new_loads_the_same_wav_for_every_registered_id() {
-    let _backend = AUDIO_BACKEND.lock().unwrap();
     let dir = tempdir();
     let wav = dir.join("shared.wav");
     std::fs::write(&wav, silent_wav_bytes(64)).unwrap();
