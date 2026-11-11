@@ -15,10 +15,10 @@ pub struct PlayOptions {
 }
 
 impl PlayOptions {
-    pub fn from_args(args: &Args, chart: &chart::Chart) -> Self {
+    pub fn from_args(args: &Args) -> Self {
         Self {
             countdown_ms: args.countdown_ms,
-            synth_mode: args.synth || chart.wav_paths.is_empty(),
+            synth_mode: args.synth,
             auto_ks: args.auto_ks,
             audio_lead_ms: args.audio_lead_ms,
         }
@@ -26,7 +26,7 @@ impl PlayOptions {
 }
 
 pub fn play_chart(out: &mut Stdout, args: &Args, chart: chart::Chart) -> Result<()> {
-    let opts = PlayOptions::from_args(args, &chart);
+    let opts = PlayOptions::from_args(args);
     let bank = if args.no_audio {
         audio::SampleBank::silent()
     } else {
@@ -104,6 +104,7 @@ fn draw_frame(
     state: &mut LoopState,
     now: f64,
 ) -> Result<()> {
+    fire_scheduled_audio(bank, opts, state, game, now);
     let mode: u8 = if now < opts.countdown_ms { 1 } else { 2 };
     if mode != state.prev_mode {
         execute!(out, terminal::Clear(terminal::ClearType::All))?;
@@ -121,7 +122,6 @@ fn draw_frame(
         return Ok(());
     }
     game.check_misses(now);
-    fire_scheduled_audio(bank, opts, state, game, now);
     render::draw(out, game, now)
 }
 
@@ -427,13 +427,14 @@ mod tests {
     }
 
     #[test]
-    fn play_options_from_args_forces_synth_when_no_wavs_are_loaded() {
+    fn play_options_from_args_carries_over_the_synth_flag() {
         use crate::cli::Args;
         use clap::Parser;
-        let args = Args::parse_from(["tapline"]);
-        let chart = base_chart(4, vec![]);
-        let opts = PlayOptions::from_args(&args, &chart);
-        assert!(opts.synth_mode, "no WAV paths → synth mode auto-on");
+        [false, true].into_iter().for_each(|synth| {
+            let mut args = Args::parse_from(["tapline"]);
+            args.synth = synth;
+            assert_eq!(PlayOptions::from_args(&args).synth_mode, synth);
+        });
     }
 
     #[test]
@@ -441,8 +442,7 @@ mod tests {
         use crate::cli::Args;
         use clap::Parser;
         let args = Args::parse_from(["tapline", "--audio-lead-ms", "72"]);
-        let chart = base_chart(4, vec![]);
-        let opts = PlayOptions::from_args(&args, &chart);
+        let opts = PlayOptions::from_args(&args);
         assert_eq!(opts.audio_lead_ms, 72.0);
     }
 
@@ -451,8 +451,7 @@ mod tests {
         use crate::cli::Args;
         use clap::Parser;
         let args = Args::parse_from(["tapline", "--auto-ks"]);
-        let chart = base_chart(4, vec![]);
-        let opts = PlayOptions::from_args(&args, &chart);
+        let opts = PlayOptions::from_args(&args);
         assert!(opts.auto_ks);
     }
 
@@ -467,6 +466,59 @@ mod tests {
             bgm,
             duration_ms: 30_000.0,
             ..Chart::default()
+        }
+    }
+
+    #[test]
+    fn draw_frame_schedules_countdown_audio_at_each_lead_time() {
+        for auto_ks in [false, true] {
+            let times = [2000.0, 2032.0, 2064.0];
+            let notes = times
+                .iter()
+                .map(|&time_ms| Note {
+                    time_ms,
+                    lane: 0,
+                    hit: false,
+                    keysound: Some(1),
+                    end_ms: None,
+                    held_since: None,
+                })
+                .collect();
+            let mut chart = base_chart(4, notes);
+            chart.bgm = times
+                .iter()
+                .map(|&time_ms| BgmEvent {
+                    time_ms,
+                    keysound: 1,
+                })
+                .collect();
+            let mut game = Game::new(chart);
+            let bank = SampleBank::silent();
+            let mut options = opts(auto_ks);
+            options.audio_lead_ms = 80.0;
+            let mut state = LoopState::new(build_auto_notes(&game, &options));
+            let mut out = std::io::stdout();
+
+            for (now, expected) in [
+                (1919.0, 0),
+                (1920.0, 1),
+                (1936.0, 1),
+                (1952.0, 2),
+                (1968.0, 2),
+                (1984.0, 3),
+                (2000.0, 3),
+            ] {
+                // Rendering can fail without a terminal; audio must still be scheduled.
+                let _ = draw_frame(&mut out, &mut game, &bank, &options, &mut state, now);
+                assert_eq!(state.bgm_cursor, expected, "BGM at {now} ms");
+                assert_eq!(
+                    state.note_snd_cursor,
+                    if auto_ks { expected } else { 0 },
+                    "keysounds at {now} ms (auto_ks={auto_ks})"
+                );
+                assert_eq!(game.miss, 0);
+                assert!(game.chart.notes.iter().all(|note| !note.hit));
+            }
         }
     }
 

@@ -87,6 +87,8 @@ impl Game {
         }
     }
 
+    /// Judge the nearest unhit note in the lane within the inclusive hit window.
+    /// Equal timing distances prefer the earlier note in chart order.
     pub fn hit(&mut self, lane: usize, now_ms: f64) -> Option<u32> {
         if lane >= self.flash.last_lane_hit.len() {
             return None;
@@ -217,6 +219,7 @@ impl Game {
         }
     }
 
+    /// Select lane-local note indexes within the inclusive good judgment window.
     fn hit_candidates(&self, lane: usize, now_ms: f64) -> &[usize] {
         let ids = &self.lane_notes[lane];
         let start = ids.partition_point(|&i| self.chart.notes[i].time_ms < now_ms - WINDOW_GOOD);

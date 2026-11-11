@@ -137,24 +137,7 @@ fn draw(out: &mut Stdout, charts: &[ChartMeta], cursor_i: usize, scroll: &mut us
         let selected = i == cursor_i;
         let y = list_top + row as u16;
         let arrow = if selected { "▸ " } else { "  " };
-        let badge = format_badge(m);
-        let title = if m.title.is_empty() {
-            m.path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("(untitled)")
-                .to_string()
-        } else if m.subtitle.is_empty() {
-            m.title.clone()
-        } else {
-            format!("{}  ~{}~", m.title, m.subtitle)
-        };
-        let artist = if m.artist.is_empty() {
-            "".to_string()
-        } else {
-            format!("  — {}", m.artist)
-        };
-        let text = format!("{}{}  {}{}", arrow, badge, title, artist);
+        let text = format_chart_row(m, arrow);
         let clipped: String = text.chars().take(cols as usize).collect();
         let color = if selected { Color::White } else { Color::Grey };
         queue!(out, cursor::MoveTo(2, y), SetForegroundColor(color))?;
@@ -186,6 +169,28 @@ fn draw(out: &mut Stdout, charts: &[ChartMeta], cursor_i: usize, scroll: &mut us
     Ok(())
 }
 
+fn format_chart_row(m: &ChartMeta, arrow: &str) -> String {
+    let badge = format_badge(m);
+    let title = if m.title.is_empty() {
+        m.path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("(untitled)")
+            .to_string()
+    } else if m.subtitle.is_empty() {
+        m.title.clone()
+    } else {
+        format!("{}  ~{}~", m.title, m.subtitle)
+    };
+    let artist = if m.artist.is_empty() {
+        "".to_string()
+    } else {
+        format!("  — {}", m.artist)
+    };
+    let text = format!("{}{}  {}{}", arrow, badge, title, artist);
+    crate::terminal_text::sanitize(&text)
+}
+
 fn format_badge(m: &ChartMeta) -> String {
     let lanes = format!("{}K", m.lane_count);
     let dif = match difficulty_label(m.difficulty) {
@@ -214,6 +219,25 @@ mod tests {
             difficulty: Some(2),
             lane_count: 5,
         }
+    }
+
+    #[test]
+    fn chart_row_sanitizes_metadata_before_clipping() {
+        let mut chart = meta("曲名\x1b]52;c;VEVTVA==\x07");
+        chart.subtitle = "副題\u{9b}2J".into();
+        chart.artist = "作者\r\n\t\x7f".into();
+        let row = format_chart_row(&chart, "▸ ");
+        assert!(row.ends_with("曲名]52;c;VEVTVA==  ~副題2J~  — 作者"));
+        assert!(!row.chars().any(char::is_control));
+    }
+
+    #[test]
+    fn chart_row_sanitizes_filename_fallback() {
+        let mut chart = meta("");
+        chart.path = PathBuf::from("曲名\x1b]52;c;VEVTVA==\x07.bms");
+        let row = format_chart_row(&chart, "  ");
+        assert!(row.ends_with("曲名]52;c;VEVTVA==.bms"));
+        assert!(!row.chars().any(char::is_control));
     }
 
     #[test]

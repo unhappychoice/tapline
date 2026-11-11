@@ -96,6 +96,20 @@ fn new_loads_a_hand_crafted_pcm_wav_without_panicking() {
 }
 
 #[test]
+fn new_loads_the_same_wav_for_every_registered_id() {
+    let dir = tempdir();
+    let wav = dir.join("shared.wav");
+    std::fs::write(&wav, silent_wav_bytes(64)).unwrap();
+    let wav_paths = (1..=10).map(|id| (id, wav.clone())).collect();
+    let bank = SampleBank::new(&wav_paths);
+
+    assert_eq!(bank.sample_count(), 10);
+    assert_eq!(bank.decode_failures, 0);
+    (1..=10).for_each(|id| bank.play(id));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn play_hit_falls_back_to_synth_when_keysound_is_unknown() {
     let bank = SampleBank::silent();
     // Silent bank has no `handle`, so this is a no-op — the important thing
