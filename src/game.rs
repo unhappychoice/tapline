@@ -1,4 +1,4 @@
-use crate::chart::Chart;
+use crate::chart::{Chart, Note};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Judgment {
@@ -35,6 +35,13 @@ pub struct Game {
     pub good: u32,
     pub miss: u32,
     pub flash: FlashState,
+    next_miss: usize,
+    lane_notes: Vec<Vec<usize>>,
+    held_notes: Vec<usize>,
+    #[cfg(test)]
+    miss_visits: usize,
+    #[cfg(test)]
+    render_visits: std::cell::Cell<usize>,
 }
 
 pub const WINDOW_PERFECT: f64 = 45.0;
@@ -47,9 +54,23 @@ pub const MISS_AFTER: f64 = 160.0;
 pub const MINE_WINDOW: f64 = 40.0;
 
 impl Game {
+    /// Notes must be sorted by time; their timestamps, lanes, and order stay fixed during play.
     pub fn new(chart: Chart) -> Self {
         let lane_count = chart.lane_count;
+        let mut lane_notes = vec![Vec::new(); lane_count];
+        chart.notes.iter().enumerate().for_each(|(i, note)| {
+            if let Some(lane) = lane_notes.get_mut(note.lane) {
+                lane.push(i);
+            }
+        });
         Self {
+            next_miss: 0,
+            lane_notes,
+            held_notes: Vec::new(),
+            #[cfg(test)]
+            miss_visits: 0,
+            #[cfg(test)]
+            render_visits: std::cell::Cell::new(0),
             chart,
             score: 0,
             combo: 0,
@@ -72,7 +93,8 @@ impl Game {
         }
         self.trigger_mines(lane, now_ms);
         let mut best: Option<(usize, f64)> = None;
-        for (i, n) in self.chart.notes.iter().enumerate() {
+        for &i in self.hit_candidates(lane, now_ms) {
+            let n = &self.chart.notes[i];
             if n.hit || n.held_since.is_some() || n.lane != lane {
                 continue;
             }
@@ -97,6 +119,8 @@ impl Game {
             };
             if is_ln {
                 self.chart.notes[i].held_since = Some(now_ms);
+                self.held_notes.push(i);
+                self.held_notes.sort_unstable();
             } else {
                 self.chart.notes[i].hit = true;
             }
@@ -129,14 +153,14 @@ impl Game {
         if lane >= self.flash.last_lane_hit.len() {
             return;
         }
-        let held = self
-            .chart
-            .notes
+        let Some(position) = self
+            .held_notes
             .iter()
-            .position(|n| n.lane == lane && n.held_since.is_some() && !n.hit);
-        let Some(i) = held else {
+            .position(|&i| self.chart.notes[i].lane == lane)
+        else {
             return;
         };
+        let i = self.held_notes.remove(position);
         let Some(end_ms) = self.chart.notes[i].end_ms else {
             return;
         };
@@ -155,39 +179,70 @@ impl Game {
         self.apply(j, now_ms);
     }
 
+    /// Advance pending starts once, then judge tails only for currently held LNs.
     pub fn check_misses(&mut self, now_ms: f64) {
-        let missed: Vec<usize> = self
-            .chart
-            .notes
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| !n.hit && n.held_since.is_none() && n.time_ms + MISS_AFTER < now_ms)
-            .map(|(i, _)| i)
-            .collect();
-        for i in missed {
-            self.chart.notes[i].hit = true;
-            self.apply(Judgment::Miss, now_ms);
+        while let Some(note) = self.chart.notes.get(self.next_miss) {
+            if note.time_ms + MISS_AFTER >= now_ms {
+                break;
+            }
+            #[cfg(test)]
+            {
+                self.miss_visits += 1;
+            }
+            let i = self.next_miss;
+            self.next_miss += 1;
+            if !note.hit && note.held_since.is_none() {
+                self.chart.notes[i].hit = true;
+                self.apply(Judgment::Miss, now_ms);
+            }
         }
-        // Long notes still held past their end + miss window → auto-release
-        // as Perfect (the player did hold long enough).
-        let auto: Vec<usize> = self
+        let mut position = 0;
+        while position < self.held_notes.len() {
+            #[cfg(test)]
+            {
+                self.miss_visits += 1;
+            }
+            let i = self.held_notes[position];
+            if self.chart.notes[i]
+                .end_ms
+                .is_some_and(|end| end + MISS_AFTER < now_ms)
+            {
+                self.held_notes.remove(position);
+                self.chart.notes[i].hit = true;
+                self.chart.notes[i].held_since = None;
+                self.apply(Judgment::Perfect, now_ms);
+            } else {
+                position += 1;
+            }
+        }
+    }
+
+    fn hit_candidates(&self, lane: usize, now_ms: f64) -> &[usize] {
+        let ids = &self.lane_notes[lane];
+        let start = ids.partition_point(|&i| self.chart.notes[i].time_ms < now_ms - WINDOW_GOOD);
+        let end = ids.partition_point(|&i| self.chart.notes[i].time_ms <= now_ms + WINDOW_GOOD);
+        &ids[start..end]
+    }
+
+    /// Charts must keep their notes in ascending time order throughout play.
+    /// Include pending starts since the last miss check and older held LNs.
+    pub fn visible_notes(&self, now_ms: f64, approach_ms: f64) -> impl Iterator<Item = &Note> {
+        let end = self
             .chart
             .notes
+            .partition_point(|n| n.time_ms <= now_ms + approach_ms);
+        let start = self.next_miss.min(end);
+        self.held_notes
             .iter()
-            .enumerate()
-            .filter_map(|(i, n)| {
-                if n.hit || n.held_since.is_none() {
-                    return None;
-                }
-                let end = n.end_ms?;
-                (end + MISS_AFTER < now_ms).then_some(i)
+            .copied()
+            .filter(move |&i| i < start)
+            .chain(start..end)
+            .map(|i| {
+                #[cfg(test)]
+                self.render_visits.set(self.render_visits.get() + 1);
+                &self.chart.notes[i]
             })
-            .collect();
-        for i in auto {
-            self.chart.notes[i].hit = true;
-            self.chart.notes[i].held_since = None;
-            self.apply(Judgment::Perfect, now_ms);
-        }
+            .filter(|note| !note.hit)
     }
 
     fn apply(&mut self, j: Judgment, now_ms: f64) {
@@ -245,6 +300,89 @@ mod tests {
             end_ms: None,
             held_since: None,
         }
+    }
+
+    #[test]
+    fn frame_and_hit_candidates_stay_bounded_with_large_charts() {
+        let work = |extra| {
+            let mut notes: Vec<_> = (0..extra).map(|i| note(i as f64, 0)).collect();
+            notes.extend([ln(200_000.0, 210_000.0, 0), note(205_000.0, 1)]);
+            notes.extend((0..extra).map(|i| note(300_000.0 + i as f64, 1)));
+            let mut g = Game::new(chart_with(notes, 4));
+            g.check_misses(200_000.0);
+            g.hit(0, 200_000.0);
+            g.check_misses(204_999.0);
+            g.miss_visits = 0;
+            g.check_misses(205_000.0);
+            let candidates = g.hit_candidates(1, 205_000.0).len();
+            let visible: Vec<_> = g
+                .visible_notes(205_000.0, 1000.0)
+                .map(|n| (n.time_ms, n.lane))
+                .collect();
+            assert_eq!(visible, vec![(200_000.0, 0), (205_000.0, 1)]);
+            g.hit(1, 205_000.0);
+            assert_eq!(g.perfect, 2);
+            (g.miss_visits, g.render_visits.get(), candidates)
+        };
+        assert_eq!(work(0), (1, 2, 1));
+        assert_eq!(work(100_000), (1, 2, 1));
+    }
+
+    #[test]
+    fn miss_cursor_preserves_strict_deadlines_and_never_revisits_notes() {
+        let mut g = Game::new(chart_with(vec![note(1000.0, 0), note(1000.0, 1)], 4));
+        g.check_misses(1160.0);
+        assert_eq!(g.next_miss, 0);
+        g.check_misses(1160.1);
+        assert_eq!(g.miss, 2);
+        assert_eq!(g.next_miss, 2);
+        g.miss_visits = 0;
+        g.check_misses(5000.0);
+        assert_eq!(g.miss_visits, 0);
+        assert_eq!(g.visible_notes(5000.0, 1000.0).count(), 0);
+        assert_eq!(g.render_visits.get(), 0);
+    }
+
+    #[test]
+    fn lane_search_includes_window_edges_and_keeps_first_note_on_ties() {
+        let mut g = Game::new(chart_with(
+            vec![note(860.0, 0), note(1000.0, 1), note(1140.0, 0)],
+            4,
+        ));
+        assert_eq!(g.hit_candidates(0, 1000.0), &[0, 2]);
+        g.hit(0, 1000.0);
+        assert!(g.chart.notes[0].hit);
+        assert!(!g.chart.notes[2].hit);
+        g.hit(0, 1000.0);
+        assert_eq!(g.good, 2);
+    }
+
+    #[test]
+    fn visible_candidates_keep_chords_and_old_holds_without_duplicates() {
+        let mut g = Game::new(chart_with(
+            vec![
+                ln(1000.0, 5000.0, 0),
+                ln(1000.0, 6000.0, 1),
+                note(3000.0, 2),
+                note(3000.0, 3),
+                note(4000.0, 2),
+                note(4000.1, 3),
+            ],
+            4,
+        ));
+        g.hit(0, 1000.0);
+        g.hit(1, 1000.0);
+        assert_eq!(g.visible_notes(1000.0, 1000.0).count(), 2);
+        g.check_misses(3000.0);
+        assert_eq!(g.visible_notes(3000.0, 1000.0).count(), 5);
+        g.release(0, 5000.0);
+        assert_eq!(g.held_notes, vec![1]);
+        g.check_misses(6160.0);
+        assert_eq!(g.held_notes, vec![1]);
+        g.check_misses(6160.1);
+        assert!(g.held_notes.is_empty());
+        assert_eq!(g.perfect, 4);
+        assert_eq!(g.visible_notes(6160.1, 1000.0).count(), 0);
     }
 
     #[test]
