@@ -126,13 +126,13 @@ judged, counted as notes, or played automatically.
 
 Long-note starts are judged like regular notes. On terminals that report key
 release events, releasing a held long note is judged separately against its end:
-PERFECT within ±45 ms, GREAT within ±90 ms, GOOD within ±140 ms, and MISS
-outside ±140 ms. A release MISS resets the combo.
+the rank-dependent windows below apply. A release outside the GOOD window
+is a MISS and resets the combo.
 
 If no release event arrives and the note remains held in the game, it
-automatically completes as PERFECT once the current time is more than 160 ms
-past its end. A long note whose start was never hit instead becomes a MISS
-more than 160 ms after its start.
+automatically completes as PERFECT once the current time passes its end plus
+the rank-dependent MISS delay. A long note whose start was never hit instead
+becomes a MISS after its start plus the same delay.
 
 Pressing a landmine's lane within ±40 ms of its timestamp detonates it once,
 adds a MISS, and resets the combo. Each matching mine is judged independently.
@@ -146,12 +146,21 @@ The parsed `damage` value does not scale the penalty or subtract score.
 
 ## Judgment windows
 
-| tier    | window   | base points |
-| ------- | -------- | ----------- |
-| PERFECT | ±45 ms   | 300         |
-| GREAT   | ±90 ms   | 200         |
-| GOOD    | ±140 ms  | 100         |
-| MISS    | > 160 ms | 0           |
+`#RANK` selects tap and long-note start/release windows. Missing or invalid
+ranks use NORMAL, preserving the original behavior. These are tapline's windows,
+scaled from NORMAL by 0.5 / 0.75 / 1 / 1.25 / 1.5 respectively.
+
+| #RANK | difficulty | PERFECT | GREAT | GOOD | MISS delay |
+| ----- | ---------- | ------- | ----- | ---- | ---------- |
+| 0 | VERY HARD | ±22.5 ms | ±45 ms | ±70 ms | > 80 ms |
+| 1 | HARD | ±33.75 ms | ±67.5 ms | ±105 ms | > 120 ms |
+| 2 (default) | NORMAL | ±45 ms | ±90 ms | ±140 ms | > 160 ms |
+| 3 | EASY | ±56.25 ms | ±112.5 ms | ±175 ms | > 200 ms |
+| 4 | VERY EASY | ±67.5 ms | ±135 ms | ±210 ms | > 240 ms |
+
+Window boundaries are inclusive. Presses outside GOOD are ignored; unhit notes
+become MISS strictly after the MISS delay. Landmine timing remains ±40 ms.
+Base points are PERFECT: 300, GREAT: 200, GOOD: 100, MISS: 0.
 
 Combo (up to +50) is added on top of every non-miss hit.
 
