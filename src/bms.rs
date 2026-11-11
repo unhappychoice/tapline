@@ -1010,10 +1010,20 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
         matched_yet: bool,
         included: bool,
     }
+    #[derive(Default)]
+    struct SwitchLevel {
+        pick: Option<u32>,
+        included: bool,
+        skipped: bool,
+        default: bool,
+    }
+    let mut switch_stack: Vec<SwitchLevel> = Vec::new();
     let mut rng = seed.wrapping_add(0x9E3779B97F4A7C15);
     let mut random_stack: Vec<u32> = Vec::new();
     let mut if_stack: Vec<IfLevel> = Vec::new();
-    let is_active = |stack: &[IfLevel]| stack.iter().all(|l| l.included);
+    let is_active = |ifs: &[IfLevel], switches: &[SwitchLevel]| {
+        ifs.iter().all(|l| l.included) && switches.iter().all(|l| l.included)
+    };
     let mut out = String::with_capacity(text.len());
     for line in text.lines() {
         let trimmed = line.trim().trim_start_matches('\u{feff}');
@@ -1021,8 +1031,52 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
             let (head, rest) = split_first_word(body);
             let up = head.to_ascii_uppercase();
             match up.as_str() {
+                "SWITCH" | "SETSWITCH" => {
+                    let pick = rest.trim().parse::<u32>().ok().filter(|&n| n > 0);
+                    let pick = pick.filter(|_| is_active(&if_stack, &switch_stack));
+                    switch_stack.push(SwitchLevel {
+                        pick: pick.map(|n| {
+                            if up == "SWITCH" {
+                                xorshift_pick(&mut rng, n)
+                            } else {
+                                n
+                            }
+                        }),
+                        ..SwitchLevel::default()
+                    });
+                    continue;
+                }
+                "CASE" | "DEF" | "SKIP" => {
+                    if if_stack.iter().all(|l| l.included) {
+                        if let Some(top) = switch_stack.last_mut() {
+                            if !top.skipped && !top.default {
+                                match up.as_str() {
+                                    "CASE" => {
+                                        top.included |= top.pick.is_some_and(|p| {
+                                            rest.trim().parse::<u32>().ok() == Some(p)
+                                        });
+                                    }
+                                    "DEF" => {
+                                        top.included = top.pick.is_some();
+                                        top.default = true;
+                                    }
+                                    _ if top.included => {
+                                        top.included = false;
+                                        top.skipped = true;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+                "ENDSW" => {
+                    switch_stack.pop();
+                    continue;
+                }
                 "RANDOM" => {
-                    if is_active(&if_stack) {
+                    if is_active(&if_stack, &switch_stack) {
                         if let Ok(n) = rest.trim().parse::<u32>() {
                             if n > 0 {
                                 random_stack.push(xorshift_pick(&mut rng, n));
@@ -1032,7 +1086,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                     continue;
                 }
                 "SETRANDOM" => {
-                    if is_active(&if_stack) {
+                    if is_active(&if_stack, &switch_stack) {
                         if let Ok(n) = rest.trim().parse::<u32>() {
                             random_stack.push(n);
                         }
@@ -1040,7 +1094,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                     continue;
                 }
                 "ENDRANDOM" => {
-                    if is_active(&if_stack) {
+                    if is_active(&if_stack, &switch_stack) {
                         random_stack.pop();
                     }
                     continue;
@@ -1083,7 +1137,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                 _ => {}
             }
         }
-        if is_active(&if_stack) {
+        if is_active(&if_stack, &switch_stack) {
             out.push_str(line);
             out.push('\n');
         }
@@ -1839,6 +1893,206 @@ mod tests {
 ";
         let out = resolve_control_flow(text, 0);
         assert!(out.contains("#TITLE Inner"));
+    }
+
+    #[test]
+    fn switch_selects_cases_with_skip_and_fallthrough() {
+        let branches = "\
+#CASE 1
+#00111:01
+#SKIP
+#CASE 2
+#00112:02
+#CASE 3
+#00113:03
+#SKIP
+#DEF
+#00114:04
+#ENDSW
+#TITLE After
+";
+        for (pick, expected) in [
+            (1, "#00111:01\n"),
+            (2, "#00112:02\n#00113:03\n"),
+            (3, "#00113:03\n"),
+            (4, "#00114:04\n"),
+        ] {
+            let text = format!("#SETSWITCH {pick}\n{branches}");
+            assert_eq!(
+                resolve_control_flow(&text, 0),
+                format!("{expected}#TITLE After\n")
+            );
+        }
+    }
+
+    #[test]
+    fn load_switch_keeps_only_selected_notes_and_metadata() {
+        let dir = tempdir();
+        let path = dir.join("switch.bms");
+        std::fs::write(
+            &path,
+            "\
+#BPM 120
+#SETSWITCH 2
+#CASE 1
+#TITLE Hidden
+#00111:01
+#SKIP
+#CASE 2
+#TITLE Chosen
+#00112:02
+#SKIP
+#DEF
+#TITLE Default
+#00113:03
+#ENDSW
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.notes.len(), 1);
+        assert_eq!(chart.notes[0].keysound, Some(2));
+        assert_eq!(read_meta(&path).unwrap().title, "Chosen");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn switch_falls_through_default_until_endsw() {
+        let text = "\
+#SETSWITCH 2
+#CASE 2
+#TITLE Chosen
+#DEF
+#ARTIST Default
+#SKIP
+#CASE 3
+#BPM 150
+#ENDSW
+";
+        assert_eq!(
+            resolve_control_flow(text, 0),
+            "#TITLE Chosen\n#ARTIST Default\n#BPM 150\n"
+        );
+    }
+
+    #[test]
+    fn switch_random_choice_is_deterministic_and_in_range() {
+        let text = "\
+#SWITCH 3
+#CASE 1
+#TITLE A
+#SKIP
+#CASE 2
+#TITLE B
+#SKIP
+#CASE 3
+#TITLE C
+#SKIP
+#DEF
+#TITLE Invalid
+#ENDSW
+";
+        for seed in 0..32 {
+            let out = resolve_control_flow(text, seed);
+            assert_eq!(out, resolve_control_flow(text, seed));
+            assert!(["#TITLE A\n", "#TITLE B\n", "#TITLE C\n"].contains(&out.as_str()));
+        }
+    }
+
+    #[test]
+    fn switches_nest_with_random_and_if_in_both_directions() {
+        let text = "\
+#RANDOM 1
+#IF 1
+#SETSWITCH 2
+#CASE 1
+#SETSWITCH 1
+#CASE 1
+#TITLE Hidden switch
+#ENDSW
+#SETRANDOM 9
+#CASE 2
+#IF 9
+#TITLE Hidden random
+#ELSE
+#TITLE Chosen
+#ENDIF
+#IF 9
+#SKIP
+#ENDIF
+#SETSWITCH 1
+#CASE 1
+#ARTIST Nested
+#SKIP
+#DEF
+#ARTIST Hidden default
+#ENDSW
+#BPM 150
+#SKIP
+#CASE 3
+#TITLE Hidden case
+#ENDSW
+#ELSE
+#SETSWITCH 1
+#CASE 1
+#TITLE Hidden if
+#ENDSW
+#ENDIF
+#TITLE After
+";
+        assert_eq!(
+            resolve_control_flow(text, 0),
+            "#TITLE Chosen\n#ARTIST Nested\n#BPM 150\n#TITLE After\n"
+        );
+    }
+
+    #[test]
+    fn switch_directives_are_case_insensitive_and_ignore_invalid_ranges() {
+        let text = "\
+#switch 0
+#case 1
+#TITLE Invalid
+#def
+#TITLE Invalid default
+#endsw
+#setswitch 1
+#case 1
+#TITLE Chosen
+#skip
+#def
+#TITLE Hidden
+#endsw
+";
+        assert_eq!(resolve_control_flow(text, 0), "#TITLE Chosen\n");
+    }
+
+    #[test]
+    fn switch_branches_preserve_and_restore_random_scopes() {
+        let text = "\
+#SETRANDOM 2
+#SETSWITCH 1
+#CASE 2
+#RANDOM 3
+#ENDRANDOM
+#CASE 1
+#RANDOM 1
+#IF 1
+Inner
+#ENDIF
+#ENDRANDOM
+#IF 2
+Outer
+#ENDIF
+#SKIP
+#CASE 3
+#ENDRANDOM
+#ENDSW
+#IF 2
+After
+#ENDIF
+#ENDRANDOM
+";
+        assert_eq!(resolve_control_flow(text, 0), "Inner\nOuter\nAfter\n");
     }
 
     #[test]
