@@ -1,6 +1,7 @@
 use rayon::prelude::*;
 use rodio::buffer::SamplesBuffer;
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Source};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -53,6 +54,7 @@ pub struct SampleBank {
     _stream: Option<OutputStream>,
     handle: Option<OutputStreamHandle>,
     samples: HashMap<u32, DecodedSample>,
+    playing: RefCell<HashMap<u32, Sink>>,
     pub enabled: bool,
     /// Number of `wav_paths` entries that failed to decode. Surfaced on the
     /// intro screen so charts that end up unexpectedly silent are diagnosable.
@@ -70,6 +72,7 @@ impl SampleBank {
             _stream: stream,
             handle,
             samples,
+            playing: RefCell::new(HashMap::new()),
             enabled,
             decode_failures: failures,
         }
@@ -80,6 +83,7 @@ impl SampleBank {
             _stream: None,
             handle: None,
             samples: HashMap::new(),
+            playing: RefCell::new(HashMap::new()),
             enabled: false,
             decode_failures: 0,
         }
@@ -96,13 +100,10 @@ impl SampleBank {
         let Some(s) = self.samples.get(&id) else {
             return;
         };
-        let source = SharedSamples {
-            data: Arc::clone(&s.data),
-            pos: 0,
-            channels: s.channels,
-            sample_rate: s.sample_rate,
+        let Ok(sink) = Sink::try_new(handle) else {
+            return;
         };
-        let _ = handle.play_raw(source);
+        self.play_sample(id, s, sink);
     }
 
     pub fn play_synth(&self, freq: f32, duration_ms: u32) {
@@ -124,6 +125,20 @@ impl SampleBank {
             HitSound::Sample(id) => self.play(id),
             HitSound::Silent => {}
         }
+    }
+
+    fn play_sample(&self, id: u32, sample: &DecodedSample, sink: Sink) {
+        let mut playing = self.playing.borrow_mut();
+        if let Some(previous) = playing.remove(&id) {
+            previous.stop();
+        }
+        sink.append(SharedSamples {
+            data: Arc::clone(&sample.data),
+            pos: 0,
+            channels: sample.channels,
+            sample_rate: sample.sample_rate,
+        });
+        playing.insert(id, sink);
     }
 
     fn hit_sound(&self, keysound: Option<u32>, synth_mode: bool) -> HitSound {
@@ -284,6 +299,45 @@ mod tests {
             });
         });
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn sustained_sample() -> DecodedSample {
+        DecodedSample {
+            channels: 1,
+            sample_rate: 44_100,
+            data: Arc::new(vec![0.5; 44_100]),
+        }
+    }
+
+    #[test]
+    fn replaying_same_id_stops_previous_sink_and_restarts_sample() {
+        let bank = SampleBank::silent();
+        let sample = sustained_sample();
+        let (first, mut first_output) = Sink::new_idle();
+        bank.play_sample(1, &sample, first);
+        assert_eq!(first_output.next(), Some(0.5));
+
+        let (second, mut second_output) = Sink::new_idle();
+        bank.play_sample(1, &sample, second);
+
+        assert!(first_output.skip(1000).take(100).all(|s| s == 0.0));
+        assert_eq!(second_output.next(), Some(0.5));
+        assert_eq!(bank.playing.borrow().len(), 1);
+    }
+
+    #[test]
+    fn different_ids_keep_playing_even_when_they_share_sample_data() {
+        let bank = SampleBank::silent();
+        let sample = sustained_sample();
+        let (first, mut first_output) = Sink::new_idle();
+        let (second, mut second_output) = Sink::new_idle();
+
+        bank.play_sample(1, &sample, first);
+        bank.play_sample(2, &sample, second);
+
+        assert_eq!(first_output.next(), Some(0.5));
+        assert_eq!(second_output.next(), Some(0.5));
+        assert_eq!(bank.playing.borrow().len(), 2);
     }
 
     #[test]
