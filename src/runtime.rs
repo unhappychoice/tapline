@@ -25,13 +25,14 @@ impl PlayOptions {
     }
 }
 
-pub fn play_chart(out: &mut Stdout, args: &Args, chart: chart::Chart) -> Result<()> {
+pub fn play_chart(out: &mut Stdout, args: &Args, mut chart: chart::Chart) -> Result<()> {
     let opts = PlayOptions::from_args(args);
     let bank = if args.no_audio {
         audio::SampleBank::silent()
     } else {
         audio::SampleBank::new(&chart.wav_paths)
     };
+    chart.duration_ms = bank.chart_duration_ms(&chart, opts.auto_ks);
     let mut game = game::Game::new(chart);
     execute!(out, terminal::Clear(terminal::ClearType::All))?;
     run_game(out, &mut game, &bank, &opts)?;
