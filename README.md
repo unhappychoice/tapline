@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/unhappychoice/tapline/branch/main/graph/badge.svg)](https://codecov.io/gh/unhappychoice/tapline)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A simple rhythm game in your terminal. Plays a built-in chart, or loads BMS
+A simple rhythm game in your terminal. Plays a built-in chart, or loads BMS / bmson
 files with keysound + BGM playback via `rodio`.
 
 Notes fall down the lanes. Tap the letters as they cross the judgment line.
@@ -76,7 +76,7 @@ Without `--file` or `--built-in`, tapline scans the first directory it finds:
 4. `~/.tapline/songs`
 
 If nothing is found, the built-in practice chart plays. Scanning is recursive
-(up to 5 levels deep) and picks up `.bms`, `.bml`, `.bme`, `.pms`.
+(up to 5 levels deep) and picks up `.bms`, `.bml`, `.bme`, `.pms`, `.bmson`.
 
 ## Bundled sample charts
 
@@ -133,6 +133,23 @@ The parsed `damage` value does not scale the penalty or subtract score.
 - `#SWITCH` / `#CASE` (the `#IF`-style variants are supported)
 - BGA rendering (channels `04` / `06` / `07` and `#BMPxx` are parsed and stored on `Chart.bga` / `Chart.bmp_paths`, but the terminal renderer does not draw them yet)
 - Non-canonical double-play like 5K DP or asymmetric side counts (only 7K + 7K is folded into the 14-lane playable pool; other DP shapes are still parsed into `Chart.p2_notes` but not merged)
+
+## bmson support
+
+bmson 1.0.0 (UTF-8 JSON) charts can be selected or loaded with
+`tapline --file chart.bmson`. BPM changes, stops, long notes (`l`),
+background audio, and keysound slicing (`c`) are supported. Sound slices
+use elapsed chart time, including BPM changes and stops, and share decoded
+audio buffers. Missing audio extensions fall back to WAV / OGG / MP3.
+
+Supported layouts are `beat-5k`, `beat-7k`, `beat-14k`, `popn-5k`, and
+`generic-4keys` / `generic-5keys` / `generic-7keys` / `generic-14keys`.
+Turntable notes play automatically as background audio. Other layouts and
+legacy bmson versions are rejected. BGA base, overlay, and poor events are
+stored on `Chart`; BGA rendering remains unsupported.
+
+The format follows the [bmson specification](https://bmson-spec.readthedocs.io/en/master/doc/index.html).
+A playable example is available at `tests/fixtures/minimal.bmson`.
 
 ## Judgment windows
 

@@ -159,6 +159,7 @@ fn build_chart(
         lane_count,
         keys: keys_for(lane_count),
         wav_paths,
+        sample_slices: HashMap::new(),
     })
 }
 

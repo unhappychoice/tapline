@@ -1,4 +1,4 @@
-use crate::{bms, select};
+use crate::{bms, bmson, select};
 use anyhow::Result;
 use clap::Parser;
 use std::io::Stdout;
@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 #[derive(Parser, Debug)]
 #[command(version, about = "A simple rhythm game in your terminal")]
 pub struct Args {
-    /// Load a BMS chart from file (auto-detects Shift-JIS/UTF-8).
+    /// Load a BMS (Shift-JIS/UTF-8) or bmson (UTF-8) chart.
     #[arg(short, long)]
     pub file: Option<PathBuf>,
 
@@ -94,6 +94,7 @@ pub fn choose_chart(out: &mut Stdout, args: &Args) -> Result<ChartChoice> {
 
 pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::chart::Chart>> {
     match choice {
+        ChartChoice::File(p) if bmson::is_bmson(p) => Ok(Some(bmson::load(p, args.countdown_ms)?)),
         ChartChoice::File(p) => Ok(Some(bms::load(p, args.countdown_ms)?)),
         ChartChoice::BuiltIn => Ok(Some(crate::chart::built_in(args.bpm, args.countdown_ms))),
         ChartChoice::Cancelled => Ok(None),
