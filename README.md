@@ -43,7 +43,7 @@ cargo install --path .
 ```sh
 tapline                                # open the chart selector (see "Song discovery")
 tapline --dir ~/bms                    # open selector on a specific directory
-tapline --file song.bms                # skip selector, play one chart (auto 4/5/7-lane)
+tapline --file song.bms                # skip selector, play one chart (auto lane detection)
 tapline --file song.bms --no-audio     # play a chart, silent
 tapline --built-in --bpm 160           # play the built-in practice chart
 ```
@@ -106,10 +106,15 @@ Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
 | ------------- | ----------------------------------------------------------- |
 | headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
 | channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
-| lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, plus 14K double-play when both sides fill 7 lanes each |
+| lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`); scratch (`16` / `26`) adds a lane for 6/8-lane SP and 12/16-lane DP; 14K without scratch remains supported |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
 | control flow  | `#RANDOM`, `#SETRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF` (nesting supported) |
+
+Scratch channels `16/26`, `56/66` (long notes), and `D6/E6` (landmines)
+are playable. Free-zone / pedal channels `17/27` and their long-note /
+landmine counterparts are ignored. Scratch is the last lane on each side.
+Lane modes are inferred from populated channels; empty channels do not count.
 
 ### Long notes and landmines
 
@@ -132,7 +137,7 @@ The parsed `damage` value does not scale the penalty or subtract score.
 - Landmine penalties proportional to the parsed `damage` value
 - `#SWITCH` / `#CASE` (the `#IF`-style variants are supported)
 - BGA rendering (channels `04` / `06` / `07` and `#BMPxx` are parsed and stored on `Chart.bga` / `Chart.bmp_paths`, but the terminal renderer does not draw them yet)
-- Non-canonical double-play like 5K DP or asymmetric side counts (only 7K + 7K is folded into the 14-lane playable pool; other DP shapes are still parsed into `Chart.p2_notes` but not merged)
+- Double-play with asymmetric side counts or 5K + 5K without scratch (these remain in `Chart.p2_notes` instead of being merged)
 
 ## Judgment windows
 
@@ -155,6 +160,10 @@ whichever finger is closer.
 | 4     | `S D       K L`               | outer 2+2, index fingers rest     |
 | 5     | `S D  F/J  K L`               | center lane bound to both F and J |
 | 7     | `S D  F SPACE J  K L`         | spacebar is the center            |
+| 6     | `S D F/J K L A` | 5K plus scratch on A |
+| 8     | `S D F SPACE J K L A` | 7K plus scratch on A |
+| 12    | `S D F/J K L A / Z X C V B /` | 5K+scratch per side; P2 scratch uses slash |
+| 16    | `S D F SPACE J K L A / Z X C V B N M /` | 7K+scratch per side; P2 scratch uses slash |
 | 14    | `S D F SPACE J K L / Z X C V B N M` | 7K SP layout on the home row for P1, ZXCVBNM below for P2 |
 
 ## License
