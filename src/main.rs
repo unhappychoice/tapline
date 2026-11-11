@@ -10,6 +10,7 @@ use std::time::Duration;
 use tapline::cli::Args;
 use tapline::{audio, cli, runtime};
 
+/// Validate timing before initializing audio or entering terminal raw mode.
 fn main() -> Result<()> {
     let args = Args::parse();
     args.validate().unwrap_or_else(|err| err.exit());

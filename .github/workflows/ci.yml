@@ -26,9 +26,14 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           if [ -f /etc/apt/apt-mirrors.txt ]; then
-            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+            sudo sed -i -E '\|^https://archive\.ubuntu\.com/ubuntu/?([[:space:]].*)?$| {
+              s/[[:blank:]]+priority:[0-9]+//g
+              s/$/\tpriority:0/
+            }' /etc/apt/apt-mirrors.txt
           fi
-          sudo apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update
+          sudo apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any \
+            -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources \
+            -o Dir::Etc::sourceparts=- update
           sudo apt-get -o Acquire::Retries=3 install -y libasound2-dev
 
       - uses: dtolnay/rust-toolchain@stable
@@ -51,9 +56,14 @@ jobs:
       - name: Install ALSA dev headers
         run: |
           if [ -f /etc/apt/apt-mirrors.txt ]; then
-            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+            sudo sed -i -E '\|^https://archive\.ubuntu\.com/ubuntu/?([[:space:]].*)?$| {
+              s/[[:blank:]]+priority:[0-9]+//g
+              s/$/\tpriority:0/
+            }' /etc/apt/apt-mirrors.txt
           fi
-          sudo apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update
+          sudo apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any \
+            -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources \
+            -o Dir::Etc::sourceparts=- update
           sudo apt-get -o Acquire::Retries=3 install -y libasound2-dev
 
       - uses: dtolnay/rust-toolchain@stable
@@ -78,9 +88,14 @@ jobs:
       - name: Install ALSA dev headers
         run: |
           if [ -f /etc/apt/apt-mirrors.txt ]; then
-            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+            sudo sed -i -E '\|^https://archive\.ubuntu\.com/ubuntu/?([[:space:]].*)?$| {
+              s/[[:blank:]]+priority:[0-9]+//g
+              s/$/\tpriority:0/
+            }' /etc/apt/apt-mirrors.txt
           fi
-          sudo apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update
+          sudo apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any \
+            -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources \
+            -o Dir::Etc::sourceparts=- update
           sudo apt-get -o Acquire::Retries=3 install -y libasound2-dev
 
       - uses: dtolnay/rust-toolchain@stable

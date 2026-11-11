@@ -53,6 +53,7 @@ pub struct Args {
 }
 
 impl Args {
+    /// Reject combined timing values that would overflow the built-in chart duration.
     pub fn validate(&self) -> Result<(), clap::Error> {
         if built_in_duration(self.bpm, self.countdown_ms).is_finite() {
             Ok(())
@@ -99,6 +100,7 @@ pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::cha
     }
 }
 
+/// Parse a positive, finite BPM that keeps the built-in chart duration finite.
 fn parse_bpm(value: &str) -> Result<f64, String> {
     let bpm = value.parse::<f64>().map_err(|err| err.to_string())?;
     if bpm.is_finite() && bpm > 0.0 && built_in_duration(bpm, 0.0).is_finite() {
@@ -116,6 +118,7 @@ fn built_in_duration(bpm: f64, countdown_ms: f64) -> f64 {
     (0..4).fold(countdown_ms, |time, _| time + section) + 2000.0
 }
 
+/// Parse a finite countdown, allowing zero to start without a delay.
 fn parse_countdown(value: &str) -> Result<f64, String> {
     let countdown = value.parse::<f64>().map_err(|err| err.to_string())?;
     if countdown.is_finite() && countdown >= 0.0 {
@@ -207,6 +210,7 @@ mod tests {
         assert_eq!(a.dir.as_deref(), Some(Path::new("/x")));
     }
 
+    /// Check fractional BPM and countdown boundaries, including signed zero.
     #[test]
     fn args_accept_positive_bpm_and_non_negative_countdown() {
         ["0", "-0", "0.5", "2000"].iter().for_each(|countdown| {
@@ -221,6 +225,7 @@ mod tests {
         });
     }
 
+    /// Ensure accepted extreme values produce finite duration and note times.
     #[test]
     fn finite_extreme_chart_timing_is_accepted() {
         [("3e-302", "0"), ("120", "1.7e308")]

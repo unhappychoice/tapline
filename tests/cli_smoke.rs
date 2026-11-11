@@ -105,6 +105,7 @@ fn test_tone_flag_exits_cleanly_on_ci_without_audio_backend() {
     }
 }
 
+/// Ensure invalid numbers exit with diagnostics before any terminal output.
 #[test]
 fn invalid_chart_timing_is_rejected_before_terminal_setup() {
     [
@@ -152,6 +153,7 @@ fn invalid_chart_timing_is_rejected_before_terminal_setup() {
     });
 }
 
+/// Ensure timing overflows exit cleanly before terminal initialization.
 #[test]
 fn overflowing_built_in_timing_is_rejected_before_terminal_setup() {
     [
