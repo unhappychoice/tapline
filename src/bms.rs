@@ -1,4 +1,4 @@
-use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, Mine, Note};
+use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, InvisibleNote, Mine, Note};
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -81,6 +81,7 @@ fn is_pms(path: &Path) -> bool {
 struct ChartAcc {
     lanes: LaneSet,
     notes: Vec<Note>,
+    invisible_notes: Vec<InvisibleNote>,
     mines: Vec<Mine>,
     bgm: Vec<BgmEvent>,
 }
@@ -88,24 +89,34 @@ struct ChartAcc {
 #[derive(Copy, Clone)]
 struct LaneMap {
     normal: fn(&str) -> Option<usize>,
+    invisible: fn(&str) -> Option<usize>,
     long: fn(&str) -> Option<usize>,
     mine: fn(&str) -> Option<usize>,
 }
 
 const P1_LANES: LaneMap = LaneMap {
     normal: channel_to_lane,
+    invisible: |ch| {
+        ch.strip_prefix('3')
+            .and_then(|suffix| channel_to_lane(&format!("1{suffix}")))
+    },
     long: long_channel_to_lane,
     mine: mine_channel_to_lane,
 };
 
 const P2_LANES: LaneMap = LaneMap {
     normal: p2_channel_to_lane,
+    invisible: |ch| {
+        ch.strip_prefix('4')
+            .and_then(|suffix| p2_channel_to_lane(&format!("2{suffix}")))
+    },
     long: p2_long_channel_to_lane,
     mine: p2_mine_channel_to_lane,
 };
 
 const PMS_LANES: LaneMap = LaneMap {
     normal: |ch| pms_channel_to_lane(ch, "1", "2"),
+    invisible: |ch| pms_channel_to_lane(ch, "3", "4"),
     long: |ch| pms_channel_to_lane(ch, "5", "6"),
     mine: |ch| pms_channel_to_lane(ch, "D", "E"),
 };
@@ -141,15 +152,19 @@ fn build_chart(
     let p1_lane_count = if pms { 9 } else { acc.lanes.count() };
     let p2_lane_count = p2_acc.lanes.count();
     let mut notes = acc.notes;
+    let mut invisible_notes = acc.invisible_notes;
     let mut mines = acc.mines;
     let mut bgm = acc.bgm;
     let mut p2_notes = p2_acc.notes;
+    let mut p2_invisible_notes = p2_acc.invisible_notes;
     let mut p2_mines = p2_acc.mines;
     if let Some(lnobj) = pass.lnobj {
         promote_lnobj(&mut notes, lnobj);
         promote_lnobj(&mut p2_notes, lnobj);
     }
     notes.retain(|n| n.lane < p1_lane_count);
+    invisible_notes.retain(|n| n.lane < p1_lane_count);
+    p2_invisible_notes.retain(|n| n.lane < p2_lane_count);
     mines.retain(|n| n.lane < p1_lane_count);
     p2_notes.retain(|n| n.lane < p2_lane_count);
     p2_mines.retain(|n| n.lane < p2_lane_count);
@@ -157,6 +172,10 @@ fn build_chart(
     // shift into lanes 7..=13 and lane_count expands to 14. Non-canonical DP
     // (e.g. 5K+5K) is left split — the runtime plays P1 only.
     if lane_count == 14 {
+        p2_invisible_notes.drain(..).for_each(|mut note| {
+            note.lane += 7;
+            invisible_notes.push(note);
+        });
         for mut n in p2_notes.drain(..) {
             n.lane += 7;
             notes.push(n);
@@ -166,6 +185,8 @@ fn build_chart(
             mines.push(m);
         }
     }
+    invisible_notes.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+    p2_invisible_notes.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     mines.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     p2_notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
@@ -192,6 +213,8 @@ fn build_chart(
         mines,
         p2_notes,
         p2_mines,
+        invisible_notes,
+        p2_invisible_notes,
         bgm,
         bga,
         bmp_paths,
@@ -284,6 +307,20 @@ fn accumulate_side(
     for (measure, ch, data) in raw {
         if let Some(lane) = (lanes.normal)(ch) {
             push_normal_slots(&mut acc, lane, ch, *measure, data, timeline);
+        } else if let Some(lane) = (lanes.invisible)(ch) {
+            let slots = parse_slots(data);
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| **slot != 0)
+                .for_each(|(i, slot)| {
+                    acc.lanes.observe_lane(lane);
+                    acc.invisible_notes.push(InvisibleNote {
+                        time_ms: timeline.time_at(*measure, i as f64 / slots.len() as f64),
+                        lane,
+                        keysound: *slot,
+                    });
+                });
         } else if collect_bgm && ch == "01" {
             push_bgm_slots(&mut acc, *measure, data, timeline);
         }
@@ -299,7 +336,10 @@ fn merge_note_lines(raw: &[(u32, String, String)], lanes: LaneMap) -> Vec<(u32, 
     for (measure, ch, data) in merged.iter_mut().rev() {
         let slots = if (lanes.mine)(ch).is_some() {
             parse_slots_hex(data)
-        } else if (lanes.normal)(ch).is_some() || (lanes.long)(ch).is_some() {
+        } else if (lanes.normal)(ch).is_some()
+            || (lanes.long)(ch).is_some()
+            || (lanes.invisible)(ch).is_some()
+        {
             parse_slots(data)
         } else {
             continue;
