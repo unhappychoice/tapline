@@ -47,8 +47,8 @@ pub struct Args {
     pub auto_ks: bool,
 
     /// Schedule BGM + auto keysound playback this many milliseconds
-    /// earlier than the note time. Compensates for audio buffer latency.
-    #[arg(long, default_value_t = 0.0)]
+    /// earlier than the note time. Must be finite. Compensates for audio buffer latency.
+    #[arg(long, default_value_t = 0.0, value_parser = parse_audio_lead)]
     pub audio_lead_ms: f64,
 }
 
@@ -131,6 +131,15 @@ fn parse_countdown(value: &str) -> Result<f64, String> {
         Ok(countdown)
     } else {
         Err("countdown must be finite and non-negative".into())
+    }
+}
+
+fn parse_audio_lead(value: &str) -> Result<f64, String> {
+    let lead = value.parse::<f64>().map_err(|err| err.to_string())?;
+    if lead.is_finite() {
+        Ok(lead)
+    } else {
+        Err("audio lead must be finite".into())
     }
 }
 
@@ -229,6 +238,18 @@ mod tests {
             assert_eq!(args.bpm, 0.5);
             assert_eq!(args.countdown_ms, countdown.parse::<f64>().unwrap());
         });
+    }
+
+    #[test]
+    fn args_accept_finite_audio_lead_unchanged() {
+        ["0", "-0", "80", "0.5", "-80", "1.7e308"]
+            .iter()
+            .for_each(|value| {
+                let args =
+                    Args::try_parse_from(["tapline", &format!("--audio-lead-ms={value}")]).unwrap();
+                args.validate().unwrap();
+                assert_eq!(args.audio_lead_ms, value.parse::<f64>().unwrap());
+            });
     }
 
     /// Ensure accepted extreme values produce finite duration and note times.
