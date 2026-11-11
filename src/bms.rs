@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct ChartMeta {
     pub path: PathBuf,
+    /// Reuse this seed when loading the selected chart.
+    pub random_seed: u64,
     pub title: String,
     pub subtitle: String,
     pub artist: String,
@@ -18,8 +20,13 @@ pub struct ChartMeta {
 }
 
 pub fn read_meta(path: &Path) -> Result<ChartMeta> {
+    read_meta_with_seed(path, random_seed())
+}
+
+/// Read metadata using an explicit seed instead of the environment override.
+pub fn read_meta_with_seed(path: &Path, seed: u64) -> Result<ChartMeta> {
     let text = read_text(path)?;
-    let text = resolve_control_flow(&text, random_seed_for(path));
+    let text = resolve_control_flow(&text, seed);
     let mut pass = HeaderPass::default();
     let mut raw = Vec::new();
     for line in header_lines(&text) {
@@ -29,9 +36,10 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
             pass.absorb(line);
         }
     }
-    let (_, acc, p2_acc) = collect_chart_sides(&raw, &pass, 0.0, false);
+    let (_, acc, p2_acc) = collect_chart_sides(&raw, &pass, 0.0, false, is_pms(path));
     Ok(ChartMeta {
         path: path.to_path_buf(),
+        random_seed: seed,
         title: pass.title,
         subtitle: pass.subtitle,
         artist: pass.artist,
@@ -40,13 +48,18 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
         bpm: pass.bpm,
         playlevel: pass.playlevel,
         difficulty: pass.difficulty,
-        lane_count: playable_lane_count(&acc, &p2_acc),
+        lane_count: playable_lane_count(&acc, &p2_acc, is_pms(path)),
     })
 }
 
 pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
+    load_with_seed(path, lead_in_ms, random_seed())
+}
+
+/// Load the same control-flow branches used by metadata with this seed.
+pub fn load_with_seed(path: &Path, lead_in_ms: f64, seed: u64) -> Result<Chart> {
     let text = read_text(path)?;
-    let text = resolve_control_flow(&text, random_seed_for(path));
+    let text = resolve_control_flow(&text, seed);
     let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut pass = HeaderPass::default();
     let mut raw: Vec<(u32, String, String)> = Vec::new();
@@ -56,7 +69,12 @@ pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
             None => pass.absorb(line),
         }
     }
-    build_chart(pass, raw, dir, lead_in_ms)
+    build_chart(pass, raw, dir, lead_in_ms, is_pms(path))
+}
+
+fn is_pms(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pms"))
 }
 
 #[derive(Default)]
@@ -86,20 +104,42 @@ const P2_LANES: LaneMap = LaneMap {
     mine: p2_mine_channel_to_lane,
 };
 
+const PMS_LANES: LaneMap = LaneMap {
+    normal: |ch| pms_channel_to_lane(ch, "1", "2"),
+    long: |ch| pms_channel_to_lane(ch, "5", "6"),
+    mine: |ch| pms_channel_to_lane(ch, "D", "E"),
+};
+
+fn pms_channel_to_lane(ch: &str, left: &str, right: &str) -> Option<usize> {
+    match (ch.strip_prefix(left), ch.strip_prefix(right)) {
+        (Some("1"), _) => Some(0),
+        (Some("2"), _) => Some(1),
+        (Some("3"), _) => Some(2),
+        (Some("4"), _) => Some(3),
+        (Some("5"), _) => Some(4),
+        (_, Some("2")) => Some(5),
+        (_, Some("3")) => Some(6),
+        (_, Some("4")) => Some(7),
+        (_, Some("5")) => Some(8),
+        _ => None,
+    }
+}
+
 fn build_chart(
     pass: HeaderPass,
     raw: Vec<(u32, String, String)>,
     dir: PathBuf,
     lead_in_ms: f64,
+    pms: bool,
 ) -> Result<Chart> {
     let wav_paths = resolve_wavs(&dir, &pass.wav_defs);
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
-    let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true);
+    let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true, pms);
     let mut bga = collect_bga_events(&raw, &timeline);
     let exrank_events = collect_exrank_events(&raw, &timeline, &pass.exrank_defs);
     let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
-    let lane_count = playable_lane_count(&acc, &p2_acc);
-    let p1_lane_count = acc.lanes.count();
+    let lane_count = playable_lane_count(&acc, &p2_acc, pms);
+    let p1_lane_count = if pms { 9 } else { acc.lanes.count() };
     let p2_lane_count = p2_acc.lanes.count();
     let mut notes = acc.notes;
     let mut mines = acc.mines;
@@ -171,18 +211,26 @@ fn collect_chart_sides(
     pass: &HeaderPass,
     lead_in_ms: f64,
     collect_bgm: bool,
+    pms: bool,
 ) -> (Timeline, ChartAcc, ChartAcc) {
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let scales = collect_measure_scales(raw);
     let events = collect_timing_events(raw, &pass.bpm_defs, &pass.stop_defs);
     let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
-    let acc = accumulate_side(raw, &timeline, P1_LANES, collect_bgm);
-    let p2_acc = accumulate_side(raw, &timeline, P2_LANES, false);
+    let lanes = if pms { PMS_LANES } else { P1_LANES };
+    let acc = accumulate_side(raw, &timeline, lanes, collect_bgm);
+    let p2_acc = if pms {
+        ChartAcc::default()
+    } else {
+        accumulate_side(raw, &timeline, P2_LANES, false)
+    };
     (timeline, acc, p2_acc)
 }
 
-fn playable_lane_count(acc: &ChartAcc, p2_acc: &ChartAcc) -> usize {
-    if acc.lanes.count() == 7 && p2_acc.lanes.count() == 7 && !p2_acc.notes.is_empty() {
+fn playable_lane_count(acc: &ChartAcc, p2_acc: &ChartAcc, pms: bool) -> usize {
+    if pms {
+        9
+    } else if acc.lanes.count() == 7 && p2_acc.lanes.count() == 7 && !p2_acc.notes.is_empty() {
         14
     } else {
         acc.lanes.count()
@@ -234,6 +282,8 @@ fn accumulate_side(
     lanes: LaneMap,
     collect_bgm: bool,
 ) -> ChartAcc {
+    let raw = merge_note_lines(raw, lanes);
+    let raw = raw.as_slice();
     let mut acc = ChartAcc::default();
     for (measure, ch, data) in raw {
         if let Some(lane) = (lanes.normal)(ch) {
@@ -245,6 +295,37 @@ fn accumulate_side(
     materialize_long_notes_with(&mut acc, raw, timeline, lanes.long);
     materialize_mines_with(&mut acc, raw, timeline, lanes.mine);
     acc
+}
+
+fn merge_note_lines(raw: &[(u32, String, String)], lanes: LaneMap) -> Vec<(u32, String, String)> {
+    let mut seen = HashSet::new();
+    let mut merged = raw.to_vec();
+    for (measure, ch, data) in merged.iter_mut().rev() {
+        let slots = if (lanes.mine)(ch).is_some() {
+            parse_slots_hex(data)
+        } else if (lanes.normal)(ch).is_some() || (lanes.long)(ch).is_some() {
+            parse_slots(data)
+        } else {
+            continue;
+        };
+        let n = slots.len();
+        for (i, _) in slots.iter().enumerate().filter(|(_, slot)| **slot != 0) {
+            let divisor = greatest_common_divisor(i, n);
+            let position = (*measure, ch.clone(), i / divisor, n / divisor);
+            if !seen.insert(position) {
+                data.replace_range(i * 2..i * 2 + 2, "00");
+            }
+        }
+    }
+    merged
+}
+
+fn greatest_common_divisor(a: usize, b: usize) -> usize {
+    if b == 0 {
+        a
+    } else {
+        greatest_common_divisor(b, a % b)
+    }
 }
 
 fn push_normal_slots(
@@ -872,7 +953,9 @@ impl HeaderPass {
                     if let Ok(id) = u32::from_str_radix(rest, 36) {
                         self.wav_defs.insert(id, val.trim().to_string());
                     }
-                } else if let Some(rest) = up.strip_prefix("BPM") {
+                } else if let Some(rest) =
+                    up.strip_prefix("BPM").or_else(|| up.strip_prefix("EXBPM"))
+                {
                     if !rest.is_empty() {
                         if let (Ok(id), Ok(v)) =
                             (u32::from_str_radix(rest, 36), val.trim().parse::<f64>())
@@ -923,16 +1006,16 @@ impl LaneSet {
     }
 }
 
-fn random_seed_for(path: &Path) -> u64 {
-    if let Ok(v) = std::env::var("TAPLINE_RANDOM_SEED") {
-        if let Ok(n) = v.parse::<u64>() {
-            return n;
-        }
-    }
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.to_string_lossy().hash(&mut hasher);
-    hasher.finish()
+fn random_seed() -> u64 {
+    std::env::var("TAPLINE_RANDOM_SEED")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| {
+            use std::hash::{BuildHasher, Hasher};
+            std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish()
+        })
 }
 
 fn resolve_control_flow(text: &str, seed: u64) -> String {
@@ -942,7 +1025,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
         included: bool,
     }
     let mut rng = seed.wrapping_add(0x9E3779B97F4A7C15);
-    let mut current_pick: Option<u32> = None;
+    let mut random_stack: Vec<u32> = Vec::new();
     let mut if_stack: Vec<IfLevel> = Vec::new();
     let is_active = |stack: &[IfLevel]| stack.iter().all(|l| l.included);
     let mut out = String::with_capacity(text.len());
@@ -956,7 +1039,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                     if is_active(&if_stack) {
                         if let Ok(n) = rest.trim().parse::<u32>() {
                             if n > 0 {
-                                current_pick = Some(xorshift_pick(&mut rng, n));
+                                random_stack.push(xorshift_pick(&mut rng, n));
                             }
                         }
                     }
@@ -965,14 +1048,21 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                 "SETRANDOM" => {
                     if is_active(&if_stack) {
                         if let Ok(n) = rest.trim().parse::<u32>() {
-                            current_pick = Some(n);
+                            random_stack.push(n);
                         }
                     }
                     continue;
                 }
+                "ENDRANDOM" => {
+                    if is_active(&if_stack) {
+                        random_stack.pop();
+                    }
+                    continue;
+                }
                 "IF" => {
-                    let ok =
-                        current_pick.is_some_and(|p| rest.trim().parse::<u32>().ok() == Some(p));
+                    let ok = random_stack
+                        .last()
+                        .is_some_and(|&p| rest.trim().parse::<u32>().ok() == Some(p));
                     if_stack.push(IfLevel {
                         matched_yet: ok,
                         included: ok,
@@ -984,8 +1074,9 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                         if top.matched_yet {
                             top.included = false;
                         } else {
-                            let ok = current_pick
-                                .is_some_and(|p| rest.trim().parse::<u32>().ok() == Some(p));
+                            let ok = random_stack
+                                .last()
+                                .is_some_and(|&p| rest.trim().parse::<u32>().ok() == Some(p));
                             top.included = ok;
                             top.matched_yet = ok;
                         }
@@ -1132,6 +1223,90 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn pms_maps_all_buttons_for_visible_long_lnobj_and_mine_channels() {
+        let dir = tempdir();
+        let families = [
+            ("11 12 13 14 15 22 23 24 25", "01", false),
+            ("51 52 53 54 55 62 63 64 65", "0101", true),
+            ("11 12 13 14 15 22 23 24 25", "01ZZ", true),
+            ("D1 D2 D3 D4 D5 E2 E3 E4 E5", "64", false),
+        ];
+        for extension in ["pms", "PMS"] {
+            let path = dir.join(format!("song.{extension}"));
+            for (channels, slots, long) in families {
+                let lines = channels
+                    .split_whitespace()
+                    .map(|channel| format!("#001{channel}:{slots}\n"))
+                    .collect::<String>();
+                std::fs::write(&path, format!("#BPM 60\n#LNOBJ ZZ\n#00101:01\n{lines}")).unwrap();
+                let chart = load(&path, 500.0).unwrap();
+                assert_eq!(chart.lane_count, 9);
+                assert_eq!(read_meta(&path).unwrap().lane_count, 9);
+                assert_eq!(chart.keys, keys_for(9));
+                assert!(chart.p2_notes.is_empty());
+                assert!(chart.p2_mines.is_empty());
+                assert_eq!(chart.bgm.len(), 1);
+                let mut lanes = if channels.starts_with('D') {
+                    assert!(chart.notes.is_empty());
+                    assert!(chart.mines.iter().all(|mine| mine.damage == 100));
+                    chart.mines.iter().map(|mine| mine.lane).collect::<Vec<_>>()
+                } else {
+                    assert!(chart.notes.iter().all(|note| note.keysound == Some(1)));
+                    assert!(chart.notes.iter().all(|note| note.time_ms == 4500.0));
+                    assert!(chart
+                        .notes
+                        .iter()
+                        .all(|note| note.end_ms == long.then_some(6500.0)));
+                    chart.notes.iter().map(|note| note.lane).collect::<Vec<_>>()
+                };
+                lanes.sort_unstable();
+                assert_eq!(lanes, (0..9).collect::<Vec<_>>());
+                let mut game = crate::game::Game::new(chart);
+                (0..9).for_each(|lane| {
+                    game.hit(lane, 4500.0);
+                    if long {
+                        game.release(lane, 6500.0);
+                    }
+                });
+                if channels.starts_with('D') {
+                    assert_eq!(game.miss, 9);
+                    assert!(game.chart.mines.iter().all(|mine| mine.exploded));
+                } else {
+                    assert_eq!(game.perfect, if long { 18 } else { 9 });
+                    assert!(game.chart.notes.iter().all(|note| note.hit));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_pms_stays_nine_lane_without_changing_bms_or_bme_modes() {
+        let dir = tempdir();
+        let cases = [
+            ("#00111:01", 4, 1, 0),
+            ("#00115:01", 5, 1, 0),
+            ("#00119:01", 7, 1, 0),
+            ("#00119:01\n#00129:01", 14, 2, 0),
+            ("#00115:01\n#00125:01", 5, 1, 1),
+        ];
+        for extension in ["bms", "bme"] {
+            for (channels, count, notes, p2) in cases {
+                let path = dir.join(format!("song.{extension}"));
+                std::fs::write(&path, format!("#BPM 120\n{channels}\n")).unwrap();
+                let chart = load(&path, 0.0).unwrap();
+                assert_eq!(chart.lane_count, count);
+                assert_eq!(read_meta(&path).unwrap().lane_count, count);
+                assert_eq!(chart.notes.len(), notes);
+                assert_eq!(chart.p2_notes.len(), p2);
+            }
+        }
+        let path = dir.join("sparse.pms");
+        std::fs::write(&path, "#BPM 120\n#00111:01\n").unwrap();
+        assert_eq!(load(&path, 0.0).unwrap().lane_count, 9);
+        assert_eq!(read_meta(&path).unwrap().lane_count, 9);
     }
 
     #[test]
@@ -1681,6 +1856,95 @@ mod tests {
     }
 
     #[test]
+    fn resolve_control_flow_restores_outer_random_after_nested_scope() {
+        let text = "\
+#RANDOM 2
+#IF 1
+#RANDOM 3
+#IF 1
+Inner
+#ELSEIF 2
+Inner
+#ELSE
+Inner
+#ENDIF
+#ENDRANDOM
+#ENDIF
+#IF 2
+Outer two
+#ELSEIF 1
+Outer one
+#ENDIF
+";
+        (0u64..64).for_each(|seed| {
+            let mut rng = seed.wrapping_add(0x9E3779B97F4A7C15);
+            let expected = match xorshift_pick(&mut rng, 2) {
+                1 => "Inner\nOuter one\n",
+                _ => "Outer two\n",
+            };
+            assert_eq!(resolve_control_flow(text, seed), expected, "seed {seed}");
+        });
+    }
+
+    #[test]
+    fn resolve_control_flow_ignores_random_scopes_in_skipped_branches() {
+        let text = "\
+#RANDOM 1
+#IF 2
+#RANDOM 3
+#SETRANDOM 2
+#ENDRANDOM
+#ENDRANDOM
+#ENDIF
+#IF 1
+Outer
+#ENDIF
+#ENDRANDOM
+";
+        assert_eq!(resolve_control_flow(text, 0), "Outer\n");
+    }
+
+    #[test]
+    fn resolve_control_flow_keeps_latest_pick_without_endrandom() {
+        let text = "\
+#RANDOM 1
+#IF 1
+#SETRANDOM 2
+#ENDIF
+#IF 2
+Latest
+#ENDIF
+#RANDOM 1
+#IF 1
+Next
+#ENDIF
+";
+        assert_eq!(resolve_control_flow(text, 0), "Latest\nNext\n");
+    }
+
+    #[test]
+    fn resolve_control_flow_endrandom_restores_setrandom_and_clears_last_pick() {
+        let text = "\
+#SETRANDOM 2
+#RANDOM 1
+#IF 1
+Inner
+#ENDIF
+#ENDRANDOM
+#IF 2
+Outer
+#ENDIF
+#ENDRANDOM
+#ENDRANDOM
+#IF 2
+Unexpected
+#ENDIF
+Always
+";
+        assert_eq!(resolve_control_flow(text, 0), "Inner\nOuter\nAlways\n");
+    }
+
+    #[test]
     fn xorshift_pick_stays_in_range_and_is_deterministic_for_a_seed() {
         let mut a = 12345u64;
         let mut b = 12345u64;
@@ -1848,6 +2112,39 @@ mod tests {
         assert_eq!(p.bpm_defs.get(&1), Some(&175.5));
         assert_eq!(p.bpm_defs.get(&1295), Some(&60.0));
         assert!(!p.bpm_defs.contains_key(&2), "non-positive BPM is rejected");
+    }
+
+    #[test]
+    fn header_pass_absorbs_exbpm_definitions_as_bpm_aliases() {
+        let mut p = HeaderPass::default();
+        p.absorb("EXBPM01 180");
+        p.absorb("exbpmZZ 60");
+        p.absorb("EXBPM02 -20");
+        p.absorb("EXBPM03 invalid");
+        p.absorb("EXBPM 240");
+        assert_eq!(p.bpm_defs.get(&1), Some(&180.0));
+        assert_eq!(p.bpm_defs.get(&1295), Some(&60.0));
+        assert_eq!(p.bpm_defs.len(), 2);
+        assert_eq!(p.bpm, 130.0);
+        p.absorb("BPM01 150");
+        assert_eq!(p.bpm_defs.get(&1), Some(&150.0));
+        p.absorb("EXBPM01 180");
+        assert_eq!(p.bpm_defs.get(&1), Some(&180.0));
+    }
+
+    #[test]
+    fn load_honors_a_channel_08_exbpm_change_mid_song() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "#BPM 120\n#EXBPM01 180\n#00108:01\n#00111:01\n#00211:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.notes.len(), 2);
+        assert!((chart.notes[0].time_ms - 2000.0).abs() < 1e-6);
+        assert!((chart.notes[1].time_ms - (2000.0 + 4.0 * 60_000.0 / 180.0)).abs() < 1e-6);
     }
 
     #[test]
