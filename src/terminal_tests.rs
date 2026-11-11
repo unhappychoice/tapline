@@ -49,7 +49,7 @@ fn check_in_child() {
     assert_eq!(before.c_iflag, after.c_iflag);
     assert_eq!(before.c_oflag, after.c_oflag);
     assert_eq!(before.c_cflag, after.c_cflag);
-    assert_eq!(before.c_lflag, after.c_lflag);
+    assert_eq!(local_modes(&before), local_modes(&after));
     assert_eq!(before.c_cc, after.c_cc);
     assert_eq!(unsafe { libc::cfgetispeed(&before) }, unsafe {
         libc::cfgetispeed(&after)
@@ -57,6 +57,16 @@ fn check_in_child() {
     assert_eq!(unsafe { libc::cfgetospeed(&before) }, unsafe {
         libc::cfgetospeed(&after)
     });
+}
+
+fn local_modes(settings: &libc::termios) -> libc::tcflag_t {
+    // Darwin sets PENDIN when restoring canonical mode; it is pending input
+    // state maintained by the kernel, rather than a mode we can restore.
+    #[cfg(target_os = "macos")]
+    let ignored = libc::PENDIN;
+    #[cfg(not(target_os = "macos"))]
+    let ignored = 0;
+    settings.c_lflag & !ignored
 }
 
 fn open_pty() -> (File, File) {
