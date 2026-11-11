@@ -52,6 +52,12 @@ impl Game {
     pub fn new(chart: Chart) -> Self {
         let lane_count = chart.lane_count;
         let mut events = chart.notes.clone();
+        events.extend(chart.invisible_notes.iter().map(|note| Note {
+            time_ms: note.time_ms,
+            lane: note.lane,
+            keysound: Some(note.keysound),
+            ..Note::default()
+        }));
         events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
         let mut lane_keysounds = vec![None; lane_count];
         events.iter().rev().for_each(|note| {

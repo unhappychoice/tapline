@@ -126,8 +126,13 @@ impl SampleBank {
             )
             .fold(0.0, f64::max);
         // Leave one frame after the strict miss boundary for judgment processing.
+        let invisible_end = chart
+            .invisible_notes
+            .iter()
+            .map(|note| note.time_ms + 2500.0)
+            .fold(0.0, f64::max);
         audio_end
-            .map(|end| end.max(judgment_end + 32.0))
+            .map(|end| end.max(judgment_end + 32.0).max(invisible_end))
             .unwrap_or(chart.duration_ms)
     }
 
@@ -323,6 +328,25 @@ mod tests {
         assert_eq!(bank.chart_duration_ms(&chart, false), 14032.0);
         chart.duration_ms = 60000.0;
         assert_eq!(bank.chart_duration_ms(&chart, false), 14032.0);
+    }
+
+    #[test]
+    fn duration_leaves_time_for_empty_presses_after_invisible_notes() {
+        let bank = duration_bank();
+        let chart = crate::chart::Chart {
+            bgm: vec![crate::chart::BgmEvent {
+                time_ms: 0.0,
+                keysound: 1,
+            }],
+            invisible_notes: vec![crate::chart::InvisibleNote {
+                time_ms: 20000.0,
+                lane: 0,
+                keysound: 1,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(bank.chart_duration_ms(&chart, false), 22500.0);
+        assert_eq!(bank.chart_duration_ms(&chart, true), 22500.0);
     }
 
     #[test]
