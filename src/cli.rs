@@ -15,12 +15,12 @@ pub struct Args {
     #[arg(short, long)]
     pub dir: Option<PathBuf>,
 
-    /// BPM for the built-in chart (ignored when a BMS chart is loaded).
-    #[arg(short, long, default_value_t = 120.0)]
+    /// Finite, positive BPM for the built-in chart (ignored when a BMS chart is loaded).
+    #[arg(short, long, default_value_t = 120.0, value_parser = parse_bpm)]
     pub bpm: f64,
 
-    /// Countdown before the song starts.
-    #[arg(long, default_value_t = 2000.0)]
+    /// Finite, non-negative countdown in milliseconds before the song starts.
+    #[arg(long, default_value_t = 2000.0, value_parser = parse_countdown)]
     pub countdown_ms: f64,
 
     /// Play the built-in chart, skipping the selector.
@@ -50,6 +50,20 @@ pub struct Args {
     /// earlier than the note time. Compensates for audio buffer latency.
     #[arg(long, default_value_t = 0.0)]
     pub audio_lead_ms: f64,
+}
+
+impl Args {
+    /// Reject combined timing values that would overflow the built-in chart duration.
+    pub fn validate(&self) -> Result<(), clap::Error> {
+        if built_in_duration(self.bpm, self.countdown_ms).is_finite() {
+            Ok(())
+        } else {
+            Err(clap::Error::raw(
+                clap::error::ErrorKind::ValueValidation,
+                "--bpm and --countdown-ms must produce finite built-in chart timing",
+            ))
+        }
+    }
 }
 
 pub enum ChartChoice {
@@ -83,6 +97,34 @@ pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::cha
         ChartChoice::File(p) => Ok(Some(bms::load(p, args.countdown_ms)?)),
         ChartChoice::BuiltIn => Ok(Some(crate::chart::built_in(args.bpm, args.countdown_ms))),
         ChartChoice::Cancelled => Ok(None),
+    }
+}
+
+/// Parse a positive, finite BPM that keeps the built-in chart duration finite.
+fn parse_bpm(value: &str) -> Result<f64, String> {
+    let bpm = value.parse::<f64>().map_err(|err| err.to_string())?;
+    if bpm.is_finite() && bpm > 0.0 && built_in_duration(bpm, 0.0).is_finite() {
+        Ok(bpm)
+    } else {
+        Err(
+            "BPM must be finite and greater than zero, and produce finite built-in chart timing"
+                .into(),
+        )
+    }
+}
+
+fn built_in_duration(bpm: f64, countdown_ms: f64) -> f64 {
+    let section = 16.0 * (60_000.0 / bpm);
+    (0..4).fold(countdown_ms, |time, _| time + section) + 2000.0
+}
+
+/// Parse a finite countdown, allowing zero to start without a delay.
+fn parse_countdown(value: &str) -> Result<f64, String> {
+    let countdown = value.parse::<f64>().map_err(|err| err.to_string())?;
+    if countdown.is_finite() && countdown >= 0.0 {
+        Ok(countdown)
+    } else {
+        Err("countdown must be finite and non-negative".into())
     }
 }
 
@@ -166,6 +208,40 @@ mod tests {
         assert_eq!(a.bpm, 180.0);
         assert_eq!(a.file.as_deref(), Some(Path::new("song.bms")));
         assert_eq!(a.dir.as_deref(), Some(Path::new("/x")));
+    }
+
+    /// Check fractional BPM and countdown boundaries, including signed zero.
+    #[test]
+    fn args_accept_positive_bpm_and_non_negative_countdown() {
+        ["0", "-0", "0.5", "2000"].iter().for_each(|countdown| {
+            let args = Args::try_parse_from([
+                "tapline",
+                "--bpm=0.5",
+                &format!("--countdown-ms={countdown}"),
+            ])
+            .unwrap();
+            assert_eq!(args.bpm, 0.5);
+            assert_eq!(args.countdown_ms, countdown.parse::<f64>().unwrap());
+        });
+    }
+
+    /// Ensure accepted extreme values produce finite duration and note times.
+    #[test]
+    fn finite_extreme_chart_timing_is_accepted() {
+        [("3e-302", "0"), ("120", "1.7e308")]
+            .iter()
+            .for_each(|(bpm, countdown)| {
+                let args = Args::try_parse_from([
+                    "tapline",
+                    &format!("--bpm={bpm}"),
+                    &format!("--countdown-ms={countdown}"),
+                ])
+                .unwrap();
+                args.validate().unwrap();
+                let chart = load_chart(&ChartChoice::BuiltIn, &args).unwrap().unwrap();
+                assert!(chart.duration_ms.is_finite());
+                assert!(chart.notes.iter().all(|note| note.time_ms.is_finite()));
+            });
     }
 
     fn base_args() -> Args {

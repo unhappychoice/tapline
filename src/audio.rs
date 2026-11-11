@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[derive(Clone)]
 struct DecodedSample {
     channels: u16,
     sample_rate: u32,
@@ -115,33 +116,59 @@ impl SampleBank {
     }
 
     pub fn play_hit(&self, lane: usize, keysound: Option<u32>, synth_mode: bool) {
-        if let Some(id) = keysound {
-            if self.samples.contains_key(&id) {
-                self.play(id);
-                return;
+        match self.hit_sound(keysound, synth_mode) {
+            HitSound::Synth => {
+                let f = LANE_PITCHES[lane % LANE_PITCHES.len()];
+                self.play_synth(f, 80);
             }
+            HitSound::Sample(id) => self.play(id),
+            HitSound::Silent => {}
         }
-        if synth_mode {
-            let f = LANE_PITCHES[lane % LANE_PITCHES.len()];
-            self.play_synth(f, 80);
+    }
+
+    fn hit_sound(&self, keysound: Option<u32>, synth_mode: bool) -> HitSound {
+        if synth_mode || self.samples.is_empty() {
+            return HitSound::Synth;
+        }
+        match keysound.filter(|id| self.samples.contains_key(id)) {
+            Some(id) => HitSound::Sample(id),
+            None => HitSound::Silent,
         }
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum HitSound {
+    Synth,
+    Sample(u32),
+    Silent,
+}
+
 fn decode_all(wav_paths: &HashMap<u32, PathBuf>) -> (HashMap<u32, DecodedSample>, usize) {
-    wav_paths
+    decode_all_with(wav_paths, decode)
+}
+
+fn decode_all_with(
+    wav_paths: &HashMap<u32, PathBuf>,
+    decode_sample: impl Fn(&PathBuf) -> anyhow::Result<DecodedSample> + Sync,
+) -> (HashMap<u32, DecodedSample>, usize) {
+    let mut ids_by_path: HashMap<&PathBuf, Vec<u32>> = HashMap::new();
+    wav_paths.iter().for_each(|(&id, path)| {
+        ids_by_path.entry(path).or_default().push(id);
+    });
+    ids_by_path
         .par_iter()
-        .map(|(&id, path)| (id, decode(path)))
+        .map(|(path, ids)| (ids, decode_sample(path)))
         .collect::<Vec<_>>()
         .into_iter()
         .fold(
             (HashMap::new(), 0),
-            |(mut samples, failures), (id, result)| match result {
+            |(mut samples, failures), (ids, result)| match result {
                 Ok(sample) => {
-                    samples.insert(id, sample);
+                    samples.extend(ids.iter().map(|&id| (id, sample.clone())));
                     (samples, failures)
                 }
-                Err(_) => (samples, failures + 1),
+                Err(_) => (samples, failures + ids.len()),
             },
         )
 }
@@ -207,6 +234,57 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hit_sound_selection_uses_decoded_samples_and_synth_override() {
+        let dir = std::env::temp_dir().join(format!("tapline-hit-sound-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let valid = dir.join("valid.wav");
+        let broken = dir.join("broken.wav");
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&38u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&44100u32.to_le_bytes());
+        wav.extend_from_slice(&88200u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&2u32.to_le_bytes());
+        wav.extend_from_slice(&0i16.to_le_bytes());
+        std::fs::write(&valid, wav).unwrap();
+        std::fs::write(&broken, b"not audio").unwrap();
+
+        [
+            vec![],
+            vec![(1, broken.clone())],
+            vec![(1, valid.clone()), (2, broken)],
+        ]
+        .into_iter()
+        .for_each(|paths| {
+            let paths = paths.into_iter().collect();
+            let (samples, failures) = decode_all(&paths);
+            assert_eq!(samples.len() + failures, paths.len());
+            let loaded = samples.contains_key(&1);
+            assert_eq!(loaded, paths.len() == 2);
+            let bank = SampleBank {
+                samples,
+                ..SampleBank::silent()
+            };
+            [None, Some(1), Some(999)].into_iter().for_each(|keysound| {
+                assert_eq!(bank.hit_sound(keysound, true), HitSound::Synth);
+                let expected = match (loaded, keysound) {
+                    (false, _) => HitSound::Synth,
+                    (true, Some(1)) => HitSound::Sample(1),
+                    _ => HitSound::Silent,
+                };
+                assert_eq!(bank.hit_sound(keysound, false), expected);
+            });
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn silent_bank_is_disabled() {
@@ -283,6 +361,68 @@ mod tests {
         for pair in LANE_PITCHES.windows(2) {
             assert!(pair[1] > pair[0], "lane pitches should climb monotonically");
         }
+    }
+
+    #[test]
+    fn duplicate_paths_decode_once_and_share_pcm_across_all_ids() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let paths = (1..=10)
+            .map(|id| (id, PathBuf::from("sample.wav")))
+            .collect();
+        let calls = AtomicUsize::new(0);
+        let (samples, failures) = decode_all_with(&paths, |path| {
+            assert_eq!(path, &PathBuf::from("sample.wav"));
+            calls.fetch_add(1, Ordering::Relaxed);
+            Ok(DecodedSample {
+                channels: 2,
+                sample_rate: 44_100,
+                data: Arc::new(vec![0.25, -0.25]),
+            })
+        });
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(failures, 0);
+        assert_eq!(samples.len(), 10);
+        (1..=10).for_each(|id| {
+            let sample = &samples[&id];
+            assert!(Arc::ptr_eq(&sample.data, &samples[&1].data));
+            let source = SharedSamples {
+                data: Arc::clone(&sample.data),
+                pos: 0,
+                channels: sample.channels,
+                sample_rate: sample.sample_rate,
+            };
+            assert_eq!(source.channels(), 2);
+            assert_eq!(source.sample_rate(), 44_100);
+            assert_eq!(source.collect::<Vec<_>>(), vec![0.25, -0.25]);
+        });
+    }
+
+    #[test]
+    fn duplicate_failures_are_counted_per_id_and_other_paths_still_load() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let paths = HashMap::from([
+            (1, PathBuf::from("missing.wav")),
+            (2, PathBuf::from("missing.wav")),
+            (3, PathBuf::from("valid.wav")),
+        ]);
+        let calls = AtomicUsize::new(0);
+        let (samples, failures) = decode_all_with(&paths, |path| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            anyhow::ensure!(path == &PathBuf::from("valid.wav"), "missing sample");
+            Ok(DecodedSample {
+                channels: 1,
+                sample_rate: 44_100,
+                data: Arc::new(vec![0.5]),
+            })
+        });
+
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        assert_eq!(failures, 2);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(*samples[&3].data, vec![0.5]);
     }
 
     #[test]

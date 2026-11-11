@@ -21,14 +21,15 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
     let text = read_text(path)?;
     let text = resolve_control_flow(&text, random_seed_for(path));
     let mut pass = HeaderPass::default();
-    let mut lanes = LaneSet::default();
+    let mut raw = Vec::new();
     for line in header_lines(&text) {
-        if let Some((_, ch, _)) = parse_channel_line(line) {
-            lanes.observe(&ch);
+        if let Some(parsed) = parse_channel_line(line) {
+            raw.push(parsed);
         } else {
             pass.absorb(line);
         }
     }
+    let (_, acc, p2_acc) = collect_chart_sides(&raw, &pass, 0.0, false);
     Ok(ChartMeta {
         path: path.to_path_buf(),
         title: pass.title,
@@ -39,7 +40,7 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
         bpm: pass.bpm,
         playlevel: pass.playlevel,
         difficulty: pass.difficulty,
-        lane_count: lanes.count(),
+        lane_count: playable_lane_count(&acc, &p2_acc),
     })
 }
 
@@ -93,14 +94,11 @@ fn build_chart(
 ) -> Result<Chart> {
     let wav_paths = resolve_wavs(&dir, &pass.wav_defs);
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
-    let scales = collect_measure_scales(&raw);
-    let events = collect_timing_events(&raw, &pass.bpm_defs, &pass.stop_defs);
-    let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
-    let acc = accumulate_side(&raw, &timeline, P1_LANES, /*collect_bgm=*/ true);
-    let p2_acc = accumulate_side(&raw, &timeline, P2_LANES, /*collect_bgm=*/ false);
+    let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true);
     let mut bga = collect_bga_events(&raw, &timeline);
     let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
-    let mut lane_count = acc.lanes.count();
+    let lane_count = playable_lane_count(&acc, &p2_acc);
+    let p1_lane_count = acc.lanes.count();
     let p2_lane_count = p2_acc.lanes.count();
     let mut notes = acc.notes;
     let mut mines = acc.mines;
@@ -111,14 +109,14 @@ fn build_chart(
         promote_lnobj(&mut notes, lnobj);
         promote_lnobj(&mut p2_notes, lnobj);
     }
-    notes.retain(|n| n.lane < lane_count);
-    mines.retain(|n| n.lane < lane_count);
+    notes.retain(|n| n.lane < p1_lane_count);
+    mines.retain(|n| n.lane < p1_lane_count);
     p2_notes.retain(|n| n.lane < p2_lane_count);
     p2_mines.retain(|n| n.lane < p2_lane_count);
     // Fold canonical 14K double-play into the primary pool: P2 notes/mines
     // shift into lanes 7..=13 and lane_count expands to 14. Non-canonical DP
     // (e.g. 5K+5K) is left split — the runtime plays P1 only.
-    if lane_count == 7 && p2_lane_count == 7 && !p2_notes.is_empty() {
+    if lane_count == 14 {
         for mut n in p2_notes.drain(..) {
             n.lane += 7;
             notes.push(n);
@@ -127,7 +125,6 @@ fn build_chart(
             m.lane += 7;
             mines.push(m);
         }
-        lane_count = 14;
     }
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     mines.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
@@ -163,6 +160,29 @@ fn build_chart(
         keys: keys_for(lane_count),
         wav_paths,
     })
+}
+
+fn collect_chart_sides(
+    raw: &[(u32, String, String)],
+    pass: &HeaderPass,
+    lead_in_ms: f64,
+    collect_bgm: bool,
+) -> (Timeline, ChartAcc, ChartAcc) {
+    let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
+    let scales = collect_measure_scales(raw);
+    let events = collect_timing_events(raw, &pass.bpm_defs, &pass.stop_defs);
+    let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
+    let acc = accumulate_side(raw, &timeline, P1_LANES, collect_bgm);
+    let p2_acc = accumulate_side(raw, &timeline, P2_LANES, false);
+    (timeline, acc, p2_acc)
+}
+
+fn playable_lane_count(acc: &ChartAcc, p2_acc: &ChartAcc) -> usize {
+    if acc.lanes.count() == 7 && p2_acc.lanes.count() == 7 && !p2_acc.notes.is_empty() {
+        14
+    } else {
+        acc.lanes.count()
+    }
 }
 
 fn p2_channel_to_lane(ch: &str) -> Option<usize> {
@@ -834,11 +854,6 @@ impl HeaderPass {
 struct LaneSet(HashSet<usize>);
 
 impl LaneSet {
-    fn observe(&mut self, ch: &str) {
-        if let Some(lane) = channel_to_lane(ch) {
-            self.0.insert(lane);
-        }
-    }
     fn observe_lane(&mut self, lane: usize) {
         self.0.insert(lane);
     }
@@ -1426,6 +1441,7 @@ mod tests {
         )
         .unwrap();
         let chart = load(&path, 0.0).unwrap();
+        assert_eq!(read_meta(&path).unwrap().lane_count, chart.lane_count);
         assert_eq!(chart.lane_count, 14, "P1 7K + P2 7K → single 14K chart");
         assert!(
             chart.p2_notes.is_empty(),
@@ -1437,6 +1453,37 @@ mod tests {
             "P2 lane 0 should live at merged lane 7"
         );
         assert!(chart.notes.iter().any(|n| n.lane == 13));
+    }
+
+    #[test]
+    fn metadata_lane_count_matches_materialized_notes() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        let cases = [
+            ("long note", "#00111:01\n#00159:0101", 7),
+            ("empty channel", "#00111:01\n#00119:00", 4),
+            ("unpaired long note", "#00111:01\n#00159:01", 4),
+            ("split long pair", "#00159:01\n#00259:01", 7),
+            ("long note DP", "#00159:0101\n#00169:0101", 14),
+            ("empty P2", "#00119:01\n#00129:00", 7),
+            ("asymmetric DP", "#00111:01\n#00129:01", 4),
+            ("mine", "#00111:01\n#001D9:01", 7),
+            ("P2 mine only", "#00119:01\n#001E9:01", 7),
+            ("invalid slot", "#00111:01\n#00119:!!", 4),
+            (
+                "non-playable channels",
+                "#00111:01\n#00101:01\n#00149:01",
+                4,
+            ),
+            ("LNOBJ DP", "#LNOBJ ZZ\n#00119:01ZZ\n#00129:01ZZ", 14),
+        ];
+        for (name, channels, expected) in cases {
+            std::fs::write(&path, format!("#BPM 120\n{channels}\n")).unwrap();
+            let meta = read_meta(&path).unwrap();
+            let chart = load(&path, 0.0).unwrap();
+            assert_eq!(chart.lane_count, expected, "{name}");
+            assert_eq!(meta.lane_count, chart.lane_count, "{name}");
+        }
     }
 
     #[test]
@@ -1887,29 +1934,16 @@ mod tests {
     #[test]
     fn lane_set_count_climbs_with_channel_max() {
         let mut s = LaneSet::default();
-        s.observe("11");
-        s.observe("12");
+        s.observe_lane(0);
+        s.observe_lane(1);
         // Only lanes 0..=1 seen so far → clamp down to the 4K keymap.
         assert_eq!(s.count(), 4);
-        s.observe("14");
+        s.observe_lane(3);
         // Lane 3 pushes us out of pure 4K into the 5K keymap.
         assert_eq!(s.count(), 5);
-        s.observe("19");
+        s.observe_lane(6);
         // Lane 6 is the 7K scratch column.
         assert_eq!(s.count(), 7);
-    }
-
-    #[test]
-    fn lane_set_ignores_non_lane_channels() {
-        let mut s = LaneSet::default();
-        let before = s.count();
-        s.observe("01");
-        s.observe("21");
-        assert_eq!(
-            s.count(),
-            before,
-            "BGM / P2 channels must not change the inferred lane count"
-        );
     }
 
     #[test]
