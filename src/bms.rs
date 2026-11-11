@@ -1,5 +1,5 @@
 use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, Mine, Note};
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -26,7 +26,7 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
         if let Some((_, ch, _)) = parse_channel_line(line) {
             lanes.observe(&ch);
         } else {
-            pass.absorb(line);
+            pass.absorb(line)?;
         }
     }
     Ok(ChartMeta {
@@ -52,7 +52,7 @@ pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
     for line in header_lines(&text) {
         match parse_channel_line(line) {
             Some(parsed) => raw.push(parsed),
-            None => pass.absorb(line),
+            None => pass.absorb(line)?,
         }
     }
     build_chart(pass, raw, dir, lead_in_ms)
@@ -95,7 +95,7 @@ fn build_chart(
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let scales = collect_measure_scales(&raw);
     let events = collect_timing_events(&raw, &pass.bpm_defs, &pass.stop_defs);
-    let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
+    let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure)?;
     let acc = accumulate_side(&raw, &timeline, P1_LANES, /*collect_bgm=*/ true);
     let p2_acc = accumulate_side(&raw, &timeline, P2_LANES, /*collect_bgm=*/ false);
     let mut bga = collect_bga_events(&raw, &timeline);
@@ -136,6 +136,7 @@ fn build_chart(
     bgm.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bga.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     let duration_ms = timeline.end_time(max_measure) + 2500.0;
+    ensure!(duration_ms.is_finite(), "BMS duration must be finite");
     Ok(Chart {
         title: pass.title,
         subtitle: pass.subtitle,
@@ -600,11 +601,12 @@ impl Timeline {
         scales: &HashMap<u32, f64>,
         events: &[TimingEvent],
         max_measure: u32,
-    ) -> Self {
+    ) -> Result<Self> {
+        ensure!(lead_in_ms.is_finite(), "BMS lead-in must be finite");
         let n = (max_measure as usize).saturating_add(2);
         let mut measures: Vec<MeasureSlice> = Vec::with_capacity(n);
         let mut current_ms = lead_in_ms;
-        let mut current_bpm = default_bpm.max(f64::MIN_POSITIVE);
+        let mut current_bpm = default_bpm;
         let mut ev_idx = 0;
         for m in 0..n {
             let beats = 4.0 * scales.get(&(m as u32)).copied().unwrap_or(1.0);
@@ -648,15 +650,19 @@ impl Timeline {
             }
             let last = *segments.last().unwrap();
             let end_ms = last.ms_at_start + (1.0 - last.frac_start) * beats * 60_000.0 / last.bpm;
+            ensure!(
+                end_ms.is_finite(),
+                "BMS timeline must be finite at measure {m}"
+            );
             measures.push(MeasureSlice { beats, segments });
             current_ms = end_ms;
         }
-        Self {
+        Ok(Self {
             measures,
             tail_ms: current_ms,
             tail_bpm: current_bpm,
             default_beats: 4.0,
-        }
+        })
     }
 
     fn time_at(&self, measure: u32, frac: f64) -> f64 {
@@ -731,7 +737,7 @@ impl Default for HeaderPass {
 }
 
 impl HeaderPass {
-    fn absorb(&mut self, line: &str) {
+    fn absorb(&mut self, line: &str) -> Result<()> {
         let (cmd, val) = split_cmd_value(line);
         let up = cmd.to_ascii_uppercase();
         match up.as_str() {
@@ -744,9 +750,7 @@ impl HeaderPass {
             "BANNER" => self.banner = val.trim().to_string(),
             "MAKER" => self.maker = val.to_string(),
             "BPM" => {
-                if let Ok(v) = val.trim().parse() {
-                    self.bpm = v;
-                }
+                self.bpm = parse_bpm(val)?;
             }
             "PLAYLEVEL" => {
                 if let Ok(v) = val.trim().parse() {
@@ -800,12 +804,8 @@ impl HeaderPass {
                     }
                 } else if let Some(rest) = up.strip_prefix("BPM") {
                     if !rest.is_empty() {
-                        if let (Ok(id), Ok(v)) =
-                            (u32::from_str_radix(rest, 36), val.trim().parse::<f64>())
-                        {
-                            if v > 0.0 {
-                                self.bpm_defs.insert(id, v);
-                            }
+                        if let Ok(id) = u32::from_str_radix(rest, 36) {
+                            self.bpm_defs.insert(id, parse_bpm(val)?);
                         }
                     }
                 } else if let Some(rest) = up.strip_prefix("STOP") {
@@ -827,7 +827,17 @@ impl HeaderPass {
                 }
             }
         }
+        Ok(())
     }
+}
+
+fn parse_bpm(value: &str) -> Result<f64> {
+    let bpm: f64 = value.trim().parse().context("Invalid BMS BPM")?;
+    ensure!(
+        bpm.is_finite() && bpm > 0.0,
+        "BMS BPM must be finite and greater than zero"
+    );
+    Ok(bpm)
 }
 
 #[derive(Default)]
@@ -1167,13 +1177,13 @@ mod tests {
     #[test]
     fn header_pass_absorbs_the_standard_headers() {
         let mut p = HeaderPass::default();
-        p.absorb("TITLE Foo Song");
-        p.absorb("ARTIST Bar");
-        p.absorb("BPM 180");
-        p.absorb("PLAYLEVEL 7");
-        p.absorb("DIFFICULTY 3");
-        p.absorb("WAV01 kick.wav");
-        p.absorb("WAVZZ hihat.ogg");
+        p.absorb("TITLE Foo Song").unwrap();
+        p.absorb("ARTIST Bar").unwrap();
+        p.absorb("BPM 180").unwrap();
+        p.absorb("PLAYLEVEL 7").unwrap();
+        p.absorb("DIFFICULTY 3").unwrap();
+        p.absorb("WAV01 kick.wav").unwrap();
+        p.absorb("WAVZZ hihat.ogg").unwrap();
         assert_eq!(p.title, "Foo Song");
         assert_eq!(p.artist, "Bar");
         assert_eq!(p.bpm, 180.0);
@@ -1186,12 +1196,12 @@ mod tests {
     #[test]
     fn header_pass_absorbs_optional_metadata_headers() {
         let mut p = HeaderPass::default();
-        p.absorb("SUBTITLE ~an interlude~");
-        p.absorb("SUBARTIST arr. someone");
-        p.absorb("GENRE electronic");
-        p.absorb("STAGEFILE  cover.png ");
-        p.absorb("BANNER  banner.png ");
-        p.absorb("MAKER unhappychoice");
+        p.absorb("SUBTITLE ~an interlude~").unwrap();
+        p.absorb("SUBARTIST arr. someone").unwrap();
+        p.absorb("GENRE electronic").unwrap();
+        p.absorb("STAGEFILE  cover.png ").unwrap();
+        p.absorb("BANNER  banner.png ").unwrap();
+        p.absorb("MAKER unhappychoice").unwrap();
         assert_eq!(p.subtitle, "~an interlude~");
         assert_eq!(p.subartist, "arr. someone");
         assert_eq!(p.genre, "electronic");
@@ -1226,9 +1236,9 @@ mod tests {
     #[test]
     fn header_pass_absorbs_rank_total_and_volwav() {
         let mut p = HeaderPass::default();
-        p.absorb("RANK 2");
-        p.absorb("TOTAL 260");
-        p.absorb("VOLWAV 80");
+        p.absorb("RANK 2").unwrap();
+        p.absorb("TOTAL 260").unwrap();
+        p.absorb("VOLWAV 80").unwrap();
         assert_eq!(p.rank, Some(2));
         assert_eq!(p.total, Some(260.0));
         assert_eq!(p.vol_wav, Some(80));
@@ -1237,11 +1247,11 @@ mod tests {
     #[test]
     fn header_pass_rejects_out_of_range_rank_total_volwav() {
         let mut p = HeaderPass::default();
-        p.absorb("RANK 9");
-        p.absorb("TOTAL 0");
-        p.absorb("TOTAL -5");
-        p.absorb("VOLWAV 250");
-        p.absorb("VOLWAV nonsense");
+        p.absorb("RANK 9").unwrap();
+        p.absorb("TOTAL 0").unwrap();
+        p.absorb("TOTAL -5").unwrap();
+        p.absorb("VOLWAV 250").unwrap();
+        p.absorb("VOLWAV nonsense").unwrap();
         assert_eq!(p.rank, None, "RANK > 4 is not a valid difficulty tier");
         assert_eq!(p.total, None, "TOTAL must be positive");
         assert_eq!(p.vol_wav, None, "VOLWAV is a 0..=100 percent");
@@ -1250,7 +1260,7 @@ mod tests {
     #[test]
     fn timeline_defaults_every_measure_to_base_length() {
         // 240 BPM → 4 beats / (240/60) = 1 second per measure.
-        let t = Timeline::build(0.0, 240.0, &HashMap::new(), &[], 3);
+        let t = Timeline::build(0.0, 240.0, &HashMap::new(), &[], 3).unwrap();
         assert_eq!(t.time_at(0, 0.0), 0.0);
         assert_eq!(t.time_at(1, 0.0), 1000.0);
         assert_eq!(t.time_at(2, 0.0), 2000.0);
@@ -1260,7 +1270,7 @@ mod tests {
     #[test]
     fn timeline_scales_a_single_measure_and_shifts_the_rest() {
         let scales: HashMap<u32, f64> = [(1u32, 0.5)].into();
-        let t = Timeline::build(100.0, 240.0, &scales, &[], 3);
+        let t = Timeline::build(100.0, 240.0, &scales, &[], 3).unwrap();
         assert_eq!(t.time_at(0, 0.0), 100.0);
         assert_eq!(t.time_at(1, 0.0), 1100.0);
         assert!((t.time_at(1, 1.0) - 1600.0).abs() < 1e-6);
@@ -1269,7 +1279,7 @@ mod tests {
 
     #[test]
     fn timeline_extrapolates_past_the_max_measure() {
-        let t = Timeline::build(0.0, 240.0, &HashMap::new(), &[], 1);
+        let t = Timeline::build(0.0, 240.0, &HashMap::new(), &[], 1).unwrap();
         assert!((t.time_at(5, 0.0) - 5000.0).abs() < 1e-6);
     }
 
@@ -1283,7 +1293,7 @@ mod tests {
             frac: 0.5,
             kind: TimingEventKind::Bpm(240.0),
         }];
-        let t = Timeline::build(0.0, 120.0, &HashMap::new(), &evs, 1);
+        let t = Timeline::build(0.0, 120.0, &HashMap::new(), &evs, 1).unwrap();
         assert!((t.time_at(0, 0.5) - 1000.0).abs() < 1e-6);
         assert!((t.time_at(1, 0.0) - 1500.0).abs() < 1e-6);
     }
@@ -1296,7 +1306,7 @@ mod tests {
             frac: 0.0,
             kind: TimingEventKind::Bpm(240.0),
         }];
-        let t = Timeline::build(0.0, 120.0, &HashMap::new(), &evs, 3);
+        let t = Timeline::build(0.0, 120.0, &HashMap::new(), &evs, 3).unwrap();
         assert!((t.time_at(1, 0.0) - 2000.0).abs() < 1e-6);
         assert!((t.time_at(2, 0.0) - 3000.0).abs() < 1e-6);
         assert!((t.time_at(3, 0.0) - 4000.0).abs() < 1e-6);
@@ -1312,7 +1322,7 @@ mod tests {
             frac: 0.5,
             kind: TimingEventKind::Stop(48.0),
         }];
-        let t = Timeline::build(0.0, 120.0, &HashMap::new(), &evs, 1);
+        let t = Timeline::build(0.0, 120.0, &HashMap::new(), &evs, 1).unwrap();
         assert!((t.time_at(0, 0.5) - 1500.0).abs() < 1e-6);
         assert!((t.time_at(1, 0.0) - 2500.0).abs() < 1e-6);
     }
@@ -1352,9 +1362,9 @@ mod tests {
     #[test]
     fn header_pass_absorbs_stop_definitions() {
         let mut p = HeaderPass::default();
-        p.absorb("STOP01 96");
-        p.absorb("STOP02 -1");
-        p.absorb("STOPZZ 24");
+        p.absorb("STOP01 96").unwrap();
+        p.absorb("STOP02 -1").unwrap();
+        p.absorb("STOPZZ 24").unwrap();
         assert_eq!(p.stop_defs.get(&1), Some(&96.0));
         assert!(!p.stop_defs.contains_key(&2));
         assert_eq!(p.stop_defs.get(&1295), Some(&24.0));
@@ -1473,8 +1483,8 @@ mod tests {
     #[test]
     fn header_pass_absorbs_bmp_definitions() {
         let mut p = HeaderPass::default();
-        p.absorb("BMP01 cover.png");
-        p.absorb("BMPZZ  scene.mp4  ");
+        p.absorb("BMP01 cover.png").unwrap();
+        p.absorb("BMPZZ  scene.mp4  ").unwrap();
         assert_eq!(p.bmp_defs.get(&1).unwrap(), "cover.png");
         assert_eq!(p.bmp_defs.get(&1295).unwrap(), "scene.mp4");
     }
@@ -1662,8 +1672,8 @@ mod tests {
     #[test]
     fn header_pass_absorbs_lnobj_and_lntype() {
         let mut p = HeaderPass::default();
-        p.absorb("LNOBJ ZZ");
-        p.absorb("LNTYPE 2");
+        p.absorb("LNOBJ ZZ").unwrap();
+        p.absorb("LNTYPE 2").unwrap();
         assert_eq!(p.lnobj, Some(1295));
         assert_eq!(p.lntype, 2);
     }
@@ -1671,7 +1681,7 @@ mod tests {
     #[test]
     fn header_pass_clamps_lntype_to_supported_variants() {
         let mut p = HeaderPass::default();
-        p.absorb("LNTYPE 9");
+        p.absorb("LNTYPE 9").unwrap();
         assert_eq!(p.lntype, 1, "unsupported LN types fall back to the default");
     }
 
@@ -1745,9 +1755,9 @@ mod tests {
     #[test]
     fn header_pass_absorbs_bpm_definitions() {
         let mut p = HeaderPass::default();
-        p.absorb("BPM01 175.5");
-        p.absorb("BPMZZ 60");
-        p.absorb("BPM02 -20");
+        p.absorb("BPM01 175.5").unwrap();
+        p.absorb("BPMZZ 60").unwrap();
+        assert!(p.absorb("BPM02 -20").is_err());
         assert_eq!(p.bpm_defs.get(&1), Some(&175.5));
         assert_eq!(p.bpm_defs.get(&1295), Some(&60.0));
         assert!(!p.bpm_defs.contains_key(&2), "non-positive BPM is rejected");
@@ -1880,10 +1890,10 @@ mod tests {
     }
 
     #[test]
-    fn header_pass_ignores_malformed_numeric_headers() {
+    fn header_pass_rejects_malformed_bpm_and_ignores_other_malformed_numbers() {
         let mut p = HeaderPass::default();
-        p.absorb("BPM  not-a-number");
-        p.absorb("PLAYLEVEL huh");
+        assert!(p.absorb("BPM  not-a-number").is_err());
+        p.absorb("PLAYLEVEL huh").unwrap();
         assert_eq!(p.bpm, 130.0);
         assert_eq!(p.playlevel, None);
     }

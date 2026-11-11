@@ -157,18 +157,76 @@ fn wav_id_zero_is_ignored_in_channel_data() {
 }
 
 #[test]
-fn zero_bpm_does_not_panic_but_yields_infinite_duration() {
-    let path = write_text(
-        "\
-#TITLE Zero BPM
-#BPM 0
-#WAV01 kick.wav
-#00111:0100
-",
-    );
+fn zero_bpm_is_rejected() {
+    let path = write_text("#BPM 0\n#00111:0100\n");
+    let error = bms::load(&path, 0.0).err().unwrap();
+    assert!(error.to_string().contains("BPM"));
+}
+
+#[test]
+fn invalid_base_and_extended_bpms_are_rejected() {
+    for bpm in ["0", "-1", "NaN", "inf", "-inf", "1e309", "invalid"] {
+        for header in ["BPM", "BPM01"] {
+            let path = write_text(&format!("#{header} {bpm}\n#00108:01\n#00111:0100\n"));
+            assert!(bms::load(&path, 0.0).is_err(), "{header} {bpm}");
+            assert!(bms::read_meta(&path).is_err(), "{header} {bpm}");
+        }
+    }
+}
+
+#[test]
+fn overflowing_timing_is_rejected_before_creating_notes() {
+    for text in [
+        "#BPM 1e-308\n#00111:0101\n",
+        "#BPM01 1e-308\n#00108:01\n#00111:0101\n",
+        "#STOP01 inf\n#00109:01\n#00111:0101\n",
+        "#STOP01 1e308\n#00109:01\n#00111:0101\n",
+    ] {
+        assert!(bms::load(&write_text(text), 0.0).is_err(), "{text}");
+    }
+}
+
+#[test]
+fn normal_bpm_produces_finite_note_times_and_duration() {
+    let path = write_text("#BPM 120\n#00111:0101\n");
     let chart = bms::load(&path, 0.0).unwrap();
-    // measure_ms = 4 * 60_000 / 0.0 = +∞ → duration and note times are infinite.
-    assert!(chart.duration_ms.is_infinite() || chart.duration_ms.is_nan());
+    assert_eq!(chart.bpm, 120.0);
+    assert_eq!(chart.duration_ms, 6500.0);
+    assert_eq!(chart.notes.len(), 2);
+    assert_eq!(chart.notes[0].time_ms, 2000.0);
+    assert_eq!(chart.notes[1].time_ms, 3000.0);
+    assert!(chart.notes.iter().all(|note| note.time_ms.is_finite()));
+}
+
+#[test]
+fn bpm_changes_and_stops_keep_all_event_times_finite() {
+    let path = write_text(
+        "#BPM 120\n#BPM01 240\n#STOP01 48\n#00108:0001\n#00109:0001\n\
+         #00111:0101\n#00151:0101\n#00121:0101\n#00161:0101\n\
+         #001D1:0101\n#001E1:0101\n#00101:0101\n#00104:0101\n",
+    );
+    let chart = bms::load(&path, 500.0).unwrap();
+    assert_eq!(chart.duration_ms, 6750.0);
+    assert!(chart
+        .notes
+        .iter()
+        .chain(&chart.p2_notes)
+        .all(|note| { note.time_ms.is_finite() && note.end_ms.is_none_or(f64::is_finite) }));
+    assert!(chart
+        .mines
+        .iter()
+        .chain(&chart.p2_mines)
+        .all(|mine| mine.time_ms.is_finite()));
+    assert!(chart.bgm.iter().all(|event| event.time_ms.is_finite()));
+    assert!(chart.bga.iter().all(|event| event.time_ms.is_finite()));
+}
+
+#[test]
+fn non_finite_lead_in_is_rejected() {
+    let path = write_text("#BPM 120\n#00111:0100\n");
+    for lead_in in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(bms::load(&path, lead_in).is_err());
+    }
 }
 
 #[test]
