@@ -60,6 +60,9 @@ fn backend_lifecycle_loads_samples_and_handles_missing_audio() {
 }
 
 fn new_with_empty_map_never_panics_even_if_backend_is_absent() {
+    if run_in_audio_process() {
+        return;
+    }
     let bank = SampleBank::new(&HashMap::new());
     // enabled may be true or false depending on the test runner's audio
     // backend; the important guarantee is that construction doesn't panic
@@ -72,6 +75,9 @@ fn new_with_empty_map_never_panics_even_if_backend_is_absent() {
 }
 
 fn new_drops_wav_entries_pointing_at_missing_files() {
+    if run_in_audio_process() {
+        return;
+    }
     let dir = tempdir();
     let mut wav_paths: HashMap<u32, PathBuf> = HashMap::new();
     wav_paths.insert(1, dir.join("missing.wav"));
@@ -82,6 +88,9 @@ fn new_drops_wav_entries_pointing_at_missing_files() {
 }
 
 fn new_drops_wav_entries_that_are_not_valid_audio() {
+    if run_in_audio_process() {
+        return;
+    }
     let dir = tempdir();
     let broken = dir.join("broken.wav");
     std::fs::write(&broken, b"not a wav at all").unwrap();
@@ -92,6 +101,9 @@ fn new_drops_wav_entries_that_are_not_valid_audio() {
 }
 
 fn new_loads_a_hand_crafted_pcm_wav_without_panicking() {
+    if run_in_audio_process() {
+        return;
+    }
     let dir = tempdir();
     let wav = dir.join("tiny.wav");
     std::fs::write(&wav, silent_wav_bytes(64)).unwrap();
@@ -103,6 +115,9 @@ fn new_loads_a_hand_crafted_pcm_wav_without_panicking() {
 }
 
 fn new_loads_the_same_wav_for_every_registered_id() {
+    if run_in_audio_process() {
+        return;
+    }
     let dir = tempdir();
     let wav = dir.join("shared.wav");
     std::fs::write(&wav, silent_wav_bytes(64)).unwrap();
@@ -122,4 +137,21 @@ fn play_hit_falls_back_to_synth_when_keysound_is_unknown() {
     // is that the branch that reads `LANE_PITCHES[lane % LEN]` doesn't panic
     // even for a lane index far past the pitch table.
     bank.play_hit(usize::MAX, Some(999), true);
+}
+
+// CPAL's WASAPI enumerator is process-global, but its COM apartment belongs to
+// the first calling thread. Keep each backend test in its own process so that
+// later tests cannot reuse it after that thread's COM apartment is destroyed.
+fn run_in_audio_process() -> bool {
+    if std::env::var_os("TAPLINE_AUDIO_TEST_CHILD").is_some() {
+        return false;
+    }
+    let name = std::thread::current().name().unwrap().to_owned();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &name, "--nocapture"])
+        .env("TAPLINE_AUDIO_TEST_CHILD", "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    true
 }
