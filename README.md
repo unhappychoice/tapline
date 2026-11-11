@@ -145,6 +145,20 @@ The parsed `damage` value does not scale the penalty or subtract score.
 
 Combo (up to +50) is added on top of every non-miss hit.
 
+## NORMAL gauge
+
+The gauge starts at 20%, stays between 0% and 100%, and clears at 80% or
+higher when the chart ends. Reaching 0% does not end play early. The play HUD
+and result screen show the gauge and its current CLEAR / FAILED status.
+
+PERFECT and GREAT recover `#TOTAL / note count` percentage points; GOOD
+recovers half that amount. Each MISS (including a mine detonation) subtracts
+6 percentage points. Missing, non-finite, or non-positive `#TOTAL` defaults
+to 260. Long-note starts and ends each count as one note because both are
+judged separately; mines and background sounds do not count toward recovery.
+An empty chart has no recovery. Mine damage scaling and other gauge types
+are not implemented yet.
+
 ## Keys
 
 DJMax-style layout. In 5K the center lane accepts either `F` or `J` — press
