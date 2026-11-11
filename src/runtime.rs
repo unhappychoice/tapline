@@ -15,10 +15,10 @@ pub struct PlayOptions {
 }
 
 impl PlayOptions {
-    pub fn from_args(args: &Args, chart: &chart::Chart) -> Self {
+    pub fn from_args(args: &Args) -> Self {
         Self {
             countdown_ms: args.countdown_ms,
-            synth_mode: args.synth || chart.wav_paths.is_empty(),
+            synth_mode: args.synth,
             auto_ks: args.auto_ks,
             audio_lead_ms: args.audio_lead_ms,
         }
@@ -26,7 +26,7 @@ impl PlayOptions {
 }
 
 pub fn play_chart(out: &mut Stdout, args: &Args, chart: chart::Chart) -> Result<()> {
-    let opts = PlayOptions::from_args(args, &chart);
+    let opts = PlayOptions::from_args(args);
     let bank = if args.no_audio {
         audio::SampleBank::silent()
     } else {
@@ -427,13 +427,14 @@ mod tests {
     }
 
     #[test]
-    fn play_options_from_args_forces_synth_when_no_wavs_are_loaded() {
+    fn play_options_from_args_carries_over_the_synth_flag() {
         use crate::cli::Args;
         use clap::Parser;
-        let args = Args::parse_from(["tapline"]);
-        let chart = base_chart(4, vec![]);
-        let opts = PlayOptions::from_args(&args, &chart);
-        assert!(opts.synth_mode, "no WAV paths → synth mode auto-on");
+        [false, true].into_iter().for_each(|synth| {
+            let mut args = Args::parse_from(["tapline"]);
+            args.synth = synth;
+            assert_eq!(PlayOptions::from_args(&args).synth_mode, synth);
+        });
     }
 
     #[test]
@@ -441,8 +442,7 @@ mod tests {
         use crate::cli::Args;
         use clap::Parser;
         let args = Args::parse_from(["tapline", "--audio-lead-ms", "72"]);
-        let chart = base_chart(4, vec![]);
-        let opts = PlayOptions::from_args(&args, &chart);
+        let opts = PlayOptions::from_args(&args);
         assert_eq!(opts.audio_lead_ms, 72.0);
     }
 
@@ -451,8 +451,7 @@ mod tests {
         use crate::cli::Args;
         use clap::Parser;
         let args = Args::parse_from(["tapline", "--auto-ks"]);
-        let chart = base_chart(4, vec![]);
-        let opts = PlayOptions::from_args(&args, &chart);
+        let opts = PlayOptions::from_args(&args);
         assert!(opts.auto_ks);
     }
 

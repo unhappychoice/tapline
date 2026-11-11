@@ -115,17 +115,32 @@ impl SampleBank {
     }
 
     pub fn play_hit(&self, lane: usize, keysound: Option<u32>, synth_mode: bool) {
-        if let Some(id) = keysound {
-            if self.samples.contains_key(&id) {
-                self.play(id);
-                return;
+        match self.hit_sound(keysound, synth_mode) {
+            HitSound::Synth => {
+                let f = LANE_PITCHES[lane % LANE_PITCHES.len()];
+                self.play_synth(f, 80);
             }
-        }
-        if synth_mode {
-            let f = LANE_PITCHES[lane % LANE_PITCHES.len()];
-            self.play_synth(f, 80);
+            HitSound::Sample(id) => self.play(id),
+            HitSound::Silent => {}
         }
     }
+
+    fn hit_sound(&self, keysound: Option<u32>, synth_mode: bool) -> HitSound {
+        if synth_mode || self.samples.is_empty() {
+            return HitSound::Synth;
+        }
+        match keysound.filter(|id| self.samples.contains_key(id)) {
+            Some(id) => HitSound::Sample(id),
+            None => HitSound::Silent,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum HitSound {
+    Synth,
+    Sample(u32),
+    Silent,
 }
 
 fn decode_all(wav_paths: &HashMap<u32, PathBuf>) -> (HashMap<u32, DecodedSample>, usize) {
@@ -207,6 +222,57 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hit_sound_selection_uses_decoded_samples_and_synth_override() {
+        let dir = std::env::temp_dir().join(format!("tapline-hit-sound-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let valid = dir.join("valid.wav");
+        let broken = dir.join("broken.wav");
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&38u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&44100u32.to_le_bytes());
+        wav.extend_from_slice(&88200u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&2u32.to_le_bytes());
+        wav.extend_from_slice(&0i16.to_le_bytes());
+        std::fs::write(&valid, wav).unwrap();
+        std::fs::write(&broken, b"not audio").unwrap();
+
+        [
+            vec![],
+            vec![(1, broken.clone())],
+            vec![(1, valid.clone()), (2, broken)],
+        ]
+        .into_iter()
+        .for_each(|paths| {
+            let paths = paths.into_iter().collect();
+            let (samples, failures) = decode_all(&paths);
+            assert_eq!(samples.len() + failures, paths.len());
+            let loaded = samples.contains_key(&1);
+            assert_eq!(loaded, paths.len() == 2);
+            let bank = SampleBank {
+                samples,
+                ..SampleBank::silent()
+            };
+            [None, Some(1), Some(999)].into_iter().for_each(|keysound| {
+                assert_eq!(bank.hit_sound(keysound, true), HitSound::Synth);
+                let expected = match (loaded, keysound) {
+                    (false, _) => HitSound::Synth,
+                    (true, Some(1)) => HitSound::Sample(1),
+                    _ => HitSound::Silent,
+                };
+                assert_eq!(bank.hit_sound(keysound, false), expected);
+            });
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn silent_bank_is_disabled() {
