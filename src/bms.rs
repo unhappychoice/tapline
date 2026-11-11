@@ -818,7 +818,9 @@ impl HeaderPass {
                     if let Ok(id) = u32::from_str_radix(rest, 36) {
                         self.wav_defs.insert(id, val.trim().to_string());
                     }
-                } else if let Some(rest) = up.strip_prefix("BPM") {
+                } else if let Some(rest) =
+                    up.strip_prefix("BPM").or_else(|| up.strip_prefix("EXBPM"))
+                {
                     if !rest.is_empty() {
                         if let (Ok(id), Ok(v)) =
                             (u32::from_str_radix(rest, 36), val.trim().parse::<f64>())
@@ -1794,6 +1796,39 @@ mod tests {
         assert_eq!(p.bpm_defs.get(&1), Some(&175.5));
         assert_eq!(p.bpm_defs.get(&1295), Some(&60.0));
         assert!(!p.bpm_defs.contains_key(&2), "non-positive BPM is rejected");
+    }
+
+    #[test]
+    fn header_pass_absorbs_exbpm_definitions_as_bpm_aliases() {
+        let mut p = HeaderPass::default();
+        p.absorb("EXBPM01 180");
+        p.absorb("exbpmZZ 60");
+        p.absorb("EXBPM02 -20");
+        p.absorb("EXBPM03 invalid");
+        p.absorb("EXBPM 240");
+        assert_eq!(p.bpm_defs.get(&1), Some(&180.0));
+        assert_eq!(p.bpm_defs.get(&1295), Some(&60.0));
+        assert_eq!(p.bpm_defs.len(), 2);
+        assert_eq!(p.bpm, 130.0);
+        p.absorb("BPM01 150");
+        assert_eq!(p.bpm_defs.get(&1), Some(&150.0));
+        p.absorb("EXBPM01 180");
+        assert_eq!(p.bpm_defs.get(&1), Some(&180.0));
+    }
+
+    #[test]
+    fn load_honors_a_channel_08_exbpm_change_mid_song() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "#BPM 120\n#EXBPM01 180\n#00108:01\n#00111:01\n#00211:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.notes.len(), 2);
+        assert!((chart.notes[0].time_ms - 2000.0).abs() < 1e-6);
+        assert!((chart.notes[1].time_ms - (2000.0 + 4.0 * 60_000.0 / 180.0)).abs() < 1e-6);
     }
 
     #[test]
