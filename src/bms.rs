@@ -29,7 +29,7 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
             pass.absorb(line);
         }
     }
-    let (_, acc, p2_acc) = collect_chart_sides(&raw, &pass, 0.0, false);
+    let (_, acc, p2_acc) = collect_chart_sides(&raw, &pass, 0.0, false, is_pms(path));
     Ok(ChartMeta {
         path: path.to_path_buf(),
         title: pass.title,
@@ -40,7 +40,7 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
         bpm: pass.bpm,
         playlevel: pass.playlevel,
         difficulty: pass.difficulty,
-        lane_count: playable_lane_count(&acc, &p2_acc),
+        lane_count: playable_lane_count(&acc, &p2_acc, is_pms(path)),
     })
 }
 
@@ -56,7 +56,12 @@ pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
             None => pass.absorb(line),
         }
     }
-    build_chart(pass, raw, dir, lead_in_ms)
+    build_chart(pass, raw, dir, lead_in_ms, is_pms(path))
+}
+
+fn is_pms(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pms"))
 }
 
 #[derive(Default)]
@@ -86,19 +91,41 @@ const P2_LANES: LaneMap = LaneMap {
     mine: p2_mine_channel_to_lane,
 };
 
+const PMS_LANES: LaneMap = LaneMap {
+    normal: |ch| pms_channel_to_lane(ch, "1", "2"),
+    long: |ch| pms_channel_to_lane(ch, "5", "6"),
+    mine: |ch| pms_channel_to_lane(ch, "D", "E"),
+};
+
+fn pms_channel_to_lane(ch: &str, left: &str, right: &str) -> Option<usize> {
+    match (ch.strip_prefix(left), ch.strip_prefix(right)) {
+        (Some("1"), _) => Some(0),
+        (Some("2"), _) => Some(1),
+        (Some("3"), _) => Some(2),
+        (Some("4"), _) => Some(3),
+        (Some("5"), _) => Some(4),
+        (_, Some("2")) => Some(5),
+        (_, Some("3")) => Some(6),
+        (_, Some("4")) => Some(7),
+        (_, Some("5")) => Some(8),
+        _ => None,
+    }
+}
+
 fn build_chart(
     pass: HeaderPass,
     raw: Vec<(u32, String, String)>,
     dir: PathBuf,
     lead_in_ms: f64,
+    pms: bool,
 ) -> Result<Chart> {
     let wav_paths = resolve_wavs(&dir, &pass.wav_defs);
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
-    let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true);
+    let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true, pms);
     let mut bga = collect_bga_events(&raw, &timeline);
     let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
-    let lane_count = playable_lane_count(&acc, &p2_acc);
-    let p1_lane_count = acc.lanes.count();
+    let lane_count = playable_lane_count(&acc, &p2_acc, pms);
+    let p1_lane_count = if pms { 9 } else { acc.lanes.count() };
     let p2_lane_count = p2_acc.lanes.count();
     let mut notes = acc.notes;
     let mut mines = acc.mines;
@@ -167,18 +194,26 @@ fn collect_chart_sides(
     pass: &HeaderPass,
     lead_in_ms: f64,
     collect_bgm: bool,
+    pms: bool,
 ) -> (Timeline, ChartAcc, ChartAcc) {
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let scales = collect_measure_scales(raw);
     let events = collect_timing_events(raw, &pass.bpm_defs, &pass.stop_defs);
     let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
-    let acc = accumulate_side(raw, &timeline, P1_LANES, collect_bgm);
-    let p2_acc = accumulate_side(raw, &timeline, P2_LANES, false);
+    let lanes = if pms { PMS_LANES } else { P1_LANES };
+    let acc = accumulate_side(raw, &timeline, lanes, collect_bgm);
+    let p2_acc = if pms {
+        ChartAcc::default()
+    } else {
+        accumulate_side(raw, &timeline, P2_LANES, false)
+    };
     (timeline, acc, p2_acc)
 }
 
-fn playable_lane_count(acc: &ChartAcc, p2_acc: &ChartAcc) -> usize {
-    if acc.lanes.count() == 7 && p2_acc.lanes.count() == 7 && !p2_acc.notes.is_empty() {
+fn playable_lane_count(acc: &ChartAcc, p2_acc: &ChartAcc, pms: bool) -> usize {
+    if pms {
+        9
+    } else if acc.lanes.count() == 7 && p2_acc.lanes.count() == 7 && !p2_acc.notes.is_empty() {
         14
     } else {
         acc.lanes.count()
@@ -1078,6 +1113,90 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn pms_maps_all_buttons_for_visible_long_lnobj_and_mine_channels() {
+        let dir = tempdir();
+        let families = [
+            ("11 12 13 14 15 22 23 24 25", "01", false),
+            ("51 52 53 54 55 62 63 64 65", "0101", true),
+            ("11 12 13 14 15 22 23 24 25", "01ZZ", true),
+            ("D1 D2 D3 D4 D5 E2 E3 E4 E5", "64", false),
+        ];
+        for extension in ["pms", "PMS"] {
+            let path = dir.join(format!("song.{extension}"));
+            for (channels, slots, long) in families {
+                let lines = channels
+                    .split_whitespace()
+                    .map(|channel| format!("#001{channel}:{slots}\n"))
+                    .collect::<String>();
+                std::fs::write(&path, format!("#BPM 60\n#LNOBJ ZZ\n#00101:01\n{lines}")).unwrap();
+                let chart = load(&path, 500.0).unwrap();
+                assert_eq!(chart.lane_count, 9);
+                assert_eq!(read_meta(&path).unwrap().lane_count, 9);
+                assert_eq!(chart.keys, keys_for(9));
+                assert!(chart.p2_notes.is_empty());
+                assert!(chart.p2_mines.is_empty());
+                assert_eq!(chart.bgm.len(), 1);
+                let mut lanes = if channels.starts_with('D') {
+                    assert!(chart.notes.is_empty());
+                    assert!(chart.mines.iter().all(|mine| mine.damage == 100));
+                    chart.mines.iter().map(|mine| mine.lane).collect::<Vec<_>>()
+                } else {
+                    assert!(chart.notes.iter().all(|note| note.keysound == Some(1)));
+                    assert!(chart.notes.iter().all(|note| note.time_ms == 4500.0));
+                    assert!(chart
+                        .notes
+                        .iter()
+                        .all(|note| note.end_ms == long.then_some(6500.0)));
+                    chart.notes.iter().map(|note| note.lane).collect::<Vec<_>>()
+                };
+                lanes.sort_unstable();
+                assert_eq!(lanes, (0..9).collect::<Vec<_>>());
+                let mut game = crate::game::Game::new(chart);
+                (0..9).for_each(|lane| {
+                    game.hit(lane, 4500.0);
+                    if long {
+                        game.release(lane, 6500.0);
+                    }
+                });
+                if channels.starts_with('D') {
+                    assert_eq!(game.miss, 9);
+                    assert!(game.chart.mines.iter().all(|mine| mine.exploded));
+                } else {
+                    assert_eq!(game.perfect, if long { 18 } else { 9 });
+                    assert!(game.chart.notes.iter().all(|note| note.hit));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_pms_stays_nine_lane_without_changing_bms_or_bme_modes() {
+        let dir = tempdir();
+        let cases = [
+            ("#00111:01", 4, 1, 0),
+            ("#00115:01", 5, 1, 0),
+            ("#00119:01", 7, 1, 0),
+            ("#00119:01\n#00129:01", 14, 2, 0),
+            ("#00115:01\n#00125:01", 5, 1, 1),
+        ];
+        for extension in ["bms", "bme"] {
+            for (channels, count, notes, p2) in cases {
+                let path = dir.join(format!("song.{extension}"));
+                std::fs::write(&path, format!("#BPM 120\n{channels}\n")).unwrap();
+                let chart = load(&path, 0.0).unwrap();
+                assert_eq!(chart.lane_count, count);
+                assert_eq!(read_meta(&path).unwrap().lane_count, count);
+                assert_eq!(chart.notes.len(), notes);
+                assert_eq!(chart.p2_notes.len(), p2);
+            }
+        }
+        let path = dir.join("sparse.pms");
+        std::fs::write(&path, "#BPM 120\n#00111:01\n").unwrap();
+        assert_eq!(load(&path, 0.0).unwrap().lane_count, 9);
+        assert_eq!(read_meta(&path).unwrap().lane_count, 9);
     }
 
     #[test]
