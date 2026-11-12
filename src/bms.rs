@@ -171,28 +171,30 @@ fn build_chart(
         promote_lnobj(&mut notes, lnobj);
         promote_lnobj(&mut p2_notes, lnobj);
     }
-    notes.retain(|n| n.lane < p1_lane_count);
-    invisible_notes.retain(|n| n.lane < p1_lane_count);
-    p2_invisible_notes.retain(|n| n.lane < p2_lane_count);
-    mines.retain(|n| n.lane < p1_lane_count);
-    p2_notes.retain(|n| n.lane < p2_lane_count);
-    p2_mines.retain(|n| n.lane < p2_lane_count);
-    // Fold canonical 14K double-play into the primary pool: P2 notes/mines
-    // shift into lanes 7..=13 and lane_count expands to 14. Non-canonical DP
-    // (e.g. 5K+5K) is left split — the runtime plays P1 only.
-    if lane_count == 14 {
-        p2_invisible_notes.drain(..).for_each(|mut note| {
-            note.lane += 7;
-            invisible_notes.push(note);
-        });
-        for mut n in p2_notes.drain(..) {
-            n.lane += 7;
-            notes.push(n);
-        }
-        for mut m in p2_mines.drain(..) {
-            m.lane += 7;
-            mines.push(m);
-        }
+    notes.retain(|n| n.lane < p1_lane_count || n.lane == 7);
+    mines.retain(|n| n.lane < p1_lane_count || n.lane == 7);
+    p2_notes.retain(|n| n.lane < p2_lane_count || n.lane == 7);
+    p2_mines.retain(|n| n.lane < p2_lane_count || n.lane == 7);
+    invisible_notes.retain(|n| n.lane < p1_lane_count || n.lane == 7);
+    p2_invisible_notes.retain(|n| n.lane < p2_lane_count || n.lane == 7);
+    compact_invisible_scratch(&mut invisible_notes, p1_lane_count);
+    compact_invisible_scratch(&mut p2_invisible_notes, p2_lane_count);
+    // Scratch is collected as lane 7, then compacted after the five keys in 6K.
+    compact_scratch(&mut notes, &mut mines, p1_lane_count);
+    compact_scratch(&mut p2_notes, &mut p2_mines, p2_lane_count);
+    if lane_count > p1_lane_count {
+        invisible_notes.extend(p2_invisible_notes.drain(..).map(|mut n| {
+            n.lane += p1_lane_count;
+            n
+        }));
+        notes.extend(p2_notes.drain(..).map(|mut n| {
+            n.lane += p1_lane_count;
+            n
+        }));
+        mines.extend(p2_mines.drain(..).map(|mut m| {
+            m.lane += p1_lane_count;
+            m
+        }));
     }
     invisible_notes.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
     p2_invisible_notes.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
@@ -269,11 +271,36 @@ fn collect_chart_sides(
     (timeline, acc, p2_acc)
 }
 
+fn compact_invisible_scratch(notes: &mut [InvisibleNote], lane_count: usize) {
+    if lane_count == 6 {
+        notes
+            .iter_mut()
+            .filter(|n| n.lane == 7)
+            .for_each(|n| n.lane = 5);
+    }
+}
+
+fn compact_scratch(notes: &mut [Note], mines: &mut [Mine], lane_count: usize) {
+    if lane_count == 6 {
+        notes
+            .iter_mut()
+            .filter(|n| n.lane == 7)
+            .for_each(|n| n.lane = 5);
+        mines
+            .iter_mut()
+            .filter(|m| m.lane == 7)
+            .for_each(|m| m.lane = 5);
+    }
+}
+
 fn playable_lane_count(acc: &ChartAcc, p2_acc: &ChartAcc, pms: bool) -> usize {
     if pms {
         9
-    } else if acc.lanes.count() == 7 && p2_acc.lanes.count() == 7 && !p2_acc.notes.is_empty() {
-        14
+    } else if matches!(acc.lanes.count(), 6..=8)
+        && acc.lanes.count() == p2_acc.lanes.count()
+        && !p2_acc.notes.is_empty()
+    {
+        acc.lanes.count() * 2
     } else {
         acc.lanes.count()
     }
@@ -286,6 +313,8 @@ fn p2_channel_to_lane(ch: &str) -> Option<usize> {
         "23" => Some(2),
         "24" => Some(3),
         "25" => Some(4),
+        "26" => Some(7),
+        "27" => None, // Free zone / pedal is not a playable lane.
         "28" => Some(5),
         "29" => Some(6),
         _ => None,
@@ -299,6 +328,8 @@ fn p2_long_channel_to_lane(ch: &str) -> Option<usize> {
         "63" => Some(2),
         "64" => Some(3),
         "65" => Some(4),
+        "66" => Some(7),
+        "67" => None, // Free zone / pedal is not a playable lane.
         "68" => Some(5),
         "69" => Some(6),
         _ => None,
@@ -312,6 +343,8 @@ fn p2_mine_channel_to_lane(ch: &str) -> Option<usize> {
         "E3" => Some(2),
         "E4" => Some(3),
         "E5" => Some(4),
+        "E6" => Some(7),
+        "E7" => None, // Free zone / pedal is not a playable lane.
         "E8" => Some(5),
         "E9" => Some(6),
         _ => None,
@@ -647,6 +680,8 @@ fn mine_channel_to_lane(ch: &str) -> Option<usize> {
         "D3" => Some(2),
         "D4" => Some(3),
         "D5" => Some(4),
+        "D6" => Some(7),
+        "D7" => None, // Free zone / pedal is not a playable lane.
         "D8" => Some(5),
         "D9" => Some(6),
         _ => None,
@@ -660,6 +695,8 @@ fn long_channel_to_lane(ch: &str) -> Option<usize> {
         "53" => Some(2),
         "54" => Some(3),
         "55" => Some(4),
+        "56" => Some(7),
+        "57" => None, // Free zone / pedal is not a playable lane.
         "58" => Some(5),
         "59" => Some(6),
         _ => None,
@@ -1124,7 +1161,17 @@ impl LaneSet {
         self.0.insert(lane);
     }
     fn count(&self) -> usize {
-        let max = self.0.iter().copied().max().unwrap_or(3);
+        let scratch = self.0.contains(&7);
+        let max = self
+            .0
+            .iter()
+            .copied()
+            .filter(|lane| *lane != 7)
+            .max()
+            .unwrap_or(3);
+        if scratch {
+            return if max >= 5 { 8 } else { 6 };
+        }
         if max >= 5 {
             7
         } else if max >= 3 {
@@ -1389,6 +1436,8 @@ fn channel_to_lane(ch: &str) -> Option<usize> {
         "13" => Some(2),
         "14" => Some(3),
         "15" => Some(4),
+        "16" => Some(7),
+        "17" => None, // Free zone / pedal is not a playable lane.
         "18" => Some(5),
         "19" => Some(6),
         _ => None,
@@ -1686,6 +1735,10 @@ mod tests {
             ("#00119:01", 7, 1, 0),
             ("#00119:01\n#00129:01", 14, 2, 0),
             ("#00115:01\n#00125:01", 5, 1, 1),
+            ("#00116:01", 6, 1, 0),
+            ("#00119:01\n#00116:01", 8, 2, 0),
+            ("#00116:01\n#00126:01", 12, 2, 0),
+            ("#00119:01\n#00129:01\n#00116:01\n#00126:01", 16, 4, 0),
         ];
         for extension in ["bms", "bme"] {
             for (channels, count, notes, p2) in cases {
@@ -1699,9 +1752,18 @@ mod tests {
             }
         }
         let path = dir.join("sparse.pms");
-        std::fs::write(&path, "#BPM 120\n#00111:01\n").unwrap();
-        assert_eq!(load(&path, 0.0).unwrap().lane_count, 9);
-        assert_eq!(read_meta(&path).unwrap().lane_count, 9);
+        ["11", "24", "25"].iter().for_each(|channel| {
+            std::fs::write(&path, format!("#BPM 120\n#001{channel}:01\n")).unwrap();
+            let chart = load(&path, 0.0).unwrap();
+            assert_eq!(chart.lane_count, 9);
+            assert_eq!(read_meta(&path).unwrap().lane_count, 9);
+            let expected_lane = match *channel {
+                "24" => 7,
+                "25" => 8,
+                _ => 0,
+            };
+            assert_eq!(chart.notes[0].lane, expected_lane);
+        });
     }
 
     #[test]
@@ -1764,7 +1826,7 @@ mod tests {
     #[test]
     fn channel_to_lane_ignores_bgm_and_unknown_channels() {
         assert_eq!(channel_to_lane("01"), None);
-        assert_eq!(channel_to_lane("16"), None);
+        assert_eq!(channel_to_lane("16"), Some(7));
         assert_eq!(channel_to_lane("21"), None);
         assert_eq!(channel_to_lane("D1"), None);
     }
@@ -2027,7 +2089,7 @@ mod tests {
         assert_eq!(p2_channel_to_lane("25"), Some(4));
         assert_eq!(p2_channel_to_lane("28"), Some(5));
         assert_eq!(p2_channel_to_lane("29"), Some(6));
-        assert_eq!(p2_channel_to_lane("26"), None);
+        assert_eq!(p2_channel_to_lane("26"), Some(7));
         assert_eq!(p2_channel_to_lane("11"), None);
     }
 
@@ -2601,7 +2663,7 @@ Always
         assert_eq!(mine_channel_to_lane("D5"), Some(4));
         assert_eq!(mine_channel_to_lane("D8"), Some(5));
         assert_eq!(mine_channel_to_lane("D9"), Some(6));
-        assert_eq!(mine_channel_to_lane("D6"), None);
+        assert_eq!(mine_channel_to_lane("D6"), Some(7));
         assert_eq!(mine_channel_to_lane("11"), None);
     }
 
@@ -2655,7 +2717,7 @@ Always
         assert_eq!(long_channel_to_lane("55"), Some(4));
         assert_eq!(long_channel_to_lane("58"), Some(5));
         assert_eq!(long_channel_to_lane("59"), Some(6));
-        assert_eq!(long_channel_to_lane("56"), None);
+        assert_eq!(long_channel_to_lane("56"), Some(7));
         assert_eq!(long_channel_to_lane("11"), None);
     }
 
@@ -3032,7 +3094,7 @@ Always
         // Lane 3 pushes us out of pure 4K into the 5K keymap.
         assert_eq!(s.count(), 5);
         s.observe_lane(6);
-        // Lane 6 is the 7K scratch column.
+        // Lane 6 is the seventh key column.
         assert_eq!(s.count(), 7);
     }
 
