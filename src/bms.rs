@@ -16,6 +16,8 @@ pub struct ChartMeta {
     pub artist: String,
     pub subartist: String,
     pub genre: String,
+    pub banner: String,
+    pub comment: String,
     pub bpm: f64,
     pub playlevel: Option<u8>,
     pub difficulty: Option<u8>,
@@ -49,6 +51,8 @@ pub fn read_meta_with_seed(path: &Path, seed: u64) -> Result<ChartMeta> {
         artist: pass.artist,
         subartist: pass.subartist,
         genre: pass.genre,
+        banner: pass.banner,
+        comment: pass.comment,
         bpm: pass.bpm,
         playlevel: pass.playlevel,
         difficulty: pass.difficulty,
@@ -215,6 +219,9 @@ fn build_chart(
         genre: pass.genre,
         stagefile: pass.stagefile,
         banner: pass.banner,
+        backbmp: pass.backbmp,
+        comment: pass.comment,
+        asset_dir: dir.clone(),
         maker: pass.maker,
         bpm: pass.bpm,
         playlevel: pass.playlevel,
@@ -1042,6 +1049,8 @@ struct HeaderPass {
     genre: String,
     stagefile: String,
     banner: String,
+    backbmp: String,
+    comment: String,
     maker: String,
     bpm: f64,
     playlevel: Option<u8>,
@@ -1070,6 +1079,8 @@ impl Default for HeaderPass {
             genre: String::new(),
             stagefile: String::new(),
             banner: String::new(),
+            backbmp: String::new(),
+            comment: String::new(),
             maker: String::new(),
             bpm: 130.0,
             playlevel: None,
@@ -1123,6 +1134,8 @@ impl HeaderPass {
             "GENRE" => self.genre = val.to_string(),
             "STAGEFILE" => self.stagefile = val.trim().to_string(),
             "BANNER" => self.banner = val.trim().to_string(),
+            "BACKBMP" => self.backbmp = val.trim().to_string(),
+            "COMMENT" => self.comment = crate::terminal_text::sanitize(val.trim()),
             "MAKER" => self.maker = val.to_string(),
             "BPM" => {
                 if let Ok(v) = val.trim().parse() {
@@ -3178,6 +3191,8 @@ Always
 #GENRE electronic
 #STAGEFILE cover.png
 #BANNER banner.png
+#BACKBMP background.bmp
+#COMMENT Nice song!\x1b[2J\u{9b}\x07
 #MAKER unhappychoice
 #BPM 130
 #00111:0100
@@ -3190,6 +3205,12 @@ Always
         assert_eq!(chart.genre, "electronic");
         assert_eq!(chart.stagefile, "cover.png");
         assert_eq!(chart.banner, "banner.png");
+        assert_eq!(chart.backbmp, "background.bmp");
+        assert_eq!(chart.comment, "Nice song![2J");
+        assert_eq!(chart.asset_dir, dir);
+        let meta = read_meta(&path).unwrap();
+        assert_eq!(meta.banner, chart.banner);
+        assert_eq!(meta.comment, chart.comment);
         assert_eq!(chart.maker, "unhappychoice");
     }
 
