@@ -40,6 +40,7 @@ fn game() -> Game {
         .into(),
         HashMap::new(),
         RefCell::default(),
+        timeline::Timeline::new(&game.chart.bga),
     );
     game.bga
         .0
@@ -173,6 +174,7 @@ fn extended_layers_opacity_and_poor_modes() {
         layer: BgaLayer::Overlay2,
         bmp_id: 4,
     });
+    game.bga.3 = timeline::Timeline::new(&game.chart.bga);
     game.chart.bga_extensions.events.push(EffectEvent {
         time_ms: 50.0,
         effect: Effect::Opacity(BgaLayer::Overlay2, 128),
@@ -403,6 +405,7 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
             let mut delayed = Game::new(crate::bms::load(&chart, 1000.0).unwrap());
             delayed.chart.bga.truncate(1);
             delayed.chart.bga[0].layer = layer;
+            delayed.bga.3 = timeline::Timeline::new(&delayed.chart.bga);
             delayed.flash.last_miss_at = Some(1750.0);
             if layer == BgaLayer::Base {
                 let deadline = Instant::now() + Duration::from_secs(10);

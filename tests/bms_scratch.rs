@@ -54,7 +54,7 @@ fn scratch_long_notes_and_mines_are_playable_on_both_sides() {
                         .any(|n| n.lane == *lane && n.end_ms == Some(6000.0)));
                     game.hit(*lane, 8000.0);
                 });
-            assert_eq!(game.miss, 2);
+            assert_eq!(game.miss, 0);
             assert!(game.chart.mines.iter().all(|mine| mine.exploded));
         });
 }

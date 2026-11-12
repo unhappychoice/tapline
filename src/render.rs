@@ -71,8 +71,8 @@ impl PlayLayout {
     }
 }
 
-/// Vertical screen position for a note whose time offset from now is
-/// `remain` ms. `None` if the note is outside the approach or already
+/// Vertical screen position for a note whose scroll distance from now is
+/// `remain` normal-speed milliseconds. `None` if the note is outside the approach or already
 /// past the miss window.
 fn note_screen_y(remain: f64, layout: &PlayLayout) -> Option<u16> {
     if !(-60.0..=APPROACH_MS).contains(&remain) {
@@ -97,20 +97,42 @@ fn long_note_screen_range(
     if start_remain < -60.0 && end_remain < -60.0 {
         return None;
     }
-    let start_y = note_screen_y(start_remain, layout).unwrap_or(layout.judgment_row());
-    let end_y = note_screen_y(end_remain, layout).unwrap_or(layout.top);
+    let start_y = note_screen_y(start_remain.clamp(0.0, APPROACH_MS), layout)?;
+    let end_y = note_screen_y(end_remain.clamp(0.0, APPROACH_MS), layout)?;
     Some((start_y.min(end_y), start_y.max(end_y)))
+}
+
+fn long_note_scroll_range(
+    chart: &crate::chart::Chart,
+    start_ms: f64,
+    end_ms: f64,
+    now_ms: f64,
+    layout: &PlayLayout,
+) -> Option<(u16, u16)> {
+    let distances = [start_ms, end_ms]
+        .into_iter()
+        .chain(
+            chart
+                .scroll
+                .iter()
+                .filter(|event| event.time_ms > start_ms && event.time_ms < end_ms)
+                .map(|event| event.time_ms),
+        )
+        .map(|time| chart.scroll_distance(time, now_ms));
+    let (min, max) = distances.fold(
+        (f64::INFINITY, f64::NEG_INFINITY),
+        |(min, max), distance| (min.min(distance), max.max(distance)),
+    );
+    long_note_screen_range(min, max, layout)
 }
 
 fn draw_long_note(
     out: &mut Stdout,
-    start_remain: f64,
-    end_remain: f64,
-    layout: &PlayLayout,
+    range: Option<(u16, u16)>,
     lx: u16,
     color: Color,
 ) -> anyhow::Result<()> {
-    let Some((top_y, bot_y)) = long_note_screen_range(start_remain, end_remain, layout) else {
+    let Some((top_y, bot_y)) = range else {
         return Ok(());
     };
     for y in top_y..=bot_y {
@@ -466,10 +488,11 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     }
 
     for mine in &game.chart.mines {
-        if mine.exploded {
+        if mine.exploded || mine.time_ms < now_ms - 60.0 {
             continue;
         }
-        let Some(y) = note_screen_y(mine.time_ms - now_ms, &layout) else {
+        let Some(y) = note_screen_y(game.chart.scroll_distance(mine.time_ms, now_ms), &layout)
+        else {
             continue;
         };
         let lx = x0 + 1 + mine.lane as u16 * LANE_WIDTH + 2;
@@ -492,7 +515,9 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
         let base = lane_key_color(game, note.lane);
         match note.end_ms {
             None => {
-                let Some(y) = note_screen_y(note.time_ms - now_ms, &layout) else {
+                let Some(y) =
+                    note_screen_y(game.chart.scroll_distance(note.time_ms, now_ms), &layout)
+                else {
                     continue;
                 };
                 queue!(
@@ -512,9 +537,7 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
                 };
                 draw_long_note(
                     out,
-                    note.time_ms - now_ms,
-                    end_ms - now_ms,
-                    &layout,
+                    long_note_scroll_range(&game.chart, note.time_ms, end_ms, now_ms, &layout),
                     lx,
                     color,
                 )?;
@@ -744,6 +767,129 @@ mod tests {
             lane_count,
             keys: keys_for(lane_count),
             ..Chart::default()
+        }
+    }
+
+    #[test]
+    fn long_note_body_remains_visible_across_scroll_reversals() {
+        for speed in [1.0, -1.0, 0.0] {
+            let mut chart = base_chart(4);
+            chart.scroll = vec![
+                crate::chart::ScrollEvent {
+                    time_ms: 2000.0,
+                    multiplier: -1.0,
+                },
+                crate::chart::ScrollEvent {
+                    time_ms: 4000.0,
+                    multiplier: 1.0,
+                },
+            ];
+            chart.speed.push(crate::chart::ScrollEvent {
+                time_ms: 0.0,
+                multiplier: speed,
+            });
+            chart.notes = vec![Note {
+                time_ms: 2000.0,
+                end_ms: Some(6000.0),
+                ..Note::default()
+            }];
+            let game = Game::new(chart);
+            let layout = PlayLayout::compute(80, 24, 4).unwrap();
+            let note = game.visible_notes(0.0, APPROACH_MS).next().unwrap();
+            let range = long_note_scroll_range(
+                &game.chart,
+                note.time_ms,
+                note.end_ms.unwrap(),
+                0.0,
+                &layout,
+            );
+            let expected_top = if speed > 0.0 {
+                layout.top
+            } else {
+                layout.judgment_row()
+            };
+            assert_eq!(range, Some((expected_top, layout.judgment_row())));
+            if speed != 0.0 {
+                assert!(long_note_screen_range(
+                    game.chart.scroll_distance(2000.0, 0.0),
+                    game.chart.scroll_distance(6000.0, 0.0),
+                    &layout,
+                )
+                .is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn long_note_range_ignores_scroll_reversals_outside_its_duration() {
+        let mut chart = base_chart(4);
+        chart.scroll.push(crate::chart::ScrollEvent {
+            time_ms: 4000.0,
+            multiplier: -1.0,
+        });
+        let layout = PlayLayout::compute(80, 24, 4).unwrap();
+        assert_eq!(
+            long_note_scroll_range(&chart, 2000.0, 3000.0, 0.0, &layout),
+            None
+        );
+        assert_eq!(
+            long_note_scroll_range(&chart, 9000.0, 10000.0, 0.0, &layout),
+            None
+        );
+    }
+
+    #[test]
+    fn half_scroll_moves_notes_half_as_fast_and_extends_visibility() {
+        let mut chart = crate::chart::Chart::default();
+        chart.scroll.push(crate::chart::ScrollEvent {
+            time_ms: 0.0,
+            multiplier: 0.5,
+        });
+        let layout = PlayLayout::compute(80, 109, 4).unwrap();
+        let y = |time, now| note_screen_y(chart.scroll_distance(time, now), &layout).unwrap();
+        assert_eq!(y(1000.0, 200.0) - y(1000.0, 0.0), 10);
+        assert!(note_screen_y(chart.scroll_distance(1800.0, 0.0), &layout).is_some());
+        assert_eq!(y(1000.0, 1000.0), layout.judgment_row());
+    }
+
+    #[test]
+    fn scroll_candidates_include_distant_notes_and_long_notes() {
+        for (scroll, speed) in [(0.5, 1.0), (1.0, 0.5), (0.0, 1.0), (-0.5, -1.0)] {
+            let mut chart = base_chart(4);
+            chart
+                .scroll
+                .extend((scroll != 1.0).then_some(crate::chart::ScrollEvent {
+                    time_ms: 0.0,
+                    multiplier: scroll,
+                }));
+            chart.speed.push(crate::chart::ScrollEvent {
+                time_ms: 0.0,
+                multiplier: speed,
+            });
+            chart.notes = vec![
+                Note {
+                    time_ms: 1800.0,
+                    lane: 0,
+                    ..Note::default()
+                },
+                Note {
+                    time_ms: 1800.0,
+                    end_ms: Some(2000.0),
+                    lane: 1,
+                    ..Note::default()
+                },
+            ];
+            let game = Game::new(chart);
+            let layout = PlayLayout::compute(80, 109, 4).unwrap();
+            let visible: Vec<_> = game.visible_notes(0.0, APPROACH_MS).collect();
+            assert_eq!(visible.len(), 2, "scroll={scroll}, speed={speed}");
+            assert!(note_screen_y(game.chart.scroll_distance(1800.0, 0.0), &layout).is_some());
+            assert!(long_note_screen_range(
+                game.chart.scroll_distance(1800.0, 0.0),
+                game.chart.scroll_distance(2000.0, 0.0),
+                &layout,
+            )
+            .is_some());
         }
     }
 

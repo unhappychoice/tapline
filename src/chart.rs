@@ -30,7 +30,7 @@ pub struct BgmEvent {
 pub struct Mine {
     pub time_ms: f64,
     pub lane: usize,
-    /// Damage value from the BMS chart (0–255).
+    /// Base-36 damage value from the BMS chart (1–1295), in half percentage points.
     pub damage: u32,
     /// Set once the player triggers the mine so it isn't punished twice.
     pub exploded: bool,
@@ -53,6 +53,12 @@ pub struct BgaEvent {
     pub layer: BgaLayer,
     /// #BMPxx id whose image file should be swapped in at `time_ms`.
     pub bmp_id: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ScrollEvent {
+    pub time_ms: f64,
+    pub multiplier: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +116,8 @@ pub struct Chart {
     pub p2_invisible_notes: Vec<InvisibleNote>,
     pub p2_mines: Vec<Mine>,
     pub bgm: Vec<BgmEvent>,
+    pub scroll: Vec<ScrollEvent>,
+    pub speed: Vec<ScrollEvent>,
     pub bga: Vec<BgaEvent>,
     pub bga_extensions: crate::bga::Extensions,
     pub bmp_paths: std::collections::HashMap<u32, PathBuf>,
@@ -168,6 +176,8 @@ impl Default for Chart {
             p2_invisible_notes: Vec::new(),
             p2_mines: Vec::new(),
             bgm: Vec::new(),
+            scroll: Vec::new(),
+            speed: Vec::new(),
             bga: Vec::new(),
             bga_extensions: Default::default(),
             bmp_paths: std::collections::HashMap::new(),
@@ -179,6 +189,28 @@ impl Default for Chart {
             sample_slices: std::collections::HashMap::new(),
             wav_paths: std::collections::HashMap::new(),
         }
+    }
+}
+
+impl Chart {
+    /// Display distance in normal-speed milliseconds; judgment stays time-based.
+    pub fn scroll_distance(&self, time_ms: f64, now_ms: f64) -> f64 {
+        let coordinate = |time: f64| {
+            let mut rate = 1.0;
+            let mut distance = time;
+            for event in self.scroll.iter().take_while(|e| e.time_ms <= time) {
+                distance += (time - event.time_ms) * (event.multiplier - rate);
+                rate = event.multiplier;
+            }
+            distance
+        };
+        let speed = self
+            .speed
+            .iter()
+            .rev()
+            .find(|e| e.time_ms <= now_ms)
+            .map_or(1.0, |e| e.multiplier);
+        (coordinate(time_ms) - coordinate(now_ms)) * speed
     }
 }
 
@@ -347,6 +379,35 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scroll_integrates_changes_and_speed_scales_current_spacing() {
+        let mut chart = Chart::default();
+        assert_eq!(chart.scroll_distance(2000.0, 500.0), 1500.0);
+        chart.scroll = vec![
+            ScrollEvent {
+                time_ms: 1000.0,
+                multiplier: 0.5,
+            },
+            ScrollEvent {
+                time_ms: 2000.0,
+                multiplier: 0.0,
+            },
+            ScrollEvent {
+                time_ms: 3000.0,
+                multiplier: -1.0,
+            },
+        ];
+        assert_eq!(chart.scroll_distance(2000.0, 500.0), 1000.0);
+        assert_eq!(chart.scroll_distance(3000.0, 2000.0), 0.0);
+        assert_eq!(chart.scroll_distance(3500.0, 3000.0), -500.0);
+        chart.speed.push(ScrollEvent {
+            time_ms: 500.0,
+            multiplier: 2.0,
+        });
+        assert_eq!(chart.scroll_distance(2000.0, 500.0), 2000.0);
+        assert_eq!(chart.scroll_distance(2000.0, 0.0), 1500.0);
+    }
 
     #[test]
     fn keys_for_9k_binds_each_button_to_a_unique_key() {
