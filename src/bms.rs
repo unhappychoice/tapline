@@ -1,5 +1,6 @@
 use crate::chart::{
     keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, InvisibleNote, Mine, Note, TextEvent,
+    VolumeEvent, VolumeTarget,
 };
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -213,6 +214,7 @@ fn build_chart(
         rank: pass.rank,
         total: pass.total,
         vol_wav: pass.vol_wav,
+        volume_events: collect_volume_events(&raw, &timeline),
         notes,
         mines,
         p2_notes,
@@ -577,6 +579,31 @@ fn collect_text_events(
             })
         })
         .collect();
+    events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+    events
+}
+
+fn collect_volume_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec<VolumeEvent> {
+    let mut events = Vec::new();
+    for (measure, channel, data) in raw {
+        let target = match channel.as_str() {
+            "97" => VolumeTarget::Bgm,
+            "98" => VolumeTarget::Key,
+            _ => continue,
+        };
+        let slots = parse_slots_hex(data);
+        events.extend(
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| **v != 0)
+                .map(|(i, &volume)| VolumeEvent {
+                    time_ms: timeline.time_at(*measure, i as f64 / slots.len() as f64),
+                    target,
+                    volume: volume as u8,
+                }),
+        );
+    }
     events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
     events
 }
@@ -1404,18 +1431,27 @@ mod tests {
     }
 
     #[test]
-    fn song_text_and_invisible_keysounds_coexist_with_visible_notes() {
+    fn song_text_and_volume_events_coexist_with_note_channels() {
         let dir = tempdir();
         let path = dir.join("text_and_keysounds.bms");
         std::fs::write(
             &path,
-            "#BPM 120\n#TEXT01 Chorus\n#00199:01\n#00131:02\n#00111:03\n",
+            "#BPM 120\n#TEXT01 Chorus\n#00199:01\n#00197:40\n#00198:80\n#00131:02\n#00111:03\n",
         )
         .unwrap();
         let chart = load(&path, 500.0).unwrap();
         assert_eq!(chart.text_events.len(), 1);
         assert_eq!(chart.text_events[0].text, "Chorus");
         assert_eq!(chart.text_events[0].time_ms, 2500.0);
+        assert_eq!(chart.volume_events.len(), 2);
+        assert_eq!(chart.volume_events[0].target, VolumeTarget::Bgm);
+        assert_eq!(chart.volume_events[0].volume, 64);
+        assert_eq!(chart.volume_events[1].target, VolumeTarget::Key);
+        assert_eq!(chart.volume_events[1].volume, 128);
+        assert!(chart
+            .volume_events
+            .iter()
+            .all(|event| event.time_ms == 2500.0));
         assert_eq!(chart.invisible_notes.len(), 1);
         assert_eq!(chart.invisible_notes[0].keysound, 2);
         assert_eq!(chart.invisible_notes[0].time_ms, 2500.0);
@@ -1965,6 +2001,24 @@ mod tests {
         p.absorb("BMPZZ  scene.mp4  ");
         assert_eq!(p.bmp_defs.get(&1).unwrap(), "cover.png");
         assert_eq!(p.bmp_defs.get(&1295).unwrap(), "scene.mp4");
+    }
+
+    #[test]
+    fn volume_events_use_hex_skip_rests_and_follow_the_timeline() {
+        let dir = tempdir();
+        let path = dir.join("volume.bms");
+        std::fs::write(&path, "#BPM 120\n#STOP01 192\n#00109:01\n#00103:003C\n#00102:0.5\n#00298:ff\n#00197:004000GG\n#00198:0080\n").unwrap();
+        let chart = load(&path, 100.0).unwrap();
+        assert_eq!(chart.volume_events.len(), 3);
+        let events = &chart.volume_events;
+        assert_eq!(events[0].target, VolumeTarget::Bgm);
+        assert_eq!(events[0].volume, 64);
+        assert_eq!(events[0].time_ms, 4350.0);
+        assert_eq!(events[1].target, VolumeTarget::Key);
+        assert_eq!(events[1].volume, 128);
+        assert_eq!(events[1].time_ms, 4600.0);
+        assert_eq!(events[2].volume, 255);
+        assert_eq!(events[2].time_ms, 5600.0);
     }
 
     #[test]
