@@ -52,9 +52,9 @@ impl PlayLayout {
         let lanes = lane_count as u16;
         let field_width = LANE_WIDTH * lanes + 1;
         let x0 = cols.saturating_sub(field_width) / 2;
-        let top = 4u16;
+        let top = 5u16;
         let bottom = rows.saturating_sub(4);
-        if bottom <= top + 4 {
+        if bottom < top + 4 {
             return None;
         }
         Some(Self {
@@ -102,15 +102,37 @@ fn long_note_screen_range(
     Some((start_y.min(end_y), start_y.max(end_y)))
 }
 
+fn long_note_scroll_range(
+    chart: &crate::chart::Chart,
+    start_ms: f64,
+    end_ms: f64,
+    now_ms: f64,
+    layout: &PlayLayout,
+) -> Option<(u16, u16)> {
+    let distances = [start_ms, end_ms]
+        .into_iter()
+        .chain(
+            chart
+                .scroll
+                .iter()
+                .filter(|event| event.time_ms > start_ms && event.time_ms < end_ms)
+                .map(|event| event.time_ms),
+        )
+        .map(|time| chart.scroll_distance(time, now_ms));
+    let (min, max) = distances.fold(
+        (f64::INFINITY, f64::NEG_INFINITY),
+        |(min, max), distance| (min.min(distance), max.max(distance)),
+    );
+    long_note_screen_range(min, max, layout)
+}
+
 fn draw_long_note(
     out: &mut Stdout,
-    start_remain: f64,
-    end_remain: f64,
-    layout: &PlayLayout,
+    range: Option<(u16, u16)>,
     lx: u16,
     color: Color,
 ) -> anyhow::Result<()> {
-    let Some((top_y, bot_y)) = long_note_screen_range(start_remain, end_remain, layout) else {
+    let Some((top_y, bot_y)) = range else {
         return Ok(());
     };
     for y in top_y..=bot_y {
@@ -328,6 +350,27 @@ fn format_difficulty_badge(game: &Game) -> String {
     parts.join("  ·  ")
 }
 
+fn format_gauge(game: &Game) -> String {
+    format_gauge_status(game, game.gauge.is_clear())
+}
+
+fn format_result_gauge(game: &Game) -> String {
+    format_gauge_status(game, game.completed && game.gauge.is_clear())
+}
+
+fn format_gauge_status(game: &Game, clear: bool) -> String {
+    let gauge = &game.gauge;
+    let filled = (gauge.value() / 5.0).floor() as usize;
+    format!(
+        "{} [{}{}] {:>5.1}%  {:<6}",
+        gauge.label(),
+        "=".repeat(filled),
+        "-".repeat(20 - filled),
+        (gauge.value() * 10.0).floor() / 10.0,
+        if clear { "CLEAR" } else { "FAILED" }
+    )
+}
+
 /// Draw the play field using notes near the current time and active long notes.
 pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
@@ -367,6 +410,12 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     )?;
 
     draw_judgment_counters(out, game, cols, 3, now_ms)?;
+    let gauge = format_gauge(game);
+    queue!(
+        out,
+        cursor::MoveTo(cols.saturating_sub(gauge.len() as u16) / 2, 4),
+        Print(gauge)
+    )?;
 
     if let Some(tag) = format_bga_badge(&game.chart.bga, now_ms) {
         queue!(
@@ -488,9 +537,7 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
                 };
                 draw_long_note(
                     out,
-                    game.chart.scroll_distance(note.time_ms, now_ms),
-                    game.chart.scroll_distance(end_ms, now_ms),
-                    &layout,
+                    long_note_scroll_range(&game.chart, note.time_ms, end_ms, now_ms, &layout),
                     lx,
                     color,
                 )?;
@@ -667,6 +714,8 @@ pub fn draw_result(out: &mut Stdout, game: &Game) -> anyhow::Result<()> {
         Color::Green,
         y,
     )?;
+    y += 1;
+    line(out, format_result_gauge(game), Color::Yellow, y)?;
     y += 2;
     line(
         out,
@@ -722,6 +771,74 @@ mod tests {
     }
 
     #[test]
+    fn long_note_body_remains_visible_across_scroll_reversals() {
+        for speed in [1.0, -1.0, 0.0] {
+            let mut chart = base_chart(4);
+            chart.scroll = vec![
+                crate::chart::ScrollEvent {
+                    time_ms: 2000.0,
+                    multiplier: -1.0,
+                },
+                crate::chart::ScrollEvent {
+                    time_ms: 4000.0,
+                    multiplier: 1.0,
+                },
+            ];
+            chart.speed.push(crate::chart::ScrollEvent {
+                time_ms: 0.0,
+                multiplier: speed,
+            });
+            chart.notes = vec![Note {
+                time_ms: 2000.0,
+                end_ms: Some(6000.0),
+                ..Note::default()
+            }];
+            let game = Game::new(chart);
+            let layout = PlayLayout::compute(80, 24, 4).unwrap();
+            let note = game.visible_notes(0.0, APPROACH_MS).next().unwrap();
+            let range = long_note_scroll_range(
+                &game.chart,
+                note.time_ms,
+                note.end_ms.unwrap(),
+                0.0,
+                &layout,
+            );
+            let expected_top = if speed > 0.0 {
+                layout.top
+            } else {
+                layout.judgment_row()
+            };
+            assert_eq!(range, Some((expected_top, layout.judgment_row())));
+            if speed != 0.0 {
+                assert!(long_note_screen_range(
+                    game.chart.scroll_distance(2000.0, 0.0),
+                    game.chart.scroll_distance(6000.0, 0.0),
+                    &layout,
+                )
+                .is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn long_note_range_ignores_scroll_reversals_outside_its_duration() {
+        let mut chart = base_chart(4);
+        chart.scroll.push(crate::chart::ScrollEvent {
+            time_ms: 4000.0,
+            multiplier: -1.0,
+        });
+        let layout = PlayLayout::compute(80, 24, 4).unwrap();
+        assert_eq!(
+            long_note_scroll_range(&chart, 2000.0, 3000.0, 0.0, &layout),
+            None
+        );
+        assert_eq!(
+            long_note_scroll_range(&chart, 9000.0, 10000.0, 0.0, &layout),
+            None
+        );
+    }
+
+    #[test]
     fn half_scroll_moves_notes_half_as_fast_and_extends_visibility() {
         let mut chart = crate::chart::Chart::default();
         chart.scroll.push(crate::chart::ScrollEvent {
@@ -774,6 +891,49 @@ mod tests {
             )
             .is_some());
         }
+    }
+
+    #[test]
+    fn gauge_display_shows_value_and_clear_threshold() {
+        let mut chart = base_chart(4);
+        chart.total = Some(60.0);
+        let mut game = Game::new(chart);
+        assert_eq!(
+            format_gauge(&game),
+            "NORMAL [====----------------]  20.0%  FAILED"
+        );
+        game.hit(0, 1000.0);
+        assert_eq!(
+            format_gauge(&game),
+            "NORMAL [================----]  80.0%  CLEAR "
+        );
+    }
+
+    #[test]
+    fn result_requires_completion_even_above_clear_threshold() {
+        let mut chart = base_chart(4);
+        chart.total = Some(60.0);
+        let mut game = Game::new(chart);
+        game.hit(0, 1000.0);
+        assert!(format_result_gauge(&game).ends_with("FAILED"));
+        assert!(game.advance_completion(game.chart.duration_ms.max(2000.0)));
+        assert!(format_result_gauge(&game).ends_with("CLEAR "));
+    }
+
+    #[test]
+    fn gauge_display_does_not_round_up_to_clear_threshold() {
+        let mut chart = base_chart(4);
+        chart.total = Some(59.99);
+        let mut game = Game::new(chart);
+        game.hit(0, 1000.0);
+        assert!(format_gauge(&game).contains("79.9%  FAILED"));
+    }
+
+    #[test]
+    fn play_layout_supports_thirteen_rows() {
+        let layout = PlayLayout::compute(80, 13, 4).unwrap();
+        assert_eq!(layout.lane_height, 4);
+        assert!(note_screen_y(0.0, &layout).is_some());
     }
 
     #[test]
@@ -1120,9 +1280,9 @@ mod tests {
     #[test]
     fn play_layout_computes_the_centered_playfield_for_4k() {
         let l = PlayLayout::compute(80, 24, 4).unwrap();
-        assert_eq!(l.top, 4);
+        assert_eq!(l.top, 5);
         assert_eq!(l.bottom, 20);
-        assert_eq!(l.lane_height, 16);
+        assert_eq!(l.lane_height, 15);
         assert_eq!(l.field_width, LANE_WIDTH * 4 + 1);
         // Field is centered on 80 cols.
         assert_eq!(l.x0, (80 - l.field_width) / 2);

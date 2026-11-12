@@ -1,4 +1,5 @@
 use crate::chart::{Chart, Note};
+use crate::gauge::{Gauge, GaugeKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Judgment {
@@ -28,6 +29,8 @@ pub struct FlashState {
 
 pub struct Game {
     pub chart: Chart,
+    pub gauge: Gauge,
+    pub completed: bool,
     pub bga: crate::bga::ImageBank,
     pub score: u32,
     pub combo: u32,
@@ -128,6 +131,8 @@ impl Game {
             }
         });
         Self {
+            gauge: Gauge::new(GaugeKind::Normal, &chart),
+            completed: false,
             next_miss: 0,
             miss_order,
             next_deadline: 0,
@@ -156,6 +161,15 @@ impl Game {
                 last_miss_at: None,
             },
         }
+    }
+
+    /// Finish only after the chart duration and all pending judgments have elapsed.
+    pub fn advance_completion(&mut self, now_ms: f64) -> bool {
+        self.check_misses(now_ms);
+        self.completed = now_ms >= self.chart.duration_ms
+            && self.next_miss == self.chart.notes.len()
+            && self.held_notes.is_empty();
+        self.completed
     }
 
     /// Judge the nearest unhit note in the lane within the inclusive hit window.
@@ -334,6 +348,7 @@ impl Game {
 
     /// Record the judgment, updating score, combo, and visual feedback.
     fn apply(&mut self, j: Judgment, now_ms: f64) {
+        self.gauge.apply(j);
         match j {
             Judgment::Perfect => self.perfect += 1,
             Judgment::Great => self.great += 1,
@@ -537,6 +552,7 @@ mod tests {
         assert_eq!((g.score, g.combo, g.max_combo), (0, 0, 0));
         assert_eq!((g.perfect, g.great, g.good, g.miss), (0, 0, 0, 0));
         assert_eq!(g.accuracy(), 100.0);
+        assert_eq!(g.gauge.value(), 20.0);
         assert_eq!(g.flash.last_judgment, None);
         assert!(g.chart.notes.iter().all(|n| !n.hit));
     }
@@ -605,6 +621,31 @@ mod tests {
         assert_eq!(g.hit(0, 2500.0), Some(2));
         assert!(g.chart.notes[1].held_since.is_some());
         assert_eq!(g.good, 1);
+    }
+
+    #[test]
+    fn gauge_tracks_hits_releases_auto_releases_and_misses() {
+        let mut chart = chart_with(
+            vec![
+                note(1000.0, 0),
+                ln(2000.0, 3000.0, 0),
+                ln(4000.0, 5000.0, 0),
+                note(6000.0, 0),
+            ],
+            4,
+        );
+        chart.total = Some(60.0);
+        let mut g = Game::new(chart);
+        g.hit(0, 1000.0);
+        assert_eq!(g.gauge.value(), 30.0);
+        g.hit(0, 2000.0);
+        g.release(0, 3000.0);
+        assert_eq!(g.gauge.value(), 50.0);
+        g.hit(0, 4000.0);
+        g.check_misses(5200.0);
+        assert_eq!(g.gauge.value(), 70.0);
+        g.check_misses(6200.0);
+        assert_eq!(g.gauge.value(), 64.0);
     }
 
     #[test]
@@ -877,6 +918,7 @@ mod tests {
         g.hit(0, 1000.0);
         assert_eq!(g.miss, 1, "mine detonation is scored as a Miss");
         assert!(g.chart.mines[0].exploded);
+        assert_eq!(g.gauge.value(), 14.0);
         assert_eq!(g.flash.last_miss_at, Some(1000.0));
         assert_eq!(g.combo, 0);
     }
@@ -949,6 +991,7 @@ mod tests {
         // Release ~500ms early, well outside WINDOW_GOOD.
         g.release(0, 1500.0);
         assert_eq!(g.flash.last_miss_at, Some(1500.0));
+        assert_eq!(g.gauge.value(), 94.0);
         assert_eq!(g.miss, 1);
         assert_eq!(g.combo, 0);
     }
