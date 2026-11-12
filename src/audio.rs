@@ -152,14 +152,21 @@ impl SampleBank {
         let audio_end = notes
             .chain(bgm)
             .map(|(time, id)| {
-                id.and_then(|id| self.samples.get(&id))
-                    .map(|sample| {
-                        time + sample.data.len() as f64 * 1000.0
-                            / sample.channels as f64
-                            / sample.sample_rate as f64
-                            + 32.0
-                    })
-                    .unwrap_or(chart.duration_ms)
+                id.and_then(|id| {
+                    self.sound_ids(&id)
+                        .iter()
+                        .map(|id| {
+                            self.samples.get(id).map_or(chart.duration_ms, |sample| {
+                                let source = sample_source(sample, self.slices.get(id));
+                                time + source.end.saturating_sub(source.pos) as f64 * 1000.0
+                                    / source.channels as f64
+                                    / source.sample_rate as f64
+                                    + 32.0
+                            })
+                        })
+                        .reduce(f64::max)
+                })
+                .unwrap_or(chart.duration_ms)
             })
             .reduce(f64::max);
         let judgment_end = chart
@@ -472,6 +479,108 @@ mod tests {
             samples: HashMap::from([(1, sample)]),
             ..SampleBank::silent()
         }
+    }
+
+    fn bmson_duration_chart(channels: serde_json::Value) -> Chart {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "tapline-bmson-duration-{}-{}.bmson",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let data = serde_json::json!({
+            "version": "1.0.0",
+            "info": {"title": "Duration", "artist": "Test",
+                "init_bpm": 60, "resolution": 240, "mode_hint": "generic-4keys"},
+            "sound_channels": channels
+        });
+        std::fs::write(&path, data.to_string()).unwrap();
+        let chart = crate::bmson::load(&path, 0.0).unwrap();
+        std::fs::remove_file(path).unwrap();
+        chart
+    }
+
+    fn bank_for_bmson(chart: &Chart) -> SampleBank {
+        let mut bank = duration_bank()
+            .with_layers(&chart.sound_layers)
+            .with_slices(&chart.sample_slices);
+        let sample = bank.samples[&1].clone();
+        bank.samples = chart
+            .wav_paths
+            .keys()
+            .map(|id| (*id, sample.clone()))
+            .collect();
+        bank
+    }
+
+    #[test]
+    fn bmson_duration_expands_layers_and_keeps_the_longest_decoded_sound() {
+        let chart = bmson_duration_chart(serde_json::json!([
+            {"name": "first.wav", "notes": [{"x": 1, "y": 0}]},
+            {"name": "second.wav", "notes": [{"x": 1, "y": 0}]}
+        ]));
+        assert_eq!(chart.duration_ms, 2500.0);
+        let mut bank = bank_for_bmson(&chart);
+        [false, true].into_iter().for_each(|auto_ks| {
+            assert_eq!(
+                bank.chart_duration_ms(&chart, auto_ks),
+                10032.0 + if auto_ks { 0.0 } else { 140.0 }
+            );
+        });
+        let short_id = chart.sound_layers.values().next().unwrap()[0];
+        bank.samples.get_mut(&short_id).unwrap().data = Arc::new(vec![0.0; 16000]);
+        [false, true].into_iter().for_each(|auto_ks| {
+            assert_eq!(
+                bank.chart_duration_ms(&chart, auto_ks),
+                10032.0 + if auto_ks { 0.0 } else { 140.0 }
+            );
+        });
+        bank.samples.remove(&short_id);
+        assert_eq!(bank.chart_duration_ms(&chart, true), 10032.0);
+        bank.samples.clear();
+        assert_eq!(bank.chart_duration_ms(&chart, true), chart.duration_ms);
+    }
+
+    #[test]
+    fn bmson_duration_uses_remaining_audio_for_continuations_and_bgm() {
+        [0, 1].into_iter().for_each(|lane| {
+            let chart = bmson_duration_chart(serde_json::json!([
+                {"name": "sample.wav", "notes": [
+                    {"x": lane, "y": 0},
+                    {"x": lane, "y": 2160, "c": true}
+                ]}
+            ]));
+            let bank = bank_for_bmson(&chart);
+            [false, true].into_iter().for_each(|auto_ks| {
+                let delay = if auto_ks || lane == 0 { 0.0 } else { 140.0 };
+                assert_eq!(bank.chart_duration_ms(&chart, auto_ks), 10032.0 + delay);
+            });
+        });
+    }
+
+    #[test]
+    fn duration_clamps_explicit_slices_to_decoded_frames() {
+        let chart = bmson_duration_chart(serde_json::json!([
+            {"name": "sample.wav", "notes": [{"x": 0, "y": 0}]}
+        ]));
+        let mut bank = bank_for_bmson(&chart);
+        [
+            (9000.0, Some(500.0), 532.0),
+            (9000.0, Some(5000.0), 1032.0),
+            (11000.0, None, 32.0),
+        ]
+        .into_iter()
+        .for_each(|(start_ms, duration_ms, expected)| {
+            bank.slices.insert(
+                0,
+                crate::chart::SampleSlice {
+                    start_ms,
+                    duration_ms,
+                },
+            );
+            assert_eq!(bank.chart_duration_ms(&chart, true), expected);
+        });
     }
 
     #[test]
