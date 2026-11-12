@@ -98,7 +98,8 @@ All charts play with the synth fallback — no WAV assets required.
 
 ## BMS support
 
-Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
+Encoding is auto-detected (UTF-8 → fallback Shift-JIS). Object IDs default to
+case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 
 ### Supported
 
@@ -128,6 +129,16 @@ combine with `#VOLWAV`; already playing sounds retain their starting gain.
 Invisible notes update the lane keysound for empty presses without being drawn,
 judged, counted as notes, or played automatically.
 
+### BGA
+
+BMP, PNG, JPEG, and GIF still images are loaded before playback and drawn with
+true-color half-block characters to the left of the lanes when space permits.
+Channel `04` selects the base; `07` overlays it with pure black treated as
+transparent. Channel `06` replaces both for 500 ms after each MISS. Missing or
+undecodable images are skipped. Narrow terminals hide BGA without moving the
+lanes. Animated images use their first frame; video, Sixel, and Kitty graphics
+are not supported.
+
 ### Long notes and landmines
 
 Long-note starts are judged like regular notes. On terminals that report key
@@ -147,7 +158,6 @@ The parsed `damage` value does not scale the penalty or subtract score.
 ### Not yet supported (v1)
 
 - Landmine penalties proportional to the parsed `damage` value
-- BGA rendering (channels `04` / `06` / `07` and `#BMPxx` are parsed and stored on `Chart.bga` / `Chart.bmp_paths`, but the terminal renderer does not draw them yet)
 - Non-canonical double-play like 5K DP or asymmetric side counts (only 7K + 7K is folded into the 14-lane playable pool; other DP shapes are still parsed into `Chart.p2_notes` but not merged)
 
 ## bmson support
@@ -165,7 +175,7 @@ Supported layouts are `beat-5k`, `beat-7k`, `beat-14k`, `popn-5k`, and
 `generic-4keys` / `generic-5keys` / `generic-7keys` / `generic-14keys`.
 Turntable notes play automatically as background audio. Other layouts and
 legacy bmson versions are rejected. BGA base, overlay, and poor events are
-stored on `Chart`; BGA rendering remains unsupported.
+rendered using the same half-block image support as BMS charts.
 
 The format follows the [bmson specification](https://bmson-spec.readthedocs.io/en/master/doc/index.html).
 A playable example is available at `tests/fixtures/minimal.bmson`.

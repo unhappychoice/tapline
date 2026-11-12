@@ -125,3 +125,31 @@ fn judgment_and_volume_changes_coexist_at_the_same_timestamp() {
     assert_eq!(c.volume_events[1].volume, 128);
     assert!(c.volume_events.iter().all(|event| event.time_ms == 1500.0));
 }
+
+#[test]
+fn base62_exrank_definitions_and_a0_preserve_case_and_prescan_base() {
+    let c = chart(
+        "#exrank0A 50\n#ExRank0a 200\n#EXRANKzz 75\n#BASE 62",
+        "#000A0:0A0azz\n#00011:010101",
+    );
+    assert_eq!(c.exrank_defs[&10], 50.0);
+    assert_eq!(c.exrank_defs[&36], 200.0);
+    assert_eq!(c.exrank_defs[&3843], 75.0);
+    assert_eq!(c.exrank_events.len(), 3);
+    c.notes
+        .iter()
+        .zip([0.5, 2.0, 0.75])
+        .for_each(|(note, scale)| {
+            assert_eq!(c.judgment_scale(note.time_ms), scale);
+        });
+}
+
+#[test]
+fn base36_exrank_references_are_case_insensitive() {
+    let c = chart("#EXRANK0a 50\n#EXRANK0B 200", "#000A0:0A0b");
+    assert_eq!(c.exrank_defs[&10], 50.0);
+    assert_eq!(c.exrank_defs[&11], 200.0);
+    assert_eq!(c.exrank_events.len(), 2);
+    assert_eq!(c.judgment_scale(500.0), 0.5);
+    assert_eq!(c.judgment_scale(1500.0), 2.0);
+}
