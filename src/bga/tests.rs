@@ -236,8 +236,10 @@ fn parses_extensions_and_renders_key_bound_animation() {
         .save(dir.join("image.png"))
         .unwrap();
     let path = dir.join("chart.bms");
-    std::fs::write(&path, "#BPM 120\n#BMP00 image.png\n#BMP01 image.png\n#BGA02 01 0 0 128 128 128 128\n#ARGB01 255,20,40,60\n#SWBGA01 100:300:11:0:255,255,255,255 0002\n#POORBGA 1\n#00004:01\n#0000A:02\n#0000B:80\n#0000C:40\n#0000D:20\n#0000E:10\n#001A1:01\n#000A5:01\n").unwrap();
+    std::fs::write(&path, "#BPM 120\n#DEFEXRANK 50\n#EXRANK01 200\n#001A0:01\n#BMP00 image.png\n#BMP01 image.png\n#BGA02 01 0 0 128 128 128 128\n#ARGB01 255,20,40,60\n#SWBGA01 100:300:11:0:255,255,255,255 0002\n#POORBGA 1\n#00004:01\n#0000A:02\n#0000B:80\n#0000C:40\n#0000D:20\n#0000E:10\n#001A1:01\n#000A5:01\n").unwrap();
     let chart = crate::bms::load(&path, 500.0).unwrap();
+    assert_eq!(chart.judgment_scale(500.0), 0.5);
+    assert_eq!(chart.judgment_scale(2500.0), 2.0);
     assert_eq!(chart.bga_extensions.events.len(), 6);
     assert_eq!(chart.bga_extensions.poor_mode, 1);
     assert_eq!(chart.bga_extensions.argb[&1], [255, 20, 40, 60]);

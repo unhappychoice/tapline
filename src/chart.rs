@@ -70,6 +70,12 @@ pub struct VolumeEvent {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct ExRankEvent {
+    pub time_ms: f64,
+    pub percent: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct SampleSlice {
     pub start_ms: f64,
     pub duration_ms: Option<f64>,
@@ -83,11 +89,17 @@ pub struct Chart {
     pub genre: String,
     pub stagefile: String,
     pub banner: String,
+    pub backbmp: String,
+    pub comment: String,
+    pub asset_dir: PathBuf,
     pub maker: String,
     pub bpm: f64,
     pub playlevel: Option<u8>,
     pub difficulty: Option<u8>,
     pub rank: Option<u8>,
+    pub def_exrank: Option<f64>,
+    pub exrank_defs: std::collections::HashMap<u32, f64>,
+    pub exrank_events: Vec<ExRankEvent>,
     pub total: Option<f64>,
     pub vol_wav: Option<u8>,
     pub volume_events: Vec<VolumeEvent>,
@@ -109,6 +121,21 @@ pub struct Chart {
     pub wav_paths: std::collections::HashMap<u32, PathBuf>,
 }
 
+impl Chart {
+    pub fn judgment_scale(&self, time_ms: f64) -> f64 {
+        let index = self.exrank_events.partition_point(|e| e.time_ms <= time_ms);
+        if index > 0 {
+            return self.exrank_events[index - 1].percent / 100.0;
+        }
+        self.def_exrank
+            .map(|v| v / 100.0)
+            .unwrap_or_else(|| match self.rank {
+                Some(rank @ 0..=4) => 0.5 + f64::from(rank) * 0.25,
+                _ => 1.0,
+            })
+    }
+}
+
 impl Default for Chart {
     fn default() -> Self {
         Self {
@@ -119,11 +146,17 @@ impl Default for Chart {
             genre: String::new(),
             stagefile: String::new(),
             banner: String::new(),
+            backbmp: String::new(),
+            comment: String::new(),
+            asset_dir: PathBuf::new(),
             maker: String::new(),
             bpm: 130.0,
             playlevel: None,
             difficulty: None,
             rank: None,
+            def_exrank: None,
+            exrank_defs: std::collections::HashMap::new(),
+            exrank_events: Vec::new(),
             total: None,
             vol_wav: None,
             volume_events: Vec::new(),
