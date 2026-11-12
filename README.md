@@ -43,7 +43,7 @@ cargo install --path .
 ```sh
 tapline                                # open the chart selector (see "Song discovery")
 tapline --dir ~/bms                    # open selector on a specific directory
-tapline --file song.bms                # skip selector, play one chart (auto 4/5/7/9/14-lane)
+tapline --file song.bms                # skip selector, play one chart (auto lane detection)
 tapline --file song.bms --no-audio     # play a chart, silent
 tapline --built-in --bpm 160           # play the built-in practice chart
 ```
@@ -105,9 +105,9 @@ case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
+| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
 | channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `97`/`98` (BGM/keysound volume), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
-| lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, 9K PMS (`.pms`: `11–15 + 22–25`), plus 10K, 14K, and asymmetric double-play (`#PLAYER 3` or playable P2 channels) |
+| lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`), 9K PMS (`.pms`: `11–15 + 22–25`); 10K, 14K, and asymmetric double-play (`#PLAYER 3` or playable P2 channels); scratch (`16` / `26`) adds a lane on each populated side |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
 | control flow  | `#RANDOM`, `#SETRANDOM`, `#ENDRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF`, `#SWITCH`, `#SETSWITCH`, `#CASE`, `#SKIP`, `#DEF`, `#ENDSW` (nesting and switch fallthrough supported) |
@@ -119,6 +119,13 @@ follow the same button order as visible notes.
 `#RANDOM` branches are drawn afresh for each play. The selector and chart loader
 share the same draw so displayed metadata matches gameplay. Set
 `TAPLINE_RANDOM_SEED` to an unsigned 64-bit integer for reproducible branches.
+
+Scratch channels `16/26`, `56/66` (long notes), and `D6/E6` (landmines)
+are playable. Free-zone / pedal channels `17/27` and their long-note /
+landmine counterparts are ignored. Scratch is the last lane on each side.
+Lane modes are inferred from populated channels; empty channels do not count.
+Asymmetric DP uses the layout for its total lane count, including the scratch
+layouts in the Keys section for totals of 8, 12, or 16 and the PMS layout for 9 lanes.
 
 `#VOLWAV` scales sample and synth playback by a percentage (default 100).
 Channels `97` (BGM) and `98` (keysounds) set independent volume multipliers
@@ -136,8 +143,12 @@ true-color half-block characters to the left of the lanes when space permits.
 Channel `04` selects the base; `07` overlays it with pure black treated as
 transparent. Channel `06` replaces both for 500 ms after each MISS. Missing or
 undecodable images are skipped. Narrow terminals hide BGA without moving the
-lanes. Animated images use their first frame; video, Sixel, and Kitty graphics
-are not supported.
+lanes. Animated images use their first frame. Video BGA (including MP4 and WebM)
+uses an optional `ffmpeg` executable on PATH, with no build-time dependency.
+Frames are decoded in the background at 30 fps and start at each layer event,
+including repeated events for the same file. Playback holds the last frame at
+the end; video audio is ignored. Missing decoders and unsupported or corrupt
+videos are silently skipped. Sixel and Kitty graphics are not supported.
 
 ### Long notes and landmines
 
@@ -209,9 +220,13 @@ whichever finger is closer.
 | 4     | `S D       K L`               | outer 2+2, index fingers rest     |
 | 5     | `S D  F/J  K L`               | center lane bound to both F and J |
 | 7     | `S D  F SPACE J  K L`         | spacebar is the center            |
+| 6     | `S D F/J K L A` | 5K plus scratch on A |
+| 8     | `S D F SPACE J K L A` | 7K plus scratch on A |
+| 12    | `S D F/J K L A / Z X C V B /` | 5K+scratch per side; P2 scratch uses slash |
+| 16    | `S D F SPACE J K L A / Z X C V B N M /` | 7K+scratch per side; P2 scratch uses slash |
 | 9     | `A S D F SPACE J K L ;`        | PMS buttons 1–9; spacebar is the center |
 | 10    | `S D F K L / Z X C N M` | five keys per side |
-| 8, 11–13 | first N keys of `S D F SPACE J K L Z X C V B N M` | asymmetric DP (9 lanes use the PMS layout above) |
+| 11, 13, 15 | first N keys of `S D F SPACE J K L Z X C V B N M , A` | asymmetric DP |
 | 14    | `S D F SPACE J K L / Z X C V B N M` | 7K SP layout on the home row for P1, ZXCVBNM below for P2 |
 
 ## License
