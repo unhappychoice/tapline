@@ -422,3 +422,38 @@ fn ln_completion_ignores_rank_but_unpressed_starts_use_rank_delay() {
         assert_eq!(game.miss, 1);
     }
 }
+
+#[test]
+fn ln_modes_apply_gauge_recovery_once_per_start_and_end() {
+    [1, 2, 3].into_iter().for_each(|mode| {
+        let header = format!("#LNMODE {mode}\n#TOTAL 60");
+        let mut game = long_note_game(&header, "#00151:0101");
+        game.chart.duration_ms = 6000.0;
+        assert_eq!(game.gauge.value(), 20.0);
+        game.hit(0, 4000.0);
+        assert_eq!(game.gauge.value(), 50.0);
+        let completion = if mode == 1 { 6000.0 } else { 6161.0 };
+        assert!(game.advance_completion(completion));
+        assert_eq!(game.gauge.value(), 80.0);
+        assert!(game.gauge.is_clear());
+        game.release(0, 6500.0);
+        game.advance_completion(7000.0);
+        assert_eq!(game.gauge.value(), 80.0);
+        assert_eq!(game.perfect, 2);
+    });
+}
+
+#[test]
+fn ln_modes_apply_gauge_penalty_once_for_early_release() {
+    [1, 2, 3].into_iter().for_each(|mode| {
+        let header = format!("#LNMODE {mode}\n#TOTAL 60");
+        let mut game = long_note_game(&header, "#00151:0101");
+        game.chart.duration_ms = 6000.0;
+        game.hit(0, 4000.0);
+        game.release(0, 5000.0);
+        assert!(game.advance_completion(7000.0));
+        assert_eq!(game.gauge.value(), 44.0);
+        assert_eq!((game.perfect, game.miss), (1, 1));
+        assert!(!game.gauge.is_clear());
+    });
+}
