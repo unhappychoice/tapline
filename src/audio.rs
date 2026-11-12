@@ -70,7 +70,7 @@ pub struct SampleBank {
     handle: Option<OutputStreamHandle>,
     samples: HashMap<u32, DecodedSample>,
     layers: HashMap<u32, Vec<u32>>,
-    playing_slices: RefCell<HashMap<u32, Sink>>,
+    playing: RefCell<HashMap<u32, Sink>>,
     slices: HashMap<u32, crate::chart::SampleSlice>,
     pub enabled: bool,
     /// Number of `wav_paths` entries that failed to decode. Surfaced on the
@@ -87,7 +87,7 @@ impl SampleBank {
         let (samples, failures) = decode_all(wav_paths);
         Self {
             layers: HashMap::new(),
-            playing_slices: RefCell::new(HashMap::new()),
+            playing: RefCell::new(HashMap::new()),
             slices: HashMap::new(),
             _stream: stream,
             handle,
@@ -123,7 +123,7 @@ impl SampleBank {
     pub fn silent() -> Self {
         Self {
             layers: HashMap::new(),
-            playing_slices: RefCell::new(HashMap::new()),
+            playing: RefCell::new(HashMap::new()),
             slices: HashMap::new(),
             _stream: None,
             handle: None,
@@ -243,16 +243,15 @@ impl SampleBank {
         let Some(handle) = &self.handle else {
             return;
         };
-        let Some(source) = self.sample_with_gain(id, gain) else {
-            return;
-        };
-        if self.slices.contains_key(&id) {
-            if let Ok(sink) = Sink::try_new(handle) {
-                sink.append(source);
-                self.replace_slice(id, sink);
-            }
-        } else {
-            let _ = handle.play_raw(source);
+        if let Ok(sink) = Sink::try_new(handle) {
+            self.append_sample(id, gain, sink);
+        }
+    }
+
+    fn append_sample(&self, id: u32, gain: f32, sink: Sink) {
+        if let Some(source) = self.sample_with_gain(id, gain) {
+            sink.append(source);
+            self.replace_sample(id, sink);
         }
     }
 
@@ -262,8 +261,8 @@ impl SampleBank {
             .map(|sample| sample_source(sample, self.slices.get(&id)).amplify(gain))
     }
 
-    fn replace_slice(&self, id: u32, sink: Sink) {
-        if let Some(previous) = self.playing_slices.borrow_mut().insert(id, sink) {
+    fn replace_sample(&self, id: u32, sink: Sink) {
+        if let Some(previous) = self.playing.borrow_mut().insert(id, sink) {
             previous.stop();
         }
     }
@@ -765,15 +764,15 @@ mod tests {
         let bank = SampleBank::silent();
         let (first, mut first_output) = Sink::new_idle();
         first.append(SamplesBuffer::new(1, 44100, vec![1.0; 1000]));
-        bank.replace_slice(1, first);
+        bank.replace_sample(1, first);
         let (other, _other_output) = Sink::new_idle();
         other.append(SamplesBuffer::new(1, 44100, vec![1.0; 1000]));
-        bank.replace_slice(2, other);
+        bank.replace_sample(2, other);
         let (replacement, _replacement_output) = Sink::new_idle();
         replacement.append(SamplesBuffer::new(1, 44100, vec![0.5; 1000]));
-        bank.replace_slice(1, replacement);
+        bank.replace_sample(1, replacement);
         assert_eq!(first_output.next(), None);
-        let playing = bank.playing_slices.borrow();
+        let playing = bank.playing.borrow();
         assert_eq!(playing.len(), 2);
         assert!(!playing[&1].empty());
         assert!(!playing[&2].empty());
@@ -878,6 +877,48 @@ mod tests {
             });
         });
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn sustained_sample() -> DecodedSample {
+        DecodedSample {
+            channels: 1,
+            sample_rate: 44_100,
+            data: Arc::new(vec![0.5; 44_100]),
+        }
+    }
+
+    #[test]
+    fn replaying_same_id_stops_previous_sink_and_restarts_sample() {
+        let mut bank = SampleBank::silent();
+        let sample = sustained_sample();
+        bank.samples.insert(1, sample);
+        let (first, mut first_output) = Sink::new_idle();
+        bank.append_sample(1, 1.0, first);
+        assert_eq!(first_output.next(), Some(0.5));
+
+        let (second, mut second_output) = Sink::new_idle();
+        bank.append_sample(1, 0.5, second);
+
+        assert!(first_output.skip(1000).take(100).all(|s| s == 0.0));
+        assert_eq!(second_output.next(), Some(0.25));
+        assert_eq!(bank.playing.borrow().len(), 1);
+    }
+
+    #[test]
+    fn different_ids_keep_playing_even_when_they_share_sample_data() {
+        let mut bank = SampleBank::silent();
+        let sample = sustained_sample();
+        bank.samples.insert(1, sample.clone());
+        bank.samples.insert(2, sample);
+        let (first, mut first_output) = Sink::new_idle();
+        let (second, mut second_output) = Sink::new_idle();
+
+        bank.append_sample(1, 1.0, first);
+        bank.append_sample(2, 1.0, second);
+
+        assert_eq!(first_output.next(), Some(0.5));
+        assert_eq!(second_output.next(), Some(0.5));
+        assert_eq!(bank.playing.borrow().len(), 2);
     }
 
     #[test]
