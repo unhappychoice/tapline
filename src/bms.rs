@@ -1,4 +1,7 @@
-use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, LnMode, Mine, Note};
+use crate::chart::{
+    keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, InvisibleNote, LnMode, Mine, Note, VolumeEvent,
+    VolumeTarget,
+};
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -6,6 +9,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct ChartMeta {
     pub path: PathBuf,
+    /// Reuse this seed when loading the selected chart.
+    pub random_seed: u64,
     pub title: String,
     pub subtitle: String,
     pub artist: String,
@@ -18,9 +23,14 @@ pub struct ChartMeta {
 }
 
 pub fn read_meta(path: &Path) -> Result<ChartMeta> {
+    read_meta_with_seed(path, random_seed())
+}
+
+/// Read metadata using an explicit seed instead of the environment override.
+pub fn read_meta_with_seed(path: &Path, seed: u64) -> Result<ChartMeta> {
     let text = read_text(path)?;
-    let text = resolve_control_flow(&text, random_seed_for(path));
-    let mut pass = HeaderPass::default();
+    let text = resolve_control_flow(&text, seed);
+    let mut pass = HeaderPass::for_text(&text);
     let mut raw = Vec::new();
     for line in header_lines(&text) {
         if let Some(parsed) = parse_channel_line(line) {
@@ -29,9 +39,10 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
             pass.absorb(line);
         }
     }
-    let (_, acc, p2_acc) = collect_chart_sides(&raw, &pass, 0.0, false);
+    let (_, acc, p2_acc) = collect_chart_sides(&raw, &pass, 0.0, false, is_pms(path));
     Ok(ChartMeta {
         path: path.to_path_buf(),
+        random_seed: seed,
         title: pass.title,
         subtitle: pass.subtitle,
         artist: pass.artist,
@@ -40,15 +51,20 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
         bpm: pass.bpm,
         playlevel: pass.playlevel,
         difficulty: pass.difficulty,
-        lane_count: playable_lane_count(&acc, &p2_acc),
+        lane_count: playable_lane_count(&acc, &p2_acc, is_pms(path)),
     })
 }
 
 pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
+    load_with_seed(path, lead_in_ms, random_seed())
+}
+
+/// Load the same control-flow branches used by metadata with this seed.
+pub fn load_with_seed(path: &Path, lead_in_ms: f64, seed: u64) -> Result<Chart> {
     let text = read_text(path)?;
-    let text = resolve_control_flow(&text, random_seed_for(path));
+    let text = resolve_control_flow(&text, seed);
     let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let mut pass = HeaderPass::default();
+    let mut pass = HeaderPass::for_text(&text);
     let mut raw: Vec<(u32, String, String)> = Vec::new();
     for line in header_lines(&text) {
         match parse_channel_line(line) {
@@ -56,13 +72,19 @@ pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
             None => pass.absorb(line),
         }
     }
-    build_chart(pass, raw, dir, lead_in_ms)
+    build_chart(pass, raw, dir, lead_in_ms, is_pms(path))
+}
+
+fn is_pms(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pms"))
 }
 
 #[derive(Default)]
 struct ChartAcc {
     lanes: LaneSet,
     notes: Vec<Note>,
+    invisible_notes: Vec<InvisibleNote>,
     mines: Vec<Mine>,
     bgm: Vec<BgmEvent>,
 }
@@ -70,46 +92,83 @@ struct ChartAcc {
 #[derive(Copy, Clone)]
 struct LaneMap {
     normal: fn(&str) -> Option<usize>,
+    invisible: fn(&str) -> Option<usize>,
     long: fn(&str) -> Option<usize>,
     mine: fn(&str) -> Option<usize>,
 }
 
 const P1_LANES: LaneMap = LaneMap {
     normal: channel_to_lane,
+    invisible: |ch| {
+        ch.strip_prefix('3')
+            .and_then(|suffix| channel_to_lane(&format!("1{suffix}")))
+    },
     long: long_channel_to_lane,
     mine: mine_channel_to_lane,
 };
 
 const P2_LANES: LaneMap = LaneMap {
     normal: p2_channel_to_lane,
+    invisible: |ch| {
+        ch.strip_prefix('4')
+            .and_then(|suffix| p2_channel_to_lane(&format!("2{suffix}")))
+    },
     long: p2_long_channel_to_lane,
     mine: p2_mine_channel_to_lane,
 };
+
+const PMS_LANES: LaneMap = LaneMap {
+    normal: |ch| pms_channel_to_lane(ch, "1", "2"),
+    invisible: |ch| pms_channel_to_lane(ch, "3", "4"),
+    long: |ch| pms_channel_to_lane(ch, "5", "6"),
+    mine: |ch| pms_channel_to_lane(ch, "D", "E"),
+};
+
+fn pms_channel_to_lane(ch: &str, left: &str, right: &str) -> Option<usize> {
+    match (ch.strip_prefix(left), ch.strip_prefix(right)) {
+        (Some("1"), _) => Some(0),
+        (Some("2"), _) => Some(1),
+        (Some("3"), _) => Some(2),
+        (Some("4"), _) => Some(3),
+        (Some("5"), _) => Some(4),
+        (_, Some("2")) => Some(5),
+        (_, Some("3")) => Some(6),
+        (_, Some("4")) => Some(7),
+        (_, Some("5")) => Some(8),
+        _ => None,
+    }
+}
 
 fn build_chart(
     pass: HeaderPass,
     raw: Vec<(u32, String, String)>,
     dir: PathBuf,
     lead_in_ms: f64,
+    pms: bool,
 ) -> Result<Chart> {
-    let wav_paths = resolve_wavs(&dir, &pass.wav_defs);
+    let assets = AssetIndex::new(&dir);
+    let wav_paths = resolve_wavs(&assets, &pass.wav_defs);
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
-    let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true);
-    let mut bga = collect_bga_events(&raw, &timeline);
-    let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
-    let lane_count = playable_lane_count(&acc, &p2_acc);
-    let p1_lane_count = acc.lanes.count();
+    let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true, pms);
+    let mut bga = collect_bga_events(&raw, &timeline, pass.base);
+    let bmp_paths = resolve_bmp_paths(&assets, &pass.bmp_defs);
+    let lane_count = playable_lane_count(&acc, &p2_acc, pms);
+    let p1_lane_count = if pms { 9 } else { acc.lanes.count() };
     let p2_lane_count = p2_acc.lanes.count();
     let mut notes = acc.notes;
+    let mut invisible_notes = acc.invisible_notes;
     let mut mines = acc.mines;
     let mut bgm = acc.bgm;
     let mut p2_notes = p2_acc.notes;
+    let mut p2_invisible_notes = p2_acc.invisible_notes;
     let mut p2_mines = p2_acc.mines;
     if let Some(lnobj) = pass.lnobj {
         promote_lnobj(&mut notes, lnobj);
         promote_lnobj(&mut p2_notes, lnobj);
     }
     notes.retain(|n| n.lane < p1_lane_count);
+    invisible_notes.retain(|n| n.lane < p1_lane_count);
+    p2_invisible_notes.retain(|n| n.lane < p2_lane_count);
     mines.retain(|n| n.lane < p1_lane_count);
     p2_notes.retain(|n| n.lane < p2_lane_count);
     p2_mines.retain(|n| n.lane < p2_lane_count);
@@ -117,6 +176,10 @@ fn build_chart(
     // shift into lanes 7..=13 and lane_count expands to 14. Non-canonical DP
     // (e.g. 5K+5K) is left split — the runtime plays P1 only.
     if lane_count == 14 {
+        p2_invisible_notes.drain(..).for_each(|mut note| {
+            note.lane += 7;
+            invisible_notes.push(note);
+        });
         for mut n in p2_notes.drain(..) {
             n.lane += 7;
             notes.push(n);
@@ -126,6 +189,8 @@ fn build_chart(
             mines.push(m);
         }
     }
+    invisible_notes.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+    p2_invisible_notes.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     mines.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     p2_notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
@@ -149,10 +214,13 @@ fn build_chart(
         total: pass.total,
         vol_wav: pass.vol_wav,
         ln_mode: pass.ln_mode,
+        volume_events: collect_volume_events(&raw, &timeline),
         notes,
         mines,
         p2_notes,
         p2_mines,
+        invisible_notes,
+        p2_invisible_notes,
         bgm,
         bga,
         bmp_paths,
@@ -160,6 +228,8 @@ fn build_chart(
         lane_count,
         keys: keys_for(lane_count),
         wav_paths,
+        sample_slices: HashMap::new(),
+        sound_layers: HashMap::new(),
     })
 }
 
@@ -168,18 +238,26 @@ fn collect_chart_sides(
     pass: &HeaderPass,
     lead_in_ms: f64,
     collect_bgm: bool,
+    pms: bool,
 ) -> (Timeline, ChartAcc, ChartAcc) {
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let scales = collect_measure_scales(raw);
-    let events = collect_timing_events(raw, &pass.bpm_defs, &pass.stop_defs);
+    let events = collect_timing_events(raw, &pass.bpm_defs, &pass.stop_defs, pass.base);
     let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
-    let acc = accumulate_side(raw, &timeline, P1_LANES, collect_bgm);
-    let p2_acc = accumulate_side(raw, &timeline, P2_LANES, false);
+    let lanes = if pms { PMS_LANES } else { P1_LANES };
+    let acc = accumulate_side(raw, &timeline, lanes, collect_bgm, pass.lntype, pass.base);
+    let p2_acc = if pms {
+        ChartAcc::default()
+    } else {
+        accumulate_side(raw, &timeline, P2_LANES, false, pass.lntype, pass.base)
+    };
     (timeline, acc, p2_acc)
 }
 
-fn playable_lane_count(acc: &ChartAcc, p2_acc: &ChartAcc) -> usize {
-    if acc.lanes.count() == 7 && p2_acc.lanes.count() == 7 && !p2_acc.notes.is_empty() {
+fn playable_lane_count(acc: &ChartAcc, p2_acc: &ChartAcc, pms: bool) -> usize {
+    if pms {
+        9
+    } else if acc.lanes.count() == 7 && p2_acc.lanes.count() == 7 && !p2_acc.notes.is_empty() {
         14
     } else {
         acc.lanes.count()
@@ -230,29 +308,89 @@ fn accumulate_side(
     timeline: &Timeline,
     lanes: LaneMap,
     collect_bgm: bool,
+    lntype: u8,
+    base: u32,
 ) -> ChartAcc {
+    let raw = merge_note_lines(raw, lanes, base);
+    let raw = raw.as_slice();
     let mut acc = ChartAcc::default();
     for (measure, ch, data) in raw {
         if let Some(lane) = (lanes.normal)(ch) {
-            push_normal_slots(&mut acc, lane, ch, *measure, data, timeline);
+            push_normal_slots(&mut acc, lane, *measure, data, timeline, base);
+        } else if let Some(lane) = (lanes.invisible)(ch) {
+            let slots = parse_slots(data, base);
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| **slot != 0)
+                .for_each(|(i, slot)| {
+                    acc.lanes.observe_lane(lane);
+                    acc.invisible_notes.push(InvisibleNote {
+                        time_ms: timeline.time_at(*measure, i as f64 / slots.len() as f64),
+                        lane,
+                        keysound: *slot,
+                    });
+                });
         } else if collect_bgm && ch == "01" {
-            push_bgm_slots(&mut acc, *measure, data, timeline);
+            push_bgm_slots(&mut acc, *measure, data, timeline, base);
         }
     }
-    materialize_long_notes_with(&mut acc, raw, timeline, lanes.long);
+    if lntype == 2 {
+        materialize_continuous_long_notes(&mut acc, raw, timeline, lanes.long, base);
+    } else {
+        materialize_long_notes_with(&mut acc, raw, timeline, lanes.long, base);
+    }
     materialize_mines_with(&mut acc, raw, timeline, lanes.mine);
     acc
+}
+
+fn merge_note_lines(
+    raw: &[(u32, String, String)],
+    lanes: LaneMap,
+    base: u32,
+) -> Vec<(u32, String, String)> {
+    let mut seen = HashSet::new();
+    let mut merged = raw.to_vec();
+    for (measure, ch, data) in merged.iter_mut().rev() {
+        let slots = if (lanes.mine)(ch).is_some() {
+            parse_slots_hex(data)
+        } else if (lanes.normal)(ch).is_some()
+            || (lanes.long)(ch).is_some()
+            || (lanes.invisible)(ch).is_some()
+        {
+            parse_slots(data, base)
+        } else {
+            continue;
+        };
+        let n = slots.len();
+        for (i, _) in slots.iter().enumerate().filter(|(_, slot)| **slot != 0) {
+            let divisor = greatest_common_divisor(i, n);
+            let position = (*measure, ch.clone(), i / divisor, n / divisor);
+            if !seen.insert(position) {
+                data.replace_range(i * 2..i * 2 + 2, "00");
+            }
+        }
+    }
+    merged
+}
+
+fn greatest_common_divisor(a: usize, b: usize) -> usize {
+    if b == 0 {
+        a
+    } else {
+        greatest_common_divisor(b, a % b)
+    }
 }
 
 fn push_normal_slots(
     acc: &mut ChartAcc,
     lane: usize,
-    _ch: &str,
     measure: u32,
     data: &str,
     timeline: &Timeline,
+    base: u32,
 ) {
-    let slots = parse_slots(data);
+    let slots = parse_slots(data, base);
     let n = slots.len();
     if n == 0 {
         return;
@@ -274,8 +412,8 @@ fn push_normal_slots(
     }
 }
 
-fn push_bgm_slots(acc: &mut ChartAcc, measure: u32, data: &str, timeline: &Timeline) {
-    let slots = parse_slots(data);
+fn push_bgm_slots(acc: &mut ChartAcc, measure: u32, data: &str, timeline: &Timeline, base: u32) {
+    let slots = parse_slots(data, base);
     let n = slots.len();
     if n == 0 {
         return;
@@ -297,13 +435,14 @@ fn materialize_long_notes_with(
     raw: &[(u32, String, String)],
     timeline: &Timeline,
     lane_of: fn(&str) -> Option<usize>,
+    base: u32,
 ) {
     let mut per_lane: HashMap<usize, Vec<(f64, u32)>> = HashMap::new();
     for (measure, ch, data) in raw {
         let Some(lane) = lane_of(ch) else {
             continue;
         };
-        let slots = parse_slots(data);
+        let slots = parse_slots(data, base);
         let n = slots.len();
         if n == 0 {
             continue;
@@ -331,6 +470,56 @@ fn materialize_long_notes_with(
                 hit: false,
                 keysound: Some(ks),
                 end_ms: Some(end_ms),
+                held_since: None,
+            });
+        }
+    }
+}
+
+fn materialize_continuous_long_notes(
+    acc: &mut ChartAcc,
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    lane_of: fn(&str) -> Option<usize>,
+    base: u32,
+) {
+    let mut per_lane: HashMap<usize, Vec<(f64, f64, u32)>> = HashMap::new();
+    for (measure, ch, data) in raw {
+        let Some(lane) = lane_of(ch) else {
+            continue;
+        };
+        let slots = parse_slots(data, base);
+        let n = slots.len() as f64;
+        per_lane.entry(lane).or_default().extend(
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| **slot != 0)
+                .map(|(i, slot)| {
+                    let start = *measure as f64 + i as f64 / n;
+                    let end = *measure as f64 + (i + 1) as f64 / n;
+                    (start, end, *slot)
+                }),
+        );
+    }
+    for (lane, mut spans) in per_lane {
+        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let mut merged: Vec<(f64, f64, u32)> = Vec::new();
+        for (start, end, keysound) in spans {
+            if let Some(previous) = merged.last_mut().filter(|span| start <= span.1) {
+                previous.1 = previous.1.max(end);
+            } else {
+                merged.push((start, end, keysound));
+            }
+        }
+        for (start, end, keysound) in merged {
+            acc.lanes.observe_lane(lane);
+            acc.notes.push(Note {
+                time_ms: timeline.time_at(start.floor() as u32, start.fract()),
+                lane,
+                hit: false,
+                keysound: Some(keysound),
+                end_ms: Some(timeline.time_at(end.floor() as u32, end.fract())),
                 held_since: None,
             });
         }
@@ -377,13 +566,42 @@ fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
     }
 }
 
-fn collect_bga_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec<BgaEvent> {
+fn collect_volume_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec<VolumeEvent> {
+    let mut events = Vec::new();
+    for (measure, channel, data) in raw {
+        let target = match channel.as_str() {
+            "97" => VolumeTarget::Bgm,
+            "98" => VolumeTarget::Key,
+            _ => continue,
+        };
+        let slots = parse_slots_hex(data);
+        events.extend(
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| **v != 0)
+                .map(|(i, &volume)| VolumeEvent {
+                    time_ms: timeline.time_at(*measure, i as f64 / slots.len() as f64),
+                    target,
+                    volume: volume as u8,
+                }),
+        );
+    }
+    events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+    events
+}
+
+fn collect_bga_events(
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    base: u32,
+) -> Vec<BgaEvent> {
     let mut out: Vec<BgaEvent> = Vec::new();
     for (measure, ch, data) in raw {
         let Some(layer) = bga_channel_to_layer(ch) else {
             continue;
         };
-        let slots = parse_slots(data);
+        let slots = parse_slots(data, base);
         let n = slots.len();
         if n == 0 {
             continue;
@@ -403,24 +621,8 @@ fn collect_bga_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec
     out
 }
 
-fn resolve_bmp_paths(dir: &Path, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
-    defs.iter()
-        .filter_map(|(id, name)| {
-            let direct = dir.join(name);
-            if direct.exists() {
-                return Some((*id, direct));
-            }
-            let stem = Path::new(name)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(name);
-            ["png", "bmp", "jpg", "jpeg", "gif", "mp4", "webm"]
-                .iter()
-                .map(|ext| dir.join(format!("{stem}.{ext}")))
-                .find(|p| p.exists())
-                .map(|p| (*id, p))
-        })
-        .collect()
+fn resolve_bmp_paths(assets: &AssetIndex, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
+    assets.resolve(defs, &["png", "bmp", "jpg", "jpeg", "gif", "mp4", "webm"])
 }
 
 fn mine_channel_to_lane(ch: &str) -> Option<usize> {
@@ -524,6 +726,7 @@ fn collect_timing_events(
     raw: &[(u32, String, String)],
     bpm_defs: &HashMap<u32, f64>,
     stop_defs: &HashMap<u32, f64>,
+    base: u32,
 ) -> Vec<TimingEvent> {
     type TimingResolver<'a> = Box<dyn Fn(u32) -> Option<TimingEventKind> + 'a>;
     let mut out: Vec<TimingEvent> = Vec::new();
@@ -534,11 +737,11 @@ fn collect_timing_events(
                 Box::new(|v| Some(TimingEventKind::Bpm(v as f64))),
             ),
             "08" => (
-                parse_slots(data),
+                parse_slots(data, base),
                 Box::new(|v| bpm_defs.get(&v).copied().map(TimingEventKind::Bpm)),
             ),
             "09" => (
-                parse_slots(data),
+                parse_slots(data, base),
                 Box::new(|v| stop_defs.get(&v).copied().map(TimingEventKind::Stop)),
             ),
             _ => continue,
@@ -702,6 +905,7 @@ impl Timeline {
 }
 
 struct HeaderPass {
+    base: u32,
     title: String,
     subtitle: String,
     artist: String,
@@ -728,6 +932,7 @@ struct HeaderPass {
 impl Default for HeaderPass {
     fn default() -> Self {
         Self {
+            base: 36,
             title: String::new(),
             subtitle: String::new(),
             artist: String::new(),
@@ -754,6 +959,23 @@ impl Default for HeaderPass {
 }
 
 impl HeaderPass {
+    fn for_text(text: &str) -> Self {
+        let base = header_lines(text)
+            .filter_map(|line| {
+                let (cmd, val) = split_cmd_value(line);
+                cmd.eq_ignore_ascii_case("BASE")
+                    .then(|| val.trim().parse::<u32>().ok())
+                    .flatten()
+                    .filter(|base| matches!(base, 36 | 62))
+            })
+            .last()
+            .unwrap_or(36);
+        Self {
+            base,
+            ..Self::default()
+        }
+    }
+
     fn absorb(&mut self, line: &str) {
         let (cmd, val) = split_cmd_value(line);
         let up = cmd.to_ascii_uppercase();
@@ -809,7 +1031,7 @@ impl HeaderPass {
                 _ => {}
             },
             "LNOBJ" => {
-                if let Ok(id) = u32::from_str_radix(val.trim(), 36) {
+                if let Some(id) = parse_id(val.trim(), self.base) {
                     if id > 0 {
                         self.lnobj = Some(id);
                     }
@@ -823,33 +1045,37 @@ impl HeaderPass {
                 }
             }
             _ => {
-                if let Some(rest) = up.strip_prefix("WAV") {
-                    if let Ok(id) = u32::from_str_radix(rest, 36) {
+                if let Some(rest) = up.strip_prefix("WAV").and_then(|_| cmd.get(3..)) {
+                    if let Some(id) = parse_id(rest, self.base) {
                         self.wav_defs.insert(id, val.trim().to_string());
                     }
-                } else if let Some(rest) = up.strip_prefix("BPM") {
+                } else if let Some(rest) = up
+                    .strip_prefix("BPM")
+                    .and_then(|_| cmd.get(3..))
+                    .or_else(|| up.strip_prefix("EXBPM").and_then(|_| cmd.get(5..)))
+                {
                     if !rest.is_empty() {
-                        if let (Ok(id), Ok(v)) =
-                            (u32::from_str_radix(rest, 36), val.trim().parse::<f64>())
+                        if let (Some(id), Ok(v)) =
+                            (parse_id(rest, self.base), val.trim().parse::<f64>())
                         {
                             if v > 0.0 {
                                 self.bpm_defs.insert(id, v);
                             }
                         }
                     }
-                } else if let Some(rest) = up.strip_prefix("STOP") {
+                } else if let Some(rest) = up.strip_prefix("STOP").and_then(|_| cmd.get(4..)) {
                     if !rest.is_empty() {
-                        if let (Ok(id), Ok(v)) =
-                            (u32::from_str_radix(rest, 36), val.trim().parse::<f64>())
+                        if let (Some(id), Ok(v)) =
+                            (parse_id(rest, self.base), val.trim().parse::<f64>())
                         {
                             if v > 0.0 {
                                 self.stop_defs.insert(id, v);
                             }
                         }
                     }
-                } else if let Some(rest) = up.strip_prefix("BMP") {
+                } else if let Some(rest) = up.strip_prefix("BMP").and_then(|_| cmd.get(3..)) {
                     if !rest.is_empty() {
-                        if let Ok(id) = u32::from_str_radix(rest, 36) {
+                        if let Some(id) = parse_id(rest, self.base) {
                             self.bmp_defs.insert(id, val.trim().to_string());
                         }
                     }
@@ -878,16 +1104,16 @@ impl LaneSet {
     }
 }
 
-fn random_seed_for(path: &Path) -> u64 {
-    if let Ok(v) = std::env::var("TAPLINE_RANDOM_SEED") {
-        if let Ok(n) = v.parse::<u64>() {
-            return n;
-        }
-    }
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.to_string_lossy().hash(&mut hasher);
-    hasher.finish()
+fn random_seed() -> u64 {
+    std::env::var("TAPLINE_RANDOM_SEED")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| {
+            use std::hash::{BuildHasher, Hasher};
+            std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish()
+        })
 }
 
 fn resolve_control_flow(text: &str, seed: u64) -> String {
@@ -896,10 +1122,20 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
         matched_yet: bool,
         included: bool,
     }
+    #[derive(Default)]
+    struct SwitchLevel {
+        pick: Option<u32>,
+        included: bool,
+        skipped: bool,
+        default: bool,
+    }
+    let mut switch_stack: Vec<SwitchLevel> = Vec::new();
     let mut rng = seed.wrapping_add(0x9E3779B97F4A7C15);
-    let mut current_pick: Option<u32> = None;
+    let mut random_stack: Vec<u32> = Vec::new();
     let mut if_stack: Vec<IfLevel> = Vec::new();
-    let is_active = |stack: &[IfLevel]| stack.iter().all(|l| l.included);
+    let is_active = |ifs: &[IfLevel], switches: &[SwitchLevel]| {
+        ifs.iter().all(|l| l.included) && switches.iter().all(|l| l.included)
+    };
     let mut out = String::with_capacity(text.len());
     for line in text.lines() {
         let trimmed = line.trim().trim_start_matches('\u{feff}');
@@ -907,27 +1143,78 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
             let (head, rest) = split_first_word(body);
             let up = head.to_ascii_uppercase();
             match up.as_str() {
+                "SWITCH" | "SETSWITCH" => {
+                    let pick = rest.trim().parse::<u32>().ok().filter(|&n| n > 0);
+                    let pick = pick.filter(|_| is_active(&if_stack, &switch_stack));
+                    switch_stack.push(SwitchLevel {
+                        pick: pick.map(|n| {
+                            if up == "SWITCH" {
+                                xorshift_pick(&mut rng, n)
+                            } else {
+                                n
+                            }
+                        }),
+                        ..SwitchLevel::default()
+                    });
+                    continue;
+                }
+                "CASE" | "DEF" | "SKIP" => {
+                    if if_stack.iter().all(|l| l.included) {
+                        if let Some(top) = switch_stack.last_mut() {
+                            if !top.skipped && !top.default {
+                                match up.as_str() {
+                                    "CASE" => {
+                                        top.included |= top.pick.is_some_and(|p| {
+                                            rest.trim().parse::<u32>().ok() == Some(p)
+                                        });
+                                    }
+                                    "DEF" => {
+                                        top.included = top.pick.is_some();
+                                        top.default = true;
+                                    }
+                                    _ if top.included => {
+                                        top.included = false;
+                                        top.skipped = true;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+                "ENDSW" => {
+                    switch_stack.pop();
+                    continue;
+                }
                 "RANDOM" => {
-                    if is_active(&if_stack) {
+                    if is_active(&if_stack, &switch_stack) {
                         if let Ok(n) = rest.trim().parse::<u32>() {
                             if n > 0 {
-                                current_pick = Some(xorshift_pick(&mut rng, n));
+                                random_stack.push(xorshift_pick(&mut rng, n));
                             }
                         }
                     }
                     continue;
                 }
                 "SETRANDOM" => {
-                    if is_active(&if_stack) {
+                    if is_active(&if_stack, &switch_stack) {
                         if let Ok(n) = rest.trim().parse::<u32>() {
-                            current_pick = Some(n);
+                            random_stack.push(n);
                         }
                     }
                     continue;
                 }
+                "ENDRANDOM" => {
+                    if is_active(&if_stack, &switch_stack) {
+                        random_stack.pop();
+                    }
+                    continue;
+                }
                 "IF" => {
-                    let ok =
-                        current_pick.is_some_and(|p| rest.trim().parse::<u32>().ok() == Some(p));
+                    let ok = random_stack
+                        .last()
+                        .is_some_and(|&p| rest.trim().parse::<u32>().ok() == Some(p));
                     if_stack.push(IfLevel {
                         matched_yet: ok,
                         included: ok,
@@ -939,8 +1226,9 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                         if top.matched_yet {
                             top.included = false;
                         } else {
-                            let ok = current_pick
-                                .is_some_and(|p| rest.trim().parse::<u32>().ok() == Some(p));
+                            let ok = random_stack
+                                .last()
+                                .is_some_and(|&p| rest.trim().parse::<u32>().ok() == Some(p));
                             top.included = ok;
                             top.matched_yet = ok;
                         }
@@ -961,7 +1249,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                 _ => {}
             }
         }
-        if is_active(&if_stack) {
+        if is_active(&if_stack, &switch_stack) {
             out.push_str(line);
             out.push('\n');
         }
@@ -1031,7 +1319,25 @@ fn split_cmd_value(body: &str) -> (&str, &str) {
     }
 }
 
-fn parse_slots(data: &str) -> Vec<u32> {
+fn parse_id(value: &str, base: u32) -> Option<u32> {
+    if base == 36 {
+        return u32::from_str_radix(value, 36).ok();
+    }
+    if value.is_empty() {
+        return None;
+    }
+    value.bytes().try_fold(0u32, |id, byte| {
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'A'..=b'Z' => byte - b'A' + 10,
+            b'a'..=b'z' => byte - b'a' + 36,
+            _ => return None,
+        };
+        id.checked_mul(base)?.checked_add(u32::from(digit))
+    })
+}
+
+fn parse_slots(data: &str, base: u32) -> Vec<u32> {
     let bytes = data.as_bytes();
     let take = bytes.len() - (bytes.len() % 2);
     (0..take)
@@ -1039,7 +1345,7 @@ fn parse_slots(data: &str) -> Vec<u32> {
         .map(|i| {
             std::str::from_utf8(&bytes[i..i + 2])
                 .ok()
-                .and_then(|s| u32::from_str_radix(s, 36).ok())
+                .and_then(|s| parse_id(s, base))
                 .unwrap_or(0)
         })
         .collect()
@@ -1058,20 +1364,68 @@ fn channel_to_lane(ch: &str) -> Option<usize> {
     }
 }
 
-fn resolve_wavs(dir: &Path, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
-    defs.iter()
-        .filter_map(|(id, name)| {
-            let direct = dir.join(name);
-            if direct.exists() {
-                return Some((*id, direct));
+struct AssetIndex {
+    exact: HashMap<PathBuf, PathBuf>,
+    folded: HashMap<String, PathBuf>,
+}
+
+impl AssetIndex {
+    fn new(dir: &Path) -> Self {
+        let mut assets = Self {
+            exact: HashMap::new(),
+            folded: HashMap::new(),
+        };
+        assets.scan(dir, Path::new(""));
+        assets
+    }
+
+    fn resolve(&self, defs: &HashMap<u32, String>, extensions: &[&str]) -> HashMap<u32, PathBuf> {
+        defs.iter()
+            .filter_map(|(id, name)| {
+                let normalized = name.replace('\\', "/");
+                let path: PathBuf = Path::new(&normalized)
+                    .components()
+                    .filter(|component| *component != std::path::Component::CurDir)
+                    .collect();
+                self.find(&path)
+                    .or_else(|| {
+                        extensions
+                            .iter()
+                            .find_map(|ext| self.find(&path.with_extension(ext)))
+                    })
+                    .map(|path| (*id, path.clone()))
+            })
+            .collect()
+    }
+
+    fn find(&self, path: &Path) -> Option<&PathBuf> {
+        self.exact
+            .get(path)
+            .or_else(|| self.folded.get(&path.to_string_lossy().to_lowercase()))
+    }
+
+    fn scan(&mut self, dir: &Path, relative: &Path) {
+        let Ok(entries) = std::fs::read_dir(dir.join(relative)) else {
+            return;
+        };
+        let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = relative.join(entry.file_name());
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                self.scan(dir, &path);
+            } else if entry.path().is_file() {
+                self.folded
+                    .entry(path.to_string_lossy().to_lowercase())
+                    .or_insert_with(|| entry.path());
+                self.exact.insert(path, entry.path());
             }
-            ["wav", "ogg", "mp3", "flac"]
-                .iter()
-                .map(|ext| direct.with_extension(ext))
-                .find(|p| p.exists())
-                .map(|p| (*id, p))
-        })
-        .collect()
+        }
+    }
+}
+
+fn resolve_wavs(assets: &AssetIndex, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
+    assets.resolve(defs, &["wav", "ogg", "mp3", "flac"])
 }
 
 #[cfg(test)]
@@ -1090,23 +1444,272 @@ mod tests {
     }
 
     #[test]
+    fn parse_slots_distinguishes_base62_letters_and_keeps_base36_case_insensitive() {
+        assert_eq!(parse_slots("0A0aZZzz10", 62), vec![10, 36, 2205, 3843, 62]);
+        assert_eq!(parse_slots("0A0aZZzz10", 36), vec![10, 10, 1295, 1295, 36]);
+        assert_eq!(parse_slots("!!é0?", 62), vec![0, 0, 0]);
+        assert_eq!(parse_id("", 62), None);
+        assert_eq!(parse_id("zzzzzzzz", 62), None);
+    }
+
+    #[test]
+    fn header_prescan_uses_the_last_supported_base_in_active_control_flow() {
+        let text = resolve_control_flow(
+            "#BASE 62\n#SETRANDOM 1\n#IF 2\n#BASE 36\n#ENDIF\n#BASE 16\n",
+            0,
+        );
+        assert_eq!(HeaderPass::for_text(&text).base, 62);
+        assert_eq!(HeaderPass::for_text("#BASE 62\n#BASE 36").base, 36);
+        assert_eq!(HeaderPass::for_text("#BASE invalid").base, 36);
+    }
+
+    #[test]
+    fn load_prescans_base62_and_preserves_object_ids_across_channels() {
+        let dir = tempdir();
+        let path = dir.join("base62.bms");
+        ["upper.wav", "lower.wav", "upper.png", "lower.png"]
+            .iter()
+            .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        std::fs::write(
+            &path,
+            "#BPM 60
+#wav0A upper.wav
+#WaV0a lower.wav
+#BMP0A upper.png
+#bmp0a lower.png
+#BPM0A 120
+#bpm0a 240
+#STOP0A 48
+#stop0a 96
+#LNOBJ 0a
+#00011:0A0a
+#00021:0a
+#00052:0a0A
+#00062:0a0A
+#00001:0A0a
+#00004:0A0a
+#00008:0A0a
+#00009:0A0a
+#00003:0a
+#000D1:0a
+#bAsE 62
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.wav_paths[&10], dir.join("upper.wav"));
+        assert_eq!(chart.wav_paths[&36], dir.join("lower.wav"));
+        assert_eq!(chart.bmp_paths[&10], dir.join("upper.png"));
+        assert_eq!(chart.bmp_paths[&36], dir.join("lower.png"));
+        assert_eq!(
+            chart.bgm.iter().map(|e| e.keysound).collect::<Vec<_>>(),
+            vec![10, 36]
+        );
+        assert_eq!(
+            chart.bga.iter().map(|e| e.bmp_id).collect::<Vec<_>>(),
+            vec![10, 36]
+        );
+        assert!(chart
+            .notes
+            .iter()
+            .any(|n| n.keysound == Some(10) && n.end_ms.is_some()));
+        assert!(chart
+            .notes
+            .iter()
+            .any(|n| n.keysound == Some(36) && n.end_ms.is_some()));
+        assert!(chart.p2_notes.iter().all(|n| n.keysound == Some(36)));
+        assert_eq!(chart.mines[0].damage, 10);
+        assert_eq!(read_meta(&path).unwrap().lane_count, chart.lane_count);
+    }
+
+    #[test]
+    fn base62_timing_references_are_case_sensitive_and_direct_bpm_stays_hexadecimal() {
+        let text = "#BPM0A 120\n#bpm0a 240\n#STOP0A 48\n#stop0a 96\n#BASE 62";
+        let mut pass = HeaderPass::for_text(text);
+        header_lines(text).for_each(|line| pass.absorb(line));
+        assert_eq!(pass.bpm_defs[&10], 120.0);
+        assert_eq!(pass.bpm_defs[&36], 240.0);
+        assert_eq!(pass.stop_defs[&10], 48.0);
+        assert_eq!(pass.stop_defs[&36], 96.0);
+        let raw = vec![
+            (0, "08".into(), "0A0a".into()),
+            (0, "09".into(), "0A0a".into()),
+        ];
+        let events = collect_timing_events(&raw, &pass.bpm_defs, &pass.stop_defs, pass.base);
+        assert!(matches!(events[0].kind, TimingEventKind::Bpm(120.0)));
+        assert!(matches!(events[2].kind, TimingEventKind::Bpm(240.0)));
+        assert!(matches!(events[1].kind, TimingEventKind::Stop(48.0)));
+        assert!(matches!(events[3].kind, TimingEventKind::Stop(96.0)));
+        let hex = collect_timing_events(
+            &[(0, "03".into(), "0a".into())],
+            &pass.bpm_defs,
+            &pass.stop_defs,
+            pass.base,
+        );
+        assert!(matches!(hex[0].kind, TimingEventKind::Bpm(10.0)));
+    }
+
+    #[test]
+    fn load_base62_keeps_uppercase_and_lowercase_notes_separate() {
+        let dir = tempdir();
+        let path = dir.join("notes.bms");
+        std::fs::write(&path, "#00011:0A0a\n#BASE 62").unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(
+            chart.notes.iter().map(|n| n.keysound).collect::<Vec<_>>(),
+            vec![Some(10), Some(36)]
+        );
+    }
+
+    #[test]
+    fn load_keeps_default_and_explicit_base36_ids_case_insensitive() {
+        let dir = tempdir();
+        let path = dir.join("base36.bms");
+        std::fs::write(dir.join("last.wav"), b"").unwrap();
+        for base in ["", "#BASE 36"] {
+            std::fs::write(
+                &path,
+                format!("#WAV0A first.wav\n#WAV0a last.wav\n#00011:0A0a\n{base}"),
+            )
+            .unwrap();
+            let chart = load(&path, 0.0).unwrap();
+            assert_eq!(chart.wav_paths.len(), 1);
+            assert_eq!(chart.wav_paths[&10], dir.join("last.wav"));
+            assert_eq!(
+                chart.notes.iter().map(|n| n.keysound).collect::<Vec<_>>(),
+                vec![Some(10), Some(10)]
+            );
+        }
+    }
+
+    #[test]
+    fn pms_maps_all_buttons_for_visible_long_lnobj_and_mine_channels() {
+        let dir = tempdir();
+        let families = [
+            ("11 12 13 14 15 22 23 24 25", "01", false),
+            ("51 52 53 54 55 62 63 64 65", "0101", true),
+            ("11 12 13 14 15 22 23 24 25", "01ZZ", true),
+            ("D1 D2 D3 D4 D5 E2 E3 E4 E5", "64", false),
+        ];
+        for extension in ["pms", "PMS"] {
+            let path = dir.join(format!("song.{extension}"));
+            for (channels, slots, long) in families {
+                let lines = channels
+                    .split_whitespace()
+                    .map(|channel| format!("#001{channel}:{slots}\n"))
+                    .collect::<String>();
+                std::fs::write(&path, format!("#BPM 60\n#LNOBJ ZZ\n#00101:01\n{lines}")).unwrap();
+                let chart = load(&path, 500.0).unwrap();
+                assert_eq!(chart.lane_count, 9);
+                assert_eq!(read_meta(&path).unwrap().lane_count, 9);
+                assert_eq!(chart.keys, keys_for(9));
+                assert!(chart.p2_notes.is_empty());
+                assert!(chart.p2_mines.is_empty());
+                assert_eq!(chart.bgm.len(), 1);
+                let mut lanes = if channels.starts_with('D') {
+                    assert!(chart.notes.is_empty());
+                    assert!(chart.mines.iter().all(|mine| mine.damage == 100));
+                    chart.mines.iter().map(|mine| mine.lane).collect::<Vec<_>>()
+                } else {
+                    assert!(chart.notes.iter().all(|note| note.keysound == Some(1)));
+                    assert!(chart.notes.iter().all(|note| note.time_ms == 4500.0));
+                    assert!(chart
+                        .notes
+                        .iter()
+                        .all(|note| note.end_ms == long.then_some(6500.0)));
+                    chart.notes.iter().map(|note| note.lane).collect::<Vec<_>>()
+                };
+                lanes.sort_unstable();
+                assert_eq!(lanes, (0..9).collect::<Vec<_>>());
+                let mut game = crate::game::Game::new(chart);
+                (0..9).for_each(|lane| {
+                    game.hit(lane, 4500.0);
+                    if long {
+                        game.release(lane, 6500.0);
+                    }
+                });
+                if channels.starts_with('D') {
+                    assert_eq!(game.miss, 9);
+                    assert!(game.chart.mines.iter().all(|mine| mine.exploded));
+                } else {
+                    assert_eq!(game.perfect, if long { 18 } else { 9 });
+                    assert!(game.chart.notes.iter().all(|note| note.hit));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_pms_stays_nine_lane_without_changing_bms_or_bme_modes() {
+        let dir = tempdir();
+        let cases = [
+            ("#00111:01", 4, 1, 0),
+            ("#00115:01", 5, 1, 0),
+            ("#00119:01", 7, 1, 0),
+            ("#00119:01\n#00129:01", 14, 2, 0),
+            ("#00115:01\n#00125:01", 5, 1, 1),
+        ];
+        for extension in ["bms", "bme"] {
+            for (channels, count, notes, p2) in cases {
+                let path = dir.join(format!("song.{extension}"));
+                std::fs::write(&path, format!("#BPM 120\n{channels}\n")).unwrap();
+                let chart = load(&path, 0.0).unwrap();
+                assert_eq!(chart.lane_count, count);
+                assert_eq!(read_meta(&path).unwrap().lane_count, count);
+                assert_eq!(chart.notes.len(), notes);
+                assert_eq!(chart.p2_notes.len(), p2);
+            }
+        }
+        let path = dir.join("sparse.pms");
+        std::fs::write(&path, "#BPM 120\n#00111:01\n").unwrap();
+        assert_eq!(load(&path, 0.0).unwrap().lane_count, 9);
+        assert_eq!(read_meta(&path).unwrap().lane_count, 9);
+    }
+
+    #[test]
+    fn base62_preserves_pms_invisible_ids_and_exbpm_aliases() {
+        let dir = tempdir();
+        let path = dir.join("base62.pms");
+        std::fs::write(
+            &path,
+            "#BASE 62\n#BPM 60\n#EXBPM0A 120\n#exbpm0a 240\n#00008:0A0a\n#00011:0A0a\n#00045:0A0a\n#00045:000A\n",
+        )
+        .unwrap();
+        let chart = load_with_seed(&path, 0.0, 42).unwrap();
+        assert_eq!(read_meta_with_seed(&path, 42).unwrap().lane_count, 9);
+        assert_eq!(chart.lane_count, 9);
+        assert_eq!(chart.notes[0].keysound, Some(10));
+        assert_eq!(chart.notes[1].keysound, Some(36));
+        assert_eq!(chart.notes[1].time_ms, 1000.0);
+        assert_eq!(chart.invisible_notes.len(), 2);
+        assert!(chart.invisible_notes.iter().all(|note| note.lane == 8));
+        assert!(chart.invisible_notes.iter().all(|note| note.keysound == 10));
+        assert!(chart.p2_invisible_notes.is_empty());
+        let text = "#BASE 62\n#EXBPM0A 120\n#exbpm0a 240";
+        let mut pass = HeaderPass::for_text(text);
+        header_lines(text).for_each(|line| pass.absorb(line));
+        assert_eq!(pass.bpm_defs[&10], 120.0);
+        assert_eq!(pass.bpm_defs[&36], 240.0);
+    }
+
+    #[test]
     fn parse_slots_reads_base36_pairs() {
-        assert_eq!(parse_slots("00010203"), vec![0, 1, 2, 3]);
+        assert_eq!(parse_slots("00010203", 36), vec![0, 1, 2, 3]);
     }
 
     #[test]
     fn parse_slots_handles_base36_letters() {
-        assert_eq!(parse_slots("0AZZ10"), vec![10, 1295, 36]);
+        assert_eq!(parse_slots("0AZZ10", 36), vec![10, 1295, 36]);
     }
 
     #[test]
     fn parse_slots_drops_a_trailing_odd_char() {
-        assert_eq!(parse_slots("010"), vec![1]);
+        assert_eq!(parse_slots("010", 36), vec![1]);
     }
 
     #[test]
     fn parse_slots_treats_bad_hex_as_zero() {
-        assert_eq!(parse_slots("!!!!"), vec![0, 0]);
+        assert_eq!(parse_slots("!!!!", 36), vec![0, 0]);
     }
 
     #[test]
@@ -1352,7 +1955,7 @@ mod tests {
         ];
         let bpm_defs: HashMap<u32, f64> = [(1u32, 175.5)].into();
         let stop_defs: HashMap<u32, f64> = [(1u32, 96.0)].into();
-        let evs = collect_timing_events(&raw, &bpm_defs, &stop_defs);
+        let evs = collect_timing_events(&raw, &bpm_defs, &stop_defs, 36);
         assert_eq!(evs.len(), 3);
         assert!(matches!(evs[0].kind, TimingEventKind::Bpm(v) if (v - 120.0).abs() < 1e-6));
         assert!(matches!(evs[1].kind, TimingEventKind::Bpm(v) if (v - 175.5).abs() < 1e-6));
@@ -1366,7 +1969,7 @@ mod tests {
             (2u32, "09".to_string(), "0099".to_string()),
         ];
         let empty: HashMap<u32, f64> = HashMap::new();
-        assert!(collect_timing_events(&raw, &empty, &empty).is_empty());
+        assert!(collect_timing_events(&raw, &empty, &empty, 36).is_empty());
     }
 
     #[test]
@@ -1532,6 +2135,24 @@ mod tests {
     }
 
     #[test]
+    fn volume_events_use_hex_skip_rests_and_follow_the_timeline() {
+        let dir = tempdir();
+        let path = dir.join("volume.bms");
+        std::fs::write(&path, "#BPM 120\n#STOP01 192\n#00109:01\n#00103:003C\n#00102:0.5\n#00298:ff\n#00197:004000GG\n#00198:0080\n").unwrap();
+        let chart = load(&path, 100.0).unwrap();
+        assert_eq!(chart.volume_events.len(), 3);
+        let events = &chart.volume_events;
+        assert_eq!(events[0].target, VolumeTarget::Bgm);
+        assert_eq!(events[0].volume, 64);
+        assert_eq!(events[0].time_ms, 4350.0);
+        assert_eq!(events[1].target, VolumeTarget::Key);
+        assert_eq!(events[1].volume, 128);
+        assert_eq!(events[1].time_ms, 4600.0);
+        assert_eq!(events[2].volume, 255);
+        assert_eq!(events[2].time_ms, 5600.0);
+    }
+
+    #[test]
     fn load_records_bga_events_from_channels_04_06_07() {
         let dir = tempdir();
         let path = dir.join("song.bms");
@@ -1563,7 +2184,7 @@ mod tests {
         let dir = tempdir();
         std::fs::write(dir.join("cover.jpg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "cover.png".to_string())].into();
-        let out = resolve_bmp_paths(&dir, &defs);
+        let out = resolve_bmp_paths(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("cover.jpg"));
     }
 
@@ -1633,6 +2254,295 @@ mod tests {
 ";
         let out = resolve_control_flow(text, 0);
         assert!(out.contains("#TITLE Inner"));
+    }
+
+    #[test]
+    fn switch_selects_cases_with_skip_and_fallthrough() {
+        let branches = "\
+#CASE 1
+#00111:01
+#SKIP
+#CASE 2
+#00112:02
+#CASE 3
+#00113:03
+#SKIP
+#DEF
+#00114:04
+#ENDSW
+#TITLE After
+";
+        for (pick, expected) in [
+            (1, "#00111:01\n"),
+            (2, "#00112:02\n#00113:03\n"),
+            (3, "#00113:03\n"),
+            (4, "#00114:04\n"),
+        ] {
+            let text = format!("#SETSWITCH {pick}\n{branches}");
+            assert_eq!(
+                resolve_control_flow(&text, 0),
+                format!("{expected}#TITLE After\n")
+            );
+        }
+    }
+
+    #[test]
+    fn load_switch_keeps_only_selected_notes_and_metadata() {
+        let dir = tempdir();
+        let path = dir.join("switch.bms");
+        std::fs::write(
+            &path,
+            "\
+#BPM 120
+#SETSWITCH 2
+#CASE 1
+#TITLE Hidden
+#00111:01
+#SKIP
+#CASE 2
+#TITLE Chosen
+#00112:02
+#SKIP
+#DEF
+#TITLE Default
+#00113:03
+#ENDSW
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.notes.len(), 1);
+        assert_eq!(chart.notes[0].keysound, Some(2));
+        assert_eq!(read_meta(&path).unwrap().title, "Chosen");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn switch_falls_through_default_until_endsw() {
+        let text = "\
+#SETSWITCH 2
+#CASE 2
+#TITLE Chosen
+#DEF
+#ARTIST Default
+#SKIP
+#CASE 3
+#BPM 150
+#ENDSW
+";
+        assert_eq!(
+            resolve_control_flow(text, 0),
+            "#TITLE Chosen\n#ARTIST Default\n#BPM 150\n"
+        );
+    }
+
+    #[test]
+    fn switch_random_choice_is_deterministic_and_in_range() {
+        let text = "\
+#SWITCH 3
+#CASE 1
+#TITLE A
+#SKIP
+#CASE 2
+#TITLE B
+#SKIP
+#CASE 3
+#TITLE C
+#SKIP
+#DEF
+#TITLE Invalid
+#ENDSW
+";
+        for seed in 0..32 {
+            let out = resolve_control_flow(text, seed);
+            assert_eq!(out, resolve_control_flow(text, seed));
+            assert!(["#TITLE A\n", "#TITLE B\n", "#TITLE C\n"].contains(&out.as_str()));
+        }
+    }
+
+    #[test]
+    fn switches_nest_with_random_and_if_in_both_directions() {
+        let text = "\
+#RANDOM 1
+#IF 1
+#SETSWITCH 2
+#CASE 1
+#SETSWITCH 1
+#CASE 1
+#TITLE Hidden switch
+#ENDSW
+#SETRANDOM 9
+#CASE 2
+#IF 9
+#TITLE Hidden random
+#ELSE
+#TITLE Chosen
+#ENDIF
+#IF 9
+#SKIP
+#ENDIF
+#SETSWITCH 1
+#CASE 1
+#ARTIST Nested
+#SKIP
+#DEF
+#ARTIST Hidden default
+#ENDSW
+#BPM 150
+#SKIP
+#CASE 3
+#TITLE Hidden case
+#ENDSW
+#ELSE
+#SETSWITCH 1
+#CASE 1
+#TITLE Hidden if
+#ENDSW
+#ENDIF
+#TITLE After
+";
+        assert_eq!(
+            resolve_control_flow(text, 0),
+            "#TITLE Chosen\n#ARTIST Nested\n#BPM 150\n#TITLE After\n"
+        );
+    }
+
+    #[test]
+    fn switch_directives_are_case_insensitive_and_ignore_invalid_ranges() {
+        let text = "\
+#switch 0
+#case 1
+#TITLE Invalid
+#def
+#TITLE Invalid default
+#endsw
+#setswitch 1
+#case 1
+#TITLE Chosen
+#skip
+#def
+#TITLE Hidden
+#endsw
+";
+        assert_eq!(resolve_control_flow(text, 0), "#TITLE Chosen\n");
+    }
+
+    #[test]
+    fn switch_branches_preserve_and_restore_random_scopes() {
+        let text = "\
+#SETRANDOM 2
+#SETSWITCH 1
+#CASE 2
+#RANDOM 3
+#ENDRANDOM
+#CASE 1
+#RANDOM 1
+#IF 1
+Inner
+#ENDIF
+#ENDRANDOM
+#IF 2
+Outer
+#ENDIF
+#SKIP
+#CASE 3
+#ENDRANDOM
+#ENDSW
+#IF 2
+After
+#ENDIF
+#ENDRANDOM
+";
+        assert_eq!(resolve_control_flow(text, 0), "Inner\nOuter\nAfter\n");
+    }
+
+    #[test]
+    fn resolve_control_flow_restores_outer_random_after_nested_scope() {
+        let text = "\
+#RANDOM 2
+#IF 1
+#RANDOM 3
+#IF 1
+Inner
+#ELSEIF 2
+Inner
+#ELSE
+Inner
+#ENDIF
+#ENDRANDOM
+#ENDIF
+#IF 2
+Outer two
+#ELSEIF 1
+Outer one
+#ENDIF
+";
+        (0u64..64).for_each(|seed| {
+            let mut rng = seed.wrapping_add(0x9E3779B97F4A7C15);
+            let expected = match xorshift_pick(&mut rng, 2) {
+                1 => "Inner\nOuter one\n",
+                _ => "Outer two\n",
+            };
+            assert_eq!(resolve_control_flow(text, seed), expected, "seed {seed}");
+        });
+    }
+
+    #[test]
+    fn resolve_control_flow_ignores_random_scopes_in_skipped_branches() {
+        let text = "\
+#RANDOM 1
+#IF 2
+#RANDOM 3
+#SETRANDOM 2
+#ENDRANDOM
+#ENDRANDOM
+#ENDIF
+#IF 1
+Outer
+#ENDIF
+#ENDRANDOM
+";
+        assert_eq!(resolve_control_flow(text, 0), "Outer\n");
+    }
+
+    #[test]
+    fn resolve_control_flow_keeps_latest_pick_without_endrandom() {
+        let text = "\
+#RANDOM 1
+#IF 1
+#SETRANDOM 2
+#ENDIF
+#IF 2
+Latest
+#ENDIF
+#RANDOM 1
+#IF 1
+Next
+#ENDIF
+";
+        assert_eq!(resolve_control_flow(text, 0), "Latest\nNext\n");
+    }
+
+    #[test]
+    fn resolve_control_flow_endrandom_restores_setrandom_and_clears_last_pick() {
+        let text = "\
+#SETRANDOM 2
+#RANDOM 1
+#IF 1
+Inner
+#ENDIF
+#ENDRANDOM
+#IF 2
+Outer
+#ENDIF
+#ENDRANDOM
+#ENDRANDOM
+#IF 2
+Unexpected
+#ENDIF
+Always
+";
+        assert_eq!(resolve_control_flow(text, 0), "Inner\nOuter\nAlways\n");
     }
 
     #[test]
@@ -1806,6 +2716,39 @@ mod tests {
     }
 
     #[test]
+    fn header_pass_absorbs_exbpm_definitions_as_bpm_aliases() {
+        let mut p = HeaderPass::default();
+        p.absorb("EXBPM01 180");
+        p.absorb("exbpmZZ 60");
+        p.absorb("EXBPM02 -20");
+        p.absorb("EXBPM03 invalid");
+        p.absorb("EXBPM 240");
+        assert_eq!(p.bpm_defs.get(&1), Some(&180.0));
+        assert_eq!(p.bpm_defs.get(&1295), Some(&60.0));
+        assert_eq!(p.bpm_defs.len(), 2);
+        assert_eq!(p.bpm, 130.0);
+        p.absorb("BPM01 150");
+        assert_eq!(p.bpm_defs.get(&1), Some(&150.0));
+        p.absorb("EXBPM01 180");
+        assert_eq!(p.bpm_defs.get(&1), Some(&180.0));
+    }
+
+    #[test]
+    fn load_honors_a_channel_08_exbpm_change_mid_song() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "#BPM 120\n#EXBPM01 180\n#00108:01\n#00111:01\n#00211:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.notes.len(), 2);
+        assert!((chart.notes[0].time_ms - 2000.0).abs() < 1e-6);
+        assert!((chart.notes[1].time_ms - (2000.0 + 4.0 * 60_000.0 / 180.0)).abs() < 1e-6);
+    }
+
+    #[test]
     fn load_honors_a_channel_08_bpm_change_mid_song() {
         let dir = tempdir();
         let path = dir.join("song.bms");
@@ -1956,11 +2899,138 @@ mod tests {
     }
 
     #[test]
+    fn load_resolves_windows_paths_and_case_insensitive_assets() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("sub/nested")).unwrap();
+        [
+            "sub/kick.wav",
+            "sub/nested/Snare.OGG",
+            "Cover.PNG",
+            "sub/Background.JPG",
+        ]
+        .iter()
+        .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        let chart_path = dir.join("chart.bms");
+        std::fs::write(
+            &chart_path,
+            "#BPM 120\n#WAV01 SUB\\KICK.WAV\n#WAV02 SUB\\NESTED\\SNARE.WAV\n\
+             #BMP01 cover.png\n#BMP02 SUB\\BACKGROUND.BMP\n#00111:0102\n",
+        )
+        .unwrap();
+        let chart = load(&chart_path, 0.0).unwrap();
+        assert_eq!(chart.wav_paths.get(&1), Some(&dir.join("sub/kick.wav")));
+        assert_eq!(
+            chart.wav_paths.get(&2),
+            Some(&dir.join("sub/nested/Snare.OGG"))
+        );
+        assert_eq!(chart.bmp_paths.get(&1), Some(&dir.join("Cover.PNG")));
+        assert_eq!(
+            chart.bmp_paths.get(&2),
+            Some(&dir.join("sub/Background.JPG"))
+        );
+    }
+
+    #[test]
+    fn load_pms_resolves_windows_assets_and_preserves_ninth_lane() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("assets/Kick.OGG"), b"").unwrap();
+        std::fs::write(dir.join("assets/Cover.PNG"), b"").unwrap();
+        let path = dir.join("chart.pms");
+        std::fs::write(
+            &path,
+            "#BPM 120\n#WAV01 ASSETS\\KICK.WAV\n#BMP01 ASSETS\\COVER.BMP\n#00125:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.lane_count, 9);
+        assert_eq!(chart.notes.len(), 1);
+        assert_eq!(chart.notes[0].lane, 8);
+        assert_eq!(chart.notes[0].keysound, Some(1));
+        assert_eq!(chart.wav_paths.get(&1), Some(&dir.join("assets/Kick.OGG")));
+        assert_eq!(chart.bmp_paths.get(&1), Some(&dir.join("assets/Cover.PNG")));
+    }
+
+    #[test]
+    fn resolve_assets_normalizes_leading_current_directory_components() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        [
+            "kick.wav",
+            "Cover.PNG",
+            "sub/Snare.OGG",
+            "sub/Background.JPG",
+        ]
+        .iter()
+        .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        let assets = AssetIndex::new(&dir);
+        ["./", ".\\", "././", ".\\.\\"].iter().for_each(|prefix| {
+            let wavs = [
+                (1, format!("{prefix}kick.wav")),
+                (2, format!("{prefix}SUB\\SNARE.WAV")),
+            ]
+            .into();
+            let bmps = [
+                (1, format!("{prefix}cover.png")),
+                (2, format!("{prefix}SUB\\BACKGROUND.BMP")),
+            ]
+            .into();
+            let wav_paths = resolve_wavs(&assets, &wavs);
+            let bmp_paths = resolve_bmp_paths(&assets, &bmps);
+            assert_eq!(wav_paths.get(&1), Some(&dir.join("kick.wav")));
+            assert_eq!(wav_paths.get(&2), Some(&dir.join("sub/Snare.OGG")));
+            assert_eq!(bmp_paths.get(&1), Some(&dir.join("Cover.PNG")));
+            assert_eq!(bmp_paths.get(&2), Some(&dir.join("sub/Background.JPG")));
+        });
+    }
+
+    #[test]
+    fn resolve_assets_prefers_requested_extension_over_fallback() {
+        let dir = tempdir();
+        ["Kick.WAV", "kick.ogg", "Cover.BMP", "cover.png"]
+            .iter()
+            .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        let assets = AssetIndex::new(&dir);
+        let wavs = [(1, "kick.wav".to_string())].into();
+        let bmps = [(1, "cover.bmp".to_string())].into();
+        assert_eq!(
+            resolve_wavs(&assets, &wavs).get(&1),
+            Some(&dir.join("Kick.WAV"))
+        );
+        assert_eq!(
+            resolve_bmp_paths(&assets, &bmps).get(&1),
+            Some(&dir.join("Cover.BMP"))
+        );
+    }
+
+    #[test]
+    fn resolve_assets_prefers_exact_case_when_names_collide() {
+        let dir = tempdir();
+        std::fs::write(dir.join("Kick.wav"), b"").unwrap();
+        if dir.join("kick.wav").exists() {
+            return;
+        }
+        std::fs::write(dir.join("kick.wav"), b"").unwrap();
+        let defs = [(1, "kick.wav".to_string()), (2, "KICK.WAV".to_string())].into();
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
+        assert_eq!(out.get(&1), Some(&dir.join("kick.wav")));
+        assert_eq!(out.get(&2), Some(&dir.join("Kick.wav")));
+    }
+
+    #[test]
+    fn resolve_bmp_paths_does_not_fall_back_to_chart_directory() {
+        let dir = tempdir();
+        std::fs::write(dir.join("cover.jpg"), b"").unwrap();
+        let defs = [(1, "sub/cover.bmp".to_string())].into();
+        assert!(resolve_bmp_paths(&AssetIndex::new(&dir), &defs).is_empty());
+    }
+
+    #[test]
     fn resolve_wavs_returns_direct_match_when_file_exists() {
         let dir = tempdir();
         std::fs::write(dir.join("kick.wav"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("kick.wav"));
     }
 
@@ -1969,7 +3039,7 @@ mod tests {
         let dir = tempdir();
         std::fs::write(dir.join("kick.ogg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("kick.ogg"));
     }
 
@@ -1977,7 +3047,7 @@ mod tests {
     fn resolve_wavs_drops_entries_with_no_matching_file() {
         let dir = tempdir();
         let defs: HashMap<u32, String> = [(1u32, "missing.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert!(out.is_empty());
     }
 
@@ -1988,7 +3058,7 @@ mod tests {
         std::fs::write(dir.join("audio/kick.ogg"), b"").unwrap();
         std::fs::write(dir.join("kick.ogg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "audio/kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("audio/kick.ogg"));
     }
 
@@ -1997,7 +3067,7 @@ mod tests {
         let dir = tempdir();
         std::fs::write(dir.join("kick.ogg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "audio/kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert!(out.is_empty());
     }
 

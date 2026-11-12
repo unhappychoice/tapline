@@ -377,6 +377,8 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
         )?;
     }
 
+    crate::bga::draw(out, game, now_ms, x0, top, bottom - top)?;
+
     for lane in 0..lanes {
         let lx = x0 + 1 + lane * LANE_WIDTH;
         for r in top..bottom {

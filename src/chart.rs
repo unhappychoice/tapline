@@ -14,6 +14,13 @@ pub struct Note {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct InvisibleNote {
+    pub time_ms: f64,
+    pub lane: usize,
+    pub keysound: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct BgmEvent {
     pub time_ms: f64,
     pub keysound: u32,
@@ -55,6 +62,26 @@ pub enum LnMode {
     Hcn,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeTarget {
+    Bgm,
+    Key,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct VolumeEvent {
+    pub time_ms: f64,
+    pub target: VolumeTarget,
+    /// Linear volume, 1..=255; 255 is the original volume.
+    pub volume: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SampleSlice {
+    pub start_ms: f64,
+    pub duration_ms: Option<f64>,
+}
+
 pub struct Chart {
     pub title: String,
     pub subtitle: String,
@@ -71,9 +98,12 @@ pub struct Chart {
     pub total: Option<f64>,
     pub vol_wav: Option<u8>,
     pub ln_mode: LnMode,
+    pub volume_events: Vec<VolumeEvent>,
     pub notes: Vec<Note>,
+    pub invisible_notes: Vec<InvisibleNote>,
     pub mines: Vec<Mine>,
     pub p2_notes: Vec<Note>,
+    pub p2_invisible_notes: Vec<InvisibleNote>,
     pub p2_mines: Vec<Mine>,
     pub bgm: Vec<BgmEvent>,
     pub bga: Vec<BgaEvent>,
@@ -81,6 +111,8 @@ pub struct Chart {
     pub duration_ms: f64,
     pub lane_count: usize,
     pub keys: Vec<Vec<char>>,
+    pub sound_layers: std::collections::HashMap<u32, Vec<u32>>,
+    pub sample_slices: std::collections::HashMap<u32, SampleSlice>,
     pub wav_paths: std::collections::HashMap<u32, PathBuf>,
 }
 
@@ -102,9 +134,12 @@ impl Default for Chart {
             total: None,
             vol_wav: None,
             ln_mode: LnMode::default(),
+            volume_events: Vec::new(),
             notes: Vec::new(),
+            invisible_notes: Vec::new(),
             mines: Vec::new(),
             p2_notes: Vec::new(),
+            p2_invisible_notes: Vec::new(),
             p2_mines: Vec::new(),
             bgm: Vec::new(),
             bga: Vec::new(),
@@ -112,6 +147,8 @@ impl Default for Chart {
             duration_ms: 0.0,
             lane_count: 4,
             keys: keys_for(4),
+            sound_layers: std::collections::HashMap::new(),
+            sample_slices: std::collections::HashMap::new(),
             wav_paths: std::collections::HashMap::new(),
         }
     }
@@ -132,6 +169,17 @@ pub fn keys_for(lane_count: usize) -> Vec<Vec<char>> {
     let raw: &[&[char]] = match lane_count {
         5 => &[&['S'], &['D'], &['F', 'J'], &['K'], &['L']],
         7 => &[&['S'], &['D'], &['F'], &[' '], &['J'], &['K'], &['L']],
+        9 => &[
+            &['A'],
+            &['S'],
+            &['D'],
+            &['F'],
+            &[' '],
+            &['J'],
+            &['K'],
+            &['L'],
+            &[';'],
+        ],
         // Double-play 14K: P1 hands on the home-row style layout,
         // P2 hands on the row below.
         14 => &[
@@ -263,6 +311,15 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_for_9k_binds_each_button_to_a_unique_key() {
+        let keys = keys_for(9);
+        assert_eq!(
+            keys,
+            "ASDF JKL;".chars().map(|key| vec![key]).collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn keys_for_4k_is_dj_max_outer_2_plus_2() {
