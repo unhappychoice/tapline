@@ -1,5 +1,7 @@
 pub mod audio;
+pub mod bga;
 pub mod bms;
+pub mod bmson;
 pub mod chart;
 pub mod cli;
 pub mod game;
