@@ -1,4 +1,4 @@
-use crate::chart::{difficulty_label, BgaEvent, BgaLayer};
+use crate::chart::{difficulty_label, BgaEvent, BgaLayer, TextEvent};
 use crate::game::{Game, Judgment};
 use crossterm::{
     cursor, queue,
@@ -350,6 +350,39 @@ fn format_difficulty_badge(game: &Game) -> String {
     parts.join("  ·  ")
 }
 
+fn song_text_at(events: &[TextEvent], now_ms: f64) -> Option<String> {
+    events
+        .iter()
+        .rev()
+        .find(|event| event.time_ms <= now_ms)
+        .map(|event| crate::terminal_text::sanitize(&event.text))
+}
+
+fn draw_song_text(
+    out: &mut impl Write,
+    events: &[TextEvent],
+    now_ms: f64,
+    cols: u16,
+) -> anyhow::Result<()> {
+    queue!(
+        out,
+        cursor::MoveTo(0, 0),
+        terminal::Clear(terminal::ClearType::CurrentLine)
+    )?;
+    if let Some(text) = song_text_at(events, now_ms) {
+        let mut width = 0;
+        let visible: String = text
+            .chars()
+            .take_while(|c| {
+                width += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+                width <= usize::from(cols)
+            })
+            .collect();
+        queue!(out, Print(visible))?;
+    }
+    Ok(())
+}
+
 fn format_gauge(game: &Game) -> String {
     format_gauge_status(game, game.gauge.is_clear())
 }
@@ -387,6 +420,8 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     } = layout;
 
     queue!(out, terminal::BeginSynchronizedUpdate)?;
+
+    draw_song_text(out, &game.chart.text_events, now_ms, cols)?;
 
     let title = format_title_line(&game.chart.title, &game.chart.subtitle);
     queue!(
@@ -768,6 +803,85 @@ mod tests {
             keys: keys_for(lane_count),
             ..Chart::default()
         }
+    }
+
+    #[test]
+    fn song_text_switches_at_event_times_and_can_be_cleared() {
+        let events = vec![
+            TextEvent {
+                time_ms: 100.0,
+                text: "First".into(),
+            },
+            TextEvent {
+                time_ms: 200.0,
+                text: "Second".into(),
+            },
+            TextEvent {
+                time_ms: 300.0,
+                text: String::new(),
+            },
+        ];
+        assert_eq!(song_text_at(&[], 0.0), None);
+        assert_eq!(song_text_at(&events, 99.0), None);
+        assert_eq!(song_text_at(&events, 100.0).as_deref(), Some("First"));
+        assert_eq!(song_text_at(&events, 199.0).as_deref(), Some("First"));
+        assert_eq!(song_text_at(&events, 200.0).as_deref(), Some("Second"));
+        assert_eq!(song_text_at(&events, 400.0).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn song_text_hud_clips_wide_text_and_handles_narrow_terminals() {
+        let events = vec![TextEvent {
+            time_ms: 0.0,
+            text: "日本語の歌詞".into(),
+        }];
+        let mut out = Vec::new();
+        draw_song_text(&mut out, &events, 0.0, 7).unwrap();
+        assert!(String::from_utf8(out).unwrap().ends_with("日本語"));
+        let mut narrow = Vec::new();
+        draw_song_text(&mut narrow, &events, 0.0, 1).unwrap();
+        assert!(!String::from_utf8(narrow).unwrap().contains('日'));
+    }
+
+    #[test]
+    fn song_text_hud_uses_all_available_columns() {
+        [
+            ("Hello", 5, "Hello"),
+            ("日本語", 6, "日本語"),
+            ("a日本", 4, "a日"),
+            ("e\u{301}x", 1, "e\u{301}"),
+            ("x", 1, "x"),
+            ("x", 0, ""),
+        ]
+        .into_iter()
+        .for_each(|(text, cols, expected)| {
+            let events = [TextEvent {
+                time_ms: 0.0,
+                text: text.into(),
+            }];
+            let mut out = Vec::new();
+            draw_song_text(&mut out, &events, 0.0, cols).unwrap();
+            assert_eq!(
+                String::from_utf8(out).unwrap(),
+                format!("\x1b[1;1H\x1b[2K{expected}")
+            );
+        });
+    }
+
+    #[test]
+    fn song_text_hud_writes_only_due_sanitized_text_and_clears_previous_content() {
+        let events = vec![TextEvent {
+            time_ms: 100.0,
+            text: "Hello\x1b\x07".into(),
+        }];
+        let mut out = Vec::new();
+        draw_song_text(&mut out, &events, 99.0, 80).unwrap();
+        assert!(!String::from_utf8(out.clone()).unwrap().contains("Hello"));
+        out.clear();
+        draw_song_text(&mut out, &events, 100.0, 80).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+        assert!(rendered.contains("\x1b[2K"));
+        assert!(rendered.ends_with("Hello"));
     }
 
     #[test]
