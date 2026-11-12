@@ -1,3 +1,4 @@
+use crate::chart::VolumeTarget;
 use crate::{audio, chart, cli::Args, game, render};
 use anyhow::Result;
 use crossterm::{
@@ -26,13 +27,16 @@ impl PlayOptions {
     }
 }
 
-pub fn play_chart(out: &mut Stdout, args: &Args, chart: chart::Chart) -> Result<()> {
+pub fn play_chart(out: &mut Stdout, args: &Args, mut chart: chart::Chart) -> Result<()> {
     let opts = PlayOptions::from_args(args);
     let bank = if args.no_audio {
         audio::SampleBank::silent()
     } else {
         audio::SampleBank::new(&chart.wav_paths)
+            .with_slices(&chart.sample_slices)
+            .with_layers(&chart.sound_layers)
     };
+    chart.duration_ms = bank.chart_duration_ms(&chart, opts.auto_ks);
     let mut game = game::Game::new(chart);
     execute!(out, terminal::Clear(terminal::ClearType::All))?;
     run_game(out, &mut game, &bank, &opts)?;
@@ -139,14 +143,17 @@ fn fire_scheduled_audio(
     while state.bgm_cursor < game.chart.bgm.len()
         && game.chart.bgm[state.bgm_cursor].time_ms <= horizon
     {
-        bank.play(game.chart.bgm[state.bgm_cursor].keysound);
+        let event = &game.chart.bgm[state.bgm_cursor];
+        let gain = audio::playback_gain(&game.chart, VolumeTarget::Bgm, event.time_ms);
+        bank.play_with_gain(event.keysound, gain);
         state.bgm_cursor += 1;
     }
     while state.note_snd_cursor < state.auto_notes.len()
         && state.auto_notes[state.note_snd_cursor].0 <= horizon
     {
-        let (_, lane, ks) = state.auto_notes[state.note_snd_cursor];
-        bank.play_hit(lane, ks, opts.synth_mode);
+        let (time_ms, lane, ks) = state.auto_notes[state.note_snd_cursor];
+        let gain = audio::playback_gain(&game.chart, VolumeTarget::Key, time_ms);
+        bank.play_hit_with_gain(lane, ks, opts.synth_mode, gain);
         state.note_snd_cursor += 1;
     }
 }
@@ -168,7 +175,11 @@ fn pump_input(
         if !event::poll(next_frame - inst)? {
             return Ok(());
         }
-        let Event::Key(k) = event::read()? else {
+        let input = event::read()?;
+        if matches!(input, Event::Resize(..)) {
+            execute!(out, terminal::Clear(terminal::ClearType::All))?;
+        }
+        let Event::Key(k) = input else {
             continue;
         };
         if k.kind == KeyEventKind::Repeat {
@@ -207,7 +218,8 @@ fn handle_key(
                     state.pressed_keys.insert(c.to_ascii_uppercase());
                     let ks = game.hit(lane, now);
                     if !opts.auto_ks {
-                        bank.play_hit(lane, ks, opts.synth_mode);
+                        let gain = audio::playback_gain(&game.chart, VolumeTarget::Key, now);
+                        bank.play_hit_with_gain(lane, ks, opts.synth_mode, gain);
                     }
                 }
                 KeyEventKind::Release
