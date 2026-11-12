@@ -153,3 +153,30 @@ fn base36_exrank_references_are_case_insensitive() {
     assert_eq!(c.judgment_scale(500.0), 0.5);
     assert_eq!(c.judgment_scale(1500.0), 2.0);
 }
+
+#[test]
+fn widened_windows_include_early_and_late_hit_candidates() {
+    for offset in [-280.0, 280.0] {
+        let mut game = Game::new(chart("#DEFEXRANK 200", "#00011:01"));
+        game.hit(0, 500.0 + offset);
+        assert_eq!(game.good, 1);
+    }
+}
+
+#[test]
+fn narrowed_windows_can_expire_later_notes_before_earlier_notes() {
+    let mut game = Game::new(chart(
+        "#DEFEXRANK 200\n#EXRANK01 50",
+        "#00011:01010000000000000000000000000000\n#000A0:00010000000000000000000000000000",
+    ));
+    let later = game.chart.notes[1].time_ms;
+    game.check_misses(later + 80.0);
+    assert_eq!(game.miss, 0);
+    game.check_misses(later + 80.1);
+    assert!(!game.chart.notes[0].hit);
+    assert!(game.chart.notes[1].hit);
+    assert_eq!(game.miss, 1);
+    assert_eq!(game.visible_notes(later + 80.1, 1000.0).count(), 1);
+    game.check_misses(820.1);
+    assert_eq!(game.miss, 2);
+}
