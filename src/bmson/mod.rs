@@ -93,6 +93,7 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
     Ok(ChartMeta {
         path: path.into(),
         random_seed: 0,
+        preview: None,
         title: c.title,
         subtitle: c.subtitle,
         artist: c.artist,

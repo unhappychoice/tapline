@@ -10,6 +10,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub(crate) fn preview_output(enabled: bool) -> Option<(OutputStream, OutputStreamHandle)> {
+    enabled
+        .then(|| silence_stderr(OutputStream::try_default))
+        .and_then(Result::ok)
+}
+
 pub fn playback_gain(chart: &Chart, target: VolumeTarget, time_ms: f64) -> f32 {
     let volume = chart
         .volume_events
