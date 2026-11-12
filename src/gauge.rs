@@ -43,13 +43,11 @@ impl Gauge {
                 Judgment::Miss => -6.0,
             },
         };
-        let adjusted = delta - self.compensation;
-        let next = self.value + adjusted;
-        self.compensation = (next - self.value) - adjusted;
-        self.value = next.clamp(0.0, 100.0);
-        if self.value != next {
-            self.compensation = 0.0;
-        }
+        self.adjust(delta);
+    }
+
+    pub fn apply_mine(&mut self, damage: u32) {
+        self.adjust(-f64::from(damage) / 2.0);
     }
 
     pub fn value(&self) -> f64 {
@@ -65,6 +63,15 @@ impl Gauge {
     pub fn label(&self) -> &'static str {
         match self.kind {
             GaugeKind::Normal => "NORMAL",
+        }
+    }
+    fn adjust(&mut self, delta: f64) {
+        let adjusted = delta - self.compensation;
+        let next = self.value + adjusted;
+        self.compensation = (next - self.value) - adjusted;
+        self.value = next.clamp(0.0, 100.0);
+        if self.value != next {
+            self.compensation = 0.0;
         }
     }
 }
@@ -167,6 +174,20 @@ mod tests {
         assert_eq!(g.value(), 0.0);
         (0..10).for_each(|_| g.apply(Judgment::Perfect));
         assert_eq!(g.value(), 100.0);
+    }
+
+    #[test]
+    fn mine_damage_scales_clamps_and_allows_recovery() {
+        let mut g = gauge(Some(80.0), 1);
+        g.apply(Judgment::Perfect);
+        g.apply_mine(1);
+        assert_eq!(g.value(), 99.5);
+        g.apply_mine(36);
+        assert_eq!(g.value(), 81.5);
+        g.apply_mine(1295);
+        assert_eq!(g.value(), 0.0);
+        g.apply(Judgment::Great);
+        assert_eq!(g.value(), 80.0);
     }
 
     #[test]

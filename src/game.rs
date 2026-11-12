@@ -115,7 +115,7 @@ impl Game {
             .iter()
             .map(|note| JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms)).good)
             .fold(0.0, f64::max);
-        let bga = crate::bga::ImageBank::load(&chart.bmp_paths);
+        let bga = crate::bga::ImageBank::load(&chart.bmp_paths, &chart.bga);
         let mut events = chart.notes.clone();
         events.extend(chart.invisible_notes.iter().map(|note| Note {
             time_ms: note.time_ms,
@@ -236,7 +236,8 @@ impl Game {
             .collect();
         for i in ids {
             self.chart.mines[i].exploded = true;
-            self.apply(Judgment::Miss, now_ms);
+            self.gauge.apply_mine(self.chart.mines[i].damage);
+            self.combo = 0;
         }
     }
 
@@ -323,11 +324,15 @@ impl Game {
 
     /// Charts must keep their notes in ascending time order throughout play.
     /// Include pending starts since the last miss check and older held LNs.
+    /// Scroll effects can bring any future note into view regardless of its timestamp.
     pub fn visible_notes(&self, now_ms: f64, approach_ms: f64) -> impl Iterator<Item = &Note> {
-        let end = self
-            .chart
-            .notes
-            .partition_point(|n| n.time_ms <= now_ms + approach_ms);
+        let end = if self.chart.scroll.is_empty() && self.chart.speed.is_empty() {
+            self.chart
+                .notes
+                .partition_point(|n| n.time_ms <= now_ms + approach_ms)
+        } else {
+            self.chart.notes.len()
+        };
         let start = self.next_miss.min(end);
         self.held_notes
             .iter()
@@ -903,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn pressing_a_lane_within_mine_window_detonates_the_mine_as_miss() {
+    fn pressing_a_lane_within_mine_window_applies_damage_without_a_miss() {
         let mines = vec![Mine {
             time_ms: 1000.0,
             lane: 0,
@@ -912,10 +917,10 @@ mod tests {
         }];
         let mut g = Game::new(chart_with_mines(mines, 4));
         g.hit(0, 1000.0);
-        assert_eq!(g.miss, 1, "mine detonation is scored as a Miss");
+        assert_eq!(g.miss, 0);
         assert!(g.chart.mines[0].exploded);
-        assert_eq!(g.gauge.value(), 14.0);
-        assert_eq!(g.flash.last_miss_at, Some(1000.0));
+        assert_eq!(g.gauge.value(), 0.0);
+        assert_eq!(g.flash.last_miss_at, None);
         assert_eq!(g.combo, 0);
     }
 
@@ -958,7 +963,8 @@ mod tests {
         let mut g = Game::new(chart_with_mines(mines, 4));
         g.hit(0, 1000.0);
         g.hit(0, 1010.0);
-        assert_eq!(g.miss, 1, "the same mine can only punish once");
+        assert_eq!(g.miss, 0);
+        assert_eq!(g.gauge.value(), 0.0);
     }
 
     #[test]

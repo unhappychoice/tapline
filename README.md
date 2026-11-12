@@ -105,8 +105,8 @@ case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BACKBMP`, `#COMMENT`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#DEFEXRANK`, `#EXRANKxx`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#EXWAVxx`, `#WAVCMD`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#BMPxx`, `#TEXTxx` / `#SONGxx`, `#LNOBJ`, `#LNTYPE` |
-| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `97`/`98` (BGM/keysound volume), `99` (song text), `A0` (judgment-width change), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
+| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BACKBMP`, `#COMMENT`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#DEFEXRANK`, `#EXRANKxx`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#EXWAVxx`, `#WAVCMD`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#SCROLLxx`, `#SPEEDxx`, `#BMPxx`, `#TEXTxx` / `#SONGxx`, `#LNOBJ`, `#LNTYPE` |
+| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `SC` (scroll factor), `SP` (spacing factor), `97`/`98` (BGM/keysound volume), `99` (song text), `A0` (judgment-width change), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`), 9K PMS (`.pms`: `11–15 + 22–25`); 10K, 14K, and asymmetric double-play (`#PLAYER 3` or playable P2 channels); scratch (`16` / `26`) adds a lane on each populated side |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
@@ -161,6 +161,13 @@ including repeated events for the same file. Playback holds the last frame at
 the end; video audio is ignored. Missing decoders and unsupported or corrupt
 videos are silently skipped. Sixel and Kitty graphics are not supported.
 
+Charts with `SC` events use accumulated scroll distance for note positions.
+`#SCROLLxx` changes the rate from its event onward (0.5 gives half speed,
+0 freezes scrolling, and negative values reverse it). `#SPEEDxx` / `SP`
+scales the entire visible spacing at the current time. Both default to 1;
+judgment and audio timing are unaffected. Positions outside the terminal
+playfield are clipped, including positions below the judgment line.
+
 Mode detection uses the extension, `#PLAYER`, and materialized note channels.
 `.bme` reserves seven keys per side even when channels `18`/`19` are unused;
 `.bms` and `.bml` infer seven keys from extended key channels, otherwise five.
@@ -187,12 +194,12 @@ the rank-dependent MISS delay. A long note whose start was never hit instead
 becomes a MISS after its start plus the same delay.
 
 Pressing a landmine's lane within ±40 ms of its timestamp detonates it once,
-adds a MISS, and resets the combo. Each matching mine is judged independently.
-The parsed `damage` value does not scale the penalty or subtract score.
-
-### Not yet supported (v1)
-
-- Landmine penalties proportional to the parsed `damage` value
+subtracts `damage / 2` percentage points from the gauge and resets the combo.
+Damage is case-insensitive base 36 (`01`–`ZZ`), regardless of `#BASE`; `00`
+means no mine. For example, `0A` subtracts 5 points and `10` subtracts 18.
+Each matching mine detonates independently and only once. Mines do not add
+MISS judgments or change score, accuracy, or judgment/BGA flashes. `ZZ` (1295)
+empties the gauge; it does not end play early, and later notes can recover it.
 
 ## bmson support
 
@@ -251,12 +258,12 @@ including rank-dependent misses and held long-note endings. Displayed percentage
 are truncated to one decimal place so values below 80% never display as 80.0%.
 
 PERFECT and GREAT recover `#TOTAL / note count` percentage points; GOOD
-recovers half that amount. Each MISS (including a mine detonation) subtracts
+recovers half that amount. Each MISS subtracts
 6 percentage points. Missing, non-finite, or non-positive `#TOTAL` defaults
 to 260. Long-note starts and ends each count as one note because both are
 judged separately; mines and background sounds do not count toward recovery.
-An empty chart has no recovery. Mine damage scaling and other gauge types
-are not implemented yet.
+An empty chart has no recovery. Mines subtract half their base-36 damage
+value in percentage points. Other gauge types are not implemented yet.
 
 ## Keys
 
