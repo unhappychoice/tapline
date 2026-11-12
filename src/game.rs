@@ -30,6 +30,7 @@ pub struct FlashState {
 pub struct Game {
     pub chart: Chart,
     pub gauge: Gauge,
+    pub completed: bool,
     pub bga: crate::bga::ImageBank,
     pub score: u32,
     pub combo: u32,
@@ -123,6 +124,7 @@ impl Game {
         });
         Self {
             gauge: Gauge::new(GaugeKind::Normal, &chart),
+            completed: false,
             next_miss: 0,
             lane_notes,
             held_notes: Vec::new(),
@@ -148,6 +150,15 @@ impl Game {
                 last_miss_at: None,
             },
         }
+    }
+
+    /// Finish only after the chart duration and all pending judgments have elapsed.
+    pub fn advance_completion(&mut self, now_ms: f64) -> bool {
+        self.check_misses(now_ms);
+        self.completed = now_ms >= self.chart.duration_ms
+            && self.next_miss == self.chart.notes.len()
+            && self.held_notes.is_empty();
+        self.completed
     }
 
     /// Judge the nearest unhit note in the lane within the inclusive hit window.

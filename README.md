@@ -215,6 +215,9 @@ Combo (up to +50) is added on top of every non-miss hit.
 The gauge starts at 20%, stays between 0% and 100%, and clears at 80% or
 higher when the chart ends. Reaching 0% does not end play early. The play HUD
 and result screen show the gauge and its current CLEAR / FAILED status.
+Quitting early always results in FAILED. Results wait for all pending judgments,
+including rank-dependent misses and held long-note endings. Displayed percentages
+are truncated to one decimal place so values below 80% never display as 80.0%.
 
 PERFECT and GREAT recover `#TOTAL / note count` percentage points; GOOD
 recovers half that amount. Each MISS (including a mine detonation) subtracts
