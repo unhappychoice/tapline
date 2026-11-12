@@ -29,6 +29,7 @@ pub struct FlashState {
 pub struct Game {
     pub chart: Chart,
     pub bga: crate::bga::ImageBank,
+    pub bga_switch: crate::bga::SwitchPlayback,
     pub score: u32,
     pub combo: u32,
     pub max_combo: u32,
@@ -90,7 +91,8 @@ impl JudgmentWindows {
 impl Game {
     pub fn new(chart: Chart) -> Self {
         let lane_count = chart.lane_count;
-        let bga = crate::bga::ImageBank::load(&chart.bmp_paths);
+        let mut bga = crate::bga::ImageBank::load(&chart.bmp_paths);
+        bga.prepare_crops(&chart);
         let mut events = chart.notes.clone();
         events.extend(chart.invisible_notes.iter().map(|note| Note {
             time_ms: note.time_ms,
@@ -110,6 +112,7 @@ impl Game {
             keysound_events: events.into_iter().peekable(),
             chart,
             bga,
+            bga_switch: Default::default(),
             score: 0,
             combo: 0,
             max_combo: 0,
@@ -130,6 +133,7 @@ impl Game {
         if lane >= self.flash.last_lane_hit.len() {
             return None;
         }
+        self.bga_switch.press(&self.chart, lane, now_ms);
         let windows = JudgmentWindows::for_rank(self.chart.rank);
         self.update_keysounds(now_ms);
         self.trigger_mines(lane, now_ms);
@@ -190,6 +194,13 @@ impl Game {
     /// Release the LN currently held on `lane`, judging against its end_ms.
     /// No-op if the lane isn't holding anything.
     pub fn release(&mut self, lane: usize, now_ms: f64) {
+        if self
+            .bga_switch
+            .active
+            .is_some_and(|(_, active, _)| active == lane)
+        {
+            self.bga_switch.held = false;
+        }
         if lane >= self.flash.last_lane_hit.len() {
             return;
         }

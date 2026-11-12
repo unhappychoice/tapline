@@ -44,6 +44,7 @@ pub enum BgaLayer {
     Poor,
     /// Channel 07 — the overlay image that composites on top of the base.
     Overlay,
+    Overlay2,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -98,6 +99,7 @@ pub struct Chart {
     pub p2_mines: Vec<Mine>,
     pub bgm: Vec<BgmEvent>,
     pub bga: Vec<BgaEvent>,
+    pub bga_extensions: crate::bga::Extensions,
     pub bmp_paths: std::collections::HashMap<u32, PathBuf>,
     pub duration_ms: f64,
     pub lane_count: usize,
@@ -133,6 +135,7 @@ impl Default for Chart {
             p2_mines: Vec::new(),
             bgm: Vec::new(),
             bga: Vec::new(),
+            bga_extensions: Default::default(),
             bmp_paths: std::collections::HashMap::new(),
             duration_ms: 0.0,
             lane_count: 4,

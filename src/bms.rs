@@ -1,3 +1,4 @@
+mod bga_extensions;
 use crate::chart::{
     keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, InvisibleNote, Mine, Note, VolumeEvent,
     VolumeTarget,
@@ -222,6 +223,7 @@ fn build_chart(
         p2_invisible_notes,
         bgm,
         bga,
+        bga_extensions: bga_extensions::collect(pass.bga_extensions, &raw, &timeline, pass.base),
         bmp_paths,
         duration_ms,
         lane_count,
@@ -556,11 +558,23 @@ fn materialize_mines_with(
     }
 }
 
+pub(crate) fn bga_switch_lane(channel: &str, lanes: usize) -> Option<usize> {
+    if lanes == 9 {
+        return (PMS_LANES.normal)(channel);
+    }
+    channel_to_lane(channel).or_else(|| {
+        (lanes == 14)
+            .then(|| p2_channel_to_lane(channel).map(|lane| lane + 7))
+            .flatten()
+    })
+}
+
 fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
     match ch {
         "04" => Some(BgaLayer::Base),
         "06" => Some(BgaLayer::Poor),
         "07" => Some(BgaLayer::Overlay),
+        "0A" => Some(BgaLayer::Overlay2),
         _ => None,
     }
 }
@@ -925,6 +939,7 @@ struct HeaderPass {
     bmp_defs: HashMap<u32, String>,
     lnobj: Option<u32>,
     lntype: u8,
+    bga_extensions: crate::bga::Extensions,
 }
 
 impl Default for HeaderPass {
@@ -951,6 +966,7 @@ impl Default for HeaderPass {
             bmp_defs: HashMap::new(),
             lnobj: None,
             lntype: 1,
+            bga_extensions: Default::default(),
         }
     }
 }
@@ -976,6 +992,9 @@ impl HeaderPass {
     fn absorb(&mut self, line: &str) {
         let (cmd, val) = split_cmd_value(line);
         let up = cmd.to_ascii_uppercase();
+        if bga_extensions::absorb(&mut self.bga_extensions, cmd, val, self.base) {
+            return;
+        }
         match up.as_str() {
             "TITLE" => self.title = val.to_string(),
             "SUBTITLE" => self.subtitle = val.to_string(),

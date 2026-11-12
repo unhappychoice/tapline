@@ -105,8 +105,8 @@ case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
-| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `97`/`98` (BGM/keysound volume), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
+| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE`, `#BGAxx`, `#SWBGAxx`, `#ARGBxx`, `#POORBGA` |
+| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `0A` (second BGA overlay), `0B–0E` (BGA opacity), `A1–A4` (BGA transparent color), `A5` (key-bound BGA), `09` (STOP), `97`/`98` (BGM/keysound volume), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, 9K PMS (`.pms`: `11–15 + 22–25`), plus 14K double-play when both sides fill 7 lanes each |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
@@ -134,7 +134,18 @@ judged, counted as notes, or played automatically.
 BMP, PNG, JPEG, and GIF still images are loaded before playback and drawn with
 true-color half-block characters to the left of the lanes when space permits.
 Channel `04` selects the base; `07` overlays it with pure black treated as
-transparent. Channel `06` replaces both for 500 ms after each MISS. Missing or
+transparent. Channel `0A` adds a second overlay. Channel `06` replaces the image for
+500 ms after each MISS; `#POORBGA 1` overlays it instead, and `#POORBGA 2`
+disables it. Channels `0B`–`0E` set base/overlay/overlay-2/poor opacity using
+hexadecimal values (`00` leaves the current value unchanged). `#ARGBxx a,r,g,b`
+and channels `A1`–`A4` select each layer's transparent color.
+
+`#BGAxx image x1 y1 x2 y2 dx dy` crops the original bitmap and places it on
+a 256×256 canvas before terminal scaling. `#SWBGAxx` definitions activated by
+channel `A5` play on the corresponding playable lane's key press, above the
+normal BGA. Frame timing, finite or held duration, looping, transparent color,
+and image `00` are supported. The latest matching press replaces the animation;
+scratch inputs without a playable lane are unavailable. Missing or
 undecodable images are skipped. Narrow terminals hide BGA without moving the
 lanes. Animated images use their first frame; video, Sixel, and Kitty graphics
 are not supported.
