@@ -186,6 +186,7 @@ fn overflowing_timing_is_rejected_before_creating_notes() {
         "#EXBPM01 1e-308\n#00108:01\n#00111:0101\n",
         "#STOP01 inf\n#00109:01\n#00111:0101\n",
         "#STOP01 1e308\n#00109:01\n#00111:0101\n",
+        "#BPM 120\n#00111:01\n#STP 010.000 1e308\n#STP 010.500 1e308\n",
     ] {
         let path = write_text(text);
         assert!(bms::load(&path, 0.0).is_err(), "{text}");
@@ -474,4 +475,26 @@ fn lntype_two_duplicate_slots_preserve_the_last_keysound() {
     assert_eq!(chart.notes[0].keysound, Some(2));
     assert_eq!(chart.notes[0].time_ms, 4000.0);
     assert_eq!(chart.notes[0].end_ms, Some(6000.0));
+}
+
+#[test]
+fn lntype_two_endpoints_include_millisecond_stops() {
+    let path = write_text("#BPM 60\n#LNTYPE 2\n#STP 001.500 750\n#00151:01020300\n");
+    let chart = bms::load(&path, 250.0).unwrap();
+    assert_eq!(chart.notes.len(), 1);
+    assert_eq!(chart.notes[0].time_ms, 4250.0);
+    assert_eq!(chart.notes[0].end_ms, Some(8000.0));
+    assert_eq!(chart.notes[0].keysound, Some(1));
+}
+
+#[test]
+fn volume_events_follow_millisecond_stops() {
+    let path = write_text("#BPM 120\n#STP 001.500 750\n#00197:400080FF\n#00198:0080\n");
+    let chart = bms::load(&path, 100.0).unwrap();
+    let times: Vec<_> = chart
+        .volume_events
+        .iter()
+        .map(|event| event.time_ms)
+        .collect();
+    assert_eq!(times, vec![2100.0, 3850.0, 3850.0, 4350.0]);
 }
