@@ -139,30 +139,40 @@ impl SampleBank {
         }
     }
 
-    pub fn chart_duration_ms(&self, chart: &crate::chart::Chart, auto_ks: bool) -> f64 {
+    pub fn chart_duration_ms(
+        &self,
+        chart: &crate::chart::Chart,
+        auto_ks: bool,
+        audio_lead_ms: f64,
+    ) -> f64 {
         if !self.enabled {
             return chart.duration_ms;
         }
         let notes = chart.notes.iter().map(|note| {
-            let delay = if auto_ks {
-                0.0
+            let time = if auto_ks {
+                (note.time_ms - audio_lead_ms).max(0.0)
             } else {
-                crate::game::JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms)).good
+                note.time_ms
+                    + crate::game::JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms))
+                        .good
             };
-            (note.time_ms + delay, note.keysound)
+            (time, note.keysound)
         });
-        let bgm = chart
-            .bgm
-            .iter()
-            .map(|event| (event.time_ms, Some(event.keysound)));
+        let bgm = chart.bgm.iter().map(|event| {
+            (
+                (event.time_ms - audio_lead_ms).max(0.0),
+                Some(event.keysound),
+            )
+        });
         let audio_end = notes
             .chain(bgm)
             .map(|(time, id)| {
+                let fallback_end = chart.duration_ms.max(time + 80.0 + 32.0);
                 id.and_then(|id| {
                     self.sound_ids(&id)
                         .iter()
                         .map(|id| {
-                            self.samples.get(id).map_or(chart.duration_ms, |sample| {
+                            self.samples.get(id).map_or(fallback_end, |sample| {
                                 let source = sample_source(sample, self.slices.get(id));
                                 time + source.end.saturating_sub(source.pos) as f64 * 1000.0
                                     / source.channels as f64
@@ -172,7 +182,7 @@ impl SampleBank {
                         })
                         .reduce(f64::max)
                 })
-                .unwrap_or(chart.duration_ms)
+                .unwrap_or(fallback_end)
             })
             .reduce(f64::max);
         let judgment_end = chart
@@ -530,7 +540,7 @@ mod tests {
         let mut bank = bank_for_bmson(&chart);
         [false, true].into_iter().for_each(|auto_ks| {
             assert_eq!(
-                bank.chart_duration_ms(&chart, auto_ks),
+                bank.chart_duration_ms(&chart, auto_ks, 0.0),
                 10032.0 + if auto_ks { 0.0 } else { 140.0 }
             );
         });
@@ -538,14 +548,14 @@ mod tests {
         bank.samples.get_mut(&short_id).unwrap().data = Arc::new(vec![0.0; 16000]);
         [false, true].into_iter().for_each(|auto_ks| {
             assert_eq!(
-                bank.chart_duration_ms(&chart, auto_ks),
+                bank.chart_duration_ms(&chart, auto_ks, 0.0),
                 10032.0 + if auto_ks { 0.0 } else { 140.0 }
             );
         });
         bank.samples.remove(&short_id);
-        assert_eq!(bank.chart_duration_ms(&chart, true), 10032.0);
+        assert_eq!(bank.chart_duration_ms(&chart, true, 0.0), 10032.0);
         bank.samples.clear();
-        assert_eq!(bank.chart_duration_ms(&chart, true), chart.duration_ms);
+        assert_eq!(bank.chart_duration_ms(&chart, true, 0.0), chart.duration_ms);
     }
 
     #[test]
@@ -560,7 +570,10 @@ mod tests {
             let bank = bank_for_bmson(&chart);
             [false, true].into_iter().for_each(|auto_ks| {
                 let delay = if auto_ks || lane == 0 { 0.0 } else { 140.0 };
-                assert_eq!(bank.chart_duration_ms(&chart, auto_ks), 10032.0 + delay);
+                assert_eq!(
+                    bank.chart_duration_ms(&chart, auto_ks, 0.0),
+                    10032.0 + delay
+                );
             });
         });
     }
@@ -585,7 +598,7 @@ mod tests {
                     duration_ms,
                 },
             );
-            assert_eq!(bank.chart_duration_ms(&chart, true), expected);
+            assert_eq!(bank.chart_duration_ms(&chart, true, 0.0), expected);
         });
     }
 
@@ -598,9 +611,9 @@ mod tests {
         let mut chart = crate::bms::load(&path, 0.0).unwrap();
         std::fs::remove_file(path).unwrap();
         assert!(chart.duration_ms > 14032.0);
-        assert_eq!(bank.chart_duration_ms(&chart, false), 14032.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, 0.0), 14032.0);
         chart.duration_ms = 60000.0;
-        assert_eq!(bank.chart_duration_ms(&chart, false), 14032.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, 0.0), 14032.0);
     }
 
     #[test]
@@ -646,7 +659,7 @@ mod tests {
                     bank.enabled = enabled;
                     for auto_ks in [false, true] {
                         chart.duration_ms = loaded_duration;
-                        chart.duration_ms = bank.chart_duration_ms(&chart, auto_ks);
+                        chart.duration_ms = bank.chart_duration_ms(&chart, auto_ks, 0.0);
                         assert!(chart.bga[0].time_ms + 16.0 < chart.duration_ms);
                         assert_eq!(
                             chart.duration_ms,
@@ -677,8 +690,8 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(bank.chart_duration_ms(&chart, false), 22500.0);
-        assert_eq!(bank.chart_duration_ms(&chart, true), 22500.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, 0.0), 22500.0);
+        assert_eq!(bank.chart_duration_ms(&chart, true, 0.0), 22500.0);
     }
 
     #[test]
@@ -697,20 +710,20 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(bank.chart_duration_ms(&chart, false), 14172.0);
-        assert_eq!(bank.chart_duration_ms(&chart, true), 14032.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, 0.0), 14172.0);
+        assert_eq!(bank.chart_duration_ms(&chart, true, 0.0), 14032.0);
         chart.notes[0].end_ms = Some(20000.0);
-        assert_eq!(bank.chart_duration_ms(&chart, true), 20192.0);
+        assert_eq!(bank.chart_duration_ms(&chart, true, 0.0), 20192.0);
         chart.mines.push(crate::chart::Mine {
             time_ms: 25000.0,
             ..Default::default()
         });
-        assert_eq!(bank.chart_duration_ms(&chart, true), 25072.0);
+        assert_eq!(bank.chart_duration_ms(&chart, true, 0.0), 25072.0);
         chart.notes[0].time_ms = 0.0;
         chart.notes[0].end_ms = None;
         chart.mines.clear();
         chart.bgm[0].time_ms = 1000.0;
-        assert_eq!(bank.chart_duration_ms(&chart, true), 11032.0);
+        assert_eq!(bank.chart_duration_ms(&chart, true, 0.0), 11032.0);
         bank.samples.insert(
             2,
             DecodedSample {
@@ -721,7 +734,95 @@ mod tests {
         );
         chart.notes[0].time_ms = 9000.0;
         chart.notes[0].keysound = Some(2);
-        assert_eq!(bank.chart_duration_ms(&chart, true), 11032.0);
+        assert_eq!(bank.chart_duration_ms(&chart, true, 0.0), 11032.0);
+    }
+
+    #[test]
+    fn duration_uses_scheduled_bgm_and_auto_keysound_start_times() {
+        let bank = duration_bank_with_length(1000);
+        [false, true].into_iter().for_each(|auto_ks| {
+            [-5000.0, -80.0, 0.0, 80.0, 5000.0]
+                .into_iter()
+                .for_each(|lead| {
+                    let mut chart = Chart {
+                        lane_count: 4,
+                        duration_ms: 4500.0,
+                        ..Default::default()
+                    };
+                    if auto_ks {
+                        chart.notes.push(crate::chart::Note {
+                            time_ms: 2000.0,
+                            keysound: Some(1),
+                            ..Default::default()
+                        });
+                    } else {
+                        chart.bgm.push(crate::chart::BgmEvent {
+                            time_ms: 2000.0,
+                            keysound: 1,
+                        });
+                    }
+                    let start = (2000.0_f64 - lead).max(0.0);
+                    let judgment_end = if auto_ks { 2192.0 } else { 32.0 };
+                    let end = (start + 1032.0).max(judgment_end);
+                    chart.duration_ms = bank.chart_duration_ms(&chart, auto_ks, lead);
+                    assert_eq!(chart.duration_ms, end);
+                    let mut game = crate::game::Game::new(chart);
+                    assert!(!game.advance_completion(start));
+                    assert!(!game.advance_completion(end - 1.0));
+                    assert!(game.advance_completion(end));
+                });
+        });
+    }
+
+    #[test]
+    fn duration_waits_for_delayed_auto_synth_without_decoded_samples() {
+        let bank = SampleBank {
+            enabled: true,
+            ..SampleBank::silent()
+        };
+        let chart = Chart {
+            duration_ms: 4500.0,
+            notes: vec![crate::chart::Note {
+                time_ms: 2000.0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(bank.chart_duration_ms(&chart, true, -5000.0), 7112.0);
+    }
+
+    #[test]
+    fn audio_lead_preserves_manual_keysound_allowance_and_silent_duration() {
+        let bank = duration_bank_with_length(1000);
+        let chart = Chart {
+            lane_count: 4,
+            duration_ms: 4500.0,
+            notes: vec![crate::chart::Note {
+                time_ms: 2000.0,
+                keysound: Some(1),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        [-5000.0, 0.0, 5000.0].into_iter().for_each(|lead| {
+            assert_eq!(bank.chart_duration_ms(&chart, false, lead), 3172.0);
+            [false, true].into_iter().for_each(|auto_ks| {
+                let silent_chart = Chart {
+                    duration_ms: SampleBank::silent().chart_duration_ms(&chart, auto_ks, lead),
+                    lane_count: 4,
+                    notes: vec![crate::chart::Note {
+                        time_ms: 2000.0,
+                        keysound: Some(1),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+                assert_eq!(silent_chart.duration_ms, 4500.0);
+                let mut game = crate::game::Game::new(silent_chart);
+                assert!(!game.advance_completion(4499.0));
+                assert!(game.advance_completion(4500.0));
+            });
+        });
     }
 
     #[test]
@@ -740,7 +841,7 @@ mod tests {
                     }],
                     ..Default::default()
                 };
-                chart.duration_ms = bank.chart_duration_ms(&chart, auto_ks);
+                chart.duration_ms = bank.chart_duration_ms(&chart, auto_ks, 0.0);
                 assert_eq!(chart.duration_ms, 5000.0 + delay + 32.0);
                 let mut game = crate::game::Game::new(chart);
                 game.hit(0, 1000.0);
@@ -773,15 +874,15 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(bank.chart_duration_ms(&chart, false), 1392.0);
-        assert_eq!(bank.chart_duration_ms(&chart, true), 1352.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, 0.0), 1392.0);
+        assert_eq!(bank.chart_duration_ms(&chart, true, 0.0), 1352.0);
         chart.exrank_events = vec![crate::chart::ExRankEvent {
             time_ms: 2000.0,
             percent: 300.0,
         }];
         chart.notes[0].end_ms = Some(5000.0);
         for auto_ks in [false, true] {
-            chart.duration_ms = bank.chart_duration_ms(&chart, auto_ks);
+            chart.duration_ms = bank.chart_duration_ms(&chart, auto_ks, 0.0);
             assert_eq!(chart.duration_ms, 5512.0);
             let mut game = crate::game::Game::new(chart);
             game.hit(0, 1000.0);
@@ -793,7 +894,7 @@ mod tests {
         }
         chart.notes[0].time_ms = 5000.0;
         chart.notes[0].end_ms = None;
-        assert_eq!(bank.chart_duration_ms(&chart, false), 5532.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, 0.0), 5532.0);
     }
 
     #[test]
@@ -818,9 +919,12 @@ mod tests {
                 }],
                 ..Default::default()
             };
-            chart.duration_ms = bank.chart_duration_ms(&chart, false);
+            chart.duration_ms = bank.chart_duration_ms(&chart, false, 0.0);
             assert_eq!(chart.duration_ms, 1000.0 + good + 80.0 + 32.0);
-            assert_eq!(bank.chart_duration_ms(&chart, true), 1000.0 + miss + 32.0);
+            assert_eq!(
+                bank.chart_duration_ms(&chart, true, 0.0),
+                1000.0 + miss + 32.0
+            );
             let mut game = crate::game::Game::new(chart);
             assert_eq!(game.hit(0, 1000.0 + good), Some(1));
             assert_eq!(game.good, 1);
@@ -835,26 +939,26 @@ mod tests {
             duration_ms: 30000.0,
             ..Default::default()
         };
-        assert_eq!(bank.chart_duration_ms(&chart, false), 30000.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, 0.0), 30000.0);
         chart.bgm.push(crate::chart::BgmEvent {
             time_ms: 4000.0,
             keysound: 1,
         });
         bank.enabled = false;
-        assert_eq!(bank.chart_duration_ms(&chart, false), 30000.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, 0.0), 30000.0);
         bank.enabled = true;
         chart.bgm[0].keysound = 2;
-        assert_eq!(bank.chart_duration_ms(&chart, false), 30000.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, 0.0), 30000.0);
         chart.notes.push(crate::chart::Note {
             time_ms: 4000.0,
             keysound: Some(1),
             ..Default::default()
         });
-        assert_eq!(bank.chart_duration_ms(&chart, false), 30000.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, 0.0), 30000.0);
         chart.notes[0].keysound = None;
-        assert_eq!(bank.chart_duration_ms(&chart, false), 30000.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, 0.0), 30000.0);
         bank.samples.clear();
-        assert_eq!(bank.chart_duration_ms(&chart, false), 30000.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, 0.0), 30000.0);
     }
 
     #[test]
@@ -902,7 +1006,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(bank.chart_duration_ms(&chart, true), 1132.0);
+        assert_eq!(bank.chart_duration_ms(&chart, true, 0.0), 1132.0);
     }
 
     #[test]
