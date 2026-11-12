@@ -105,7 +105,7 @@ case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BACKBMP`, `#COMMENT`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#DEFEXRANK`, `#EXRANKxx`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#BMPxx`, `#LNOBJ`, `#LNTYPE`, `#BGAxx`, `#SWBGAxx`, `#ARGBxx`, `#POORBGA` |
+| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BACKBMP`, `#COMMENT`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#DEFEXRANK`, `#EXRANKxx`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#EXWAVxx`, `#WAVCMD`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#BMPxx`, `#LNOBJ`, `#LNTYPE`, `#BGAxx`, `#SWBGAxx`, `#ARGBxx`, `#POORBGA` |
 | channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `0A` (second BGA overlay), `0B–0E` (BGA opacity), `A1–A4` (BGA transparent color), `A5` (key-bound BGA), `09` (STOP), `97`/`98` (BGM/keysound volume), `A0` (judgment-width change), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`), 9K PMS (`.pms`: `11–15 + 22–25`); 10K, 14K, and asymmetric double-play (`#PLAYER 3` or playable P2 channels); scratch (`16` / `26`) adds a lane on each populated side |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
@@ -246,6 +246,23 @@ release windows use the long-note end timestamp. Automatic MISS and held-note
 completion deadlines scale too; landmine windows remain fixed.
 
 Combo (up to +50) is added on top of every non-miss hit.
+
+## NORMAL gauge
+
+The gauge starts at 20%, stays between 0% and 100%, and clears at 80% or
+higher when the chart ends. Reaching 0% does not end play early. The play HUD
+and result screen show the gauge and its current CLEAR / FAILED status.
+Quitting early always results in FAILED. Results wait for all pending judgments,
+including rank-dependent misses and held long-note endings. Displayed percentages
+are truncated to one decimal place so values below 80% never display as 80.0%.
+
+PERFECT and GREAT recover `#TOTAL / note count` percentage points; GOOD
+recovers half that amount. Each MISS (including a mine detonation) subtracts
+6 percentage points. Missing, non-finite, or non-positive `#TOTAL` defaults
+to 260. Long-note starts and ends each count as one note because both are
+judged separately; mines and background sounds do not count toward recovery.
+An empty chart has no recovery. Mine damage scaling and other gauge types
+are not implemented yet.
 
 ## Keys
 

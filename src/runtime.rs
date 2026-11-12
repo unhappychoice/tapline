@@ -32,7 +32,7 @@ pub fn play_chart(out: &mut Stdout, args: &Args, mut chart: chart::Chart) -> Res
     let bank = if args.no_audio {
         audio::SampleBank::silent()
     } else {
-        audio::SampleBank::new(&chart.wav_paths)
+        audio::SampleBank::with_settings(&chart.wav_paths, &chart.sample_settings)
             .with_slices(&chart.sample_slices)
             .with_layers(&chart.sound_layers)
     };
@@ -57,7 +57,7 @@ fn run_game(
 
     while !state.quit {
         let now = elapsed_ms(start);
-        if now >= game.chart.duration_ms {
+        if game.advance_completion(now) {
             break;
         }
         draw_frame(out, game, bank, opts, &mut state, now)?;
@@ -373,6 +373,61 @@ mod tests {
             auto_ks,
             audio_lead_ms: 0.0,
         }
+    }
+
+    #[test]
+    fn completion_applies_final_rank_four_miss_before_result() {
+        let mut chart = base_chart(
+            4,
+            vec![
+                Note {
+                    time_ms: 1000.0,
+                    lane: 0,
+                    ..Note::default()
+                },
+                Note {
+                    time_ms: 2000.0,
+                    lane: 0,
+                    ..Note::default()
+                },
+            ],
+        );
+        chart.rank = Some(4);
+        chart.total = Some(120.0);
+        chart.duration_ms = 2192.0;
+        let mut game = Game::new(chart);
+        game.hit(0, 1000.0);
+        assert!(game.gauge.is_clear());
+        assert!(!game.advance_completion(2192.0));
+        assert!(!game.advance_completion(2240.0));
+        assert_eq!(game.miss, 0);
+        assert!(game.advance_completion(2241.0));
+        assert_eq!(game.miss, 1);
+        assert!(!game.gauge.is_clear());
+    }
+
+    #[test]
+    fn completion_waits_for_held_tail_and_audio_duration() {
+        let mut chart = base_chart(
+            4,
+            vec![Note {
+                time_ms: 1000.0,
+                lane: 0,
+                end_ms: Some(2000.0),
+                ..Note::default()
+            }],
+        );
+        chart.rank = Some(4);
+        chart.duration_ms = 2192.0;
+        let mut game = Game::new(chart);
+        game.hit(0, 1000.0);
+        assert!(!game.advance_completion(2240.0));
+        assert!(game.advance_completion(2241.0));
+        assert_eq!(game.perfect, 2);
+
+        let mut game = Game::new(base_chart(4, vec![]));
+        assert!(!game.advance_completion(29999.0));
+        assert!(game.advance_completion(30000.0));
     }
 
     #[test]
