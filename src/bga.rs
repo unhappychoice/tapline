@@ -144,14 +144,14 @@ impl ImageBank {
             let mut alpha = 255;
             let mut key = (layer != BgaLayer::Base
                 && (layer != BgaLayer::Poor || ext.poor_mode == 1))
-                .then_some([0, 0, 0, 255]);
+                .then_some(ColorKey::Rgb([0, 0, 0]));
             for event in ext.events.iter().take_while(|e| e.time_ms <= now_ms) {
                 match event.effect {
                     Effect::Opacity(target, value) if target == layer => alpha = value,
                     Effect::Color(target, id) if target == layer => {
                         if let Some(&[a, r, g, b]) = ext.argb.get(&id) {
                             alpha = a;
-                            key = Some([r, g, b, 255]);
+                            key = Some(ColorKey::Rgb([r, g, b]));
                         }
                     }
                     _ => {}
@@ -177,7 +177,7 @@ impl ImageBank {
                     };
                     if let Some(image) = self.0.get(&switch.pattern[index]) {
                         let [a, r, g, b] = switch.argb;
-                        composite(&mut frame, image, 255, Some([r, g, b, a]));
+                        composite(&mut frame, image, 255, Some(ColorKey::Rgba([r, g, b, a])));
                     }
                 }
             }
@@ -250,10 +250,18 @@ pub fn draw(
 #[cfg(test)]
 mod tests;
 
-fn composite(frame: &mut RgbaImage, image: &RgbaImage, alpha: u8, key: Option<[u8; 4]>) {
+enum ColorKey {
+    Rgb([u8; 3]),
+    Rgba([u8; 4]),
+}
+
+fn composite(frame: &mut RgbaImage, image: &RgbaImage, alpha: u8, key: Option<ColorKey>) {
     let mut image = image.clone();
     image.pixels_mut().for_each(|pixel| {
-        if key == Some(pixel.0) {
+        if key.as_ref().is_some_and(|key| match key {
+            ColorKey::Rgb(rgb) => pixel.0[..3] == rgb[..],
+            ColorKey::Rgba(rgba) => pixel.0 == *rgba,
+        }) {
             pixel[3] = 0;
         }
         pixel[3] = (u16::from(pixel[3]) * u16::from(alpha) / 255) as u8;

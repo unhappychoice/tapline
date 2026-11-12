@@ -67,6 +67,17 @@ fn switches_layers_and_keys_out_black() {
 }
 
 #[test]
+fn overlay_keys_out_semitransparent_black_and_blends_other_colors() {
+    let mut game = game();
+    let overlay = game.bga.0.get_mut(&3).unwrap();
+    overlay.put_pixel(0, 0, Rgba([0, 0, 0, 128]));
+    overlay.put_pixel(1, 0, Rgba([255, 0, 0, 128]));
+    let frame = game.bga.frame(&game, 100.0);
+    assert_eq!(frame.get_pixel(0, 0).0, [0, 255, 0, 255]);
+    assert_eq!(frame.get_pixel(1, 0).0, [128, 127, 0, 254]);
+}
+
+#[test]
 fn poor_expires_even_when_followed_by_a_hit() {
     let mut game = game();
     game.check_misses(361.0);
