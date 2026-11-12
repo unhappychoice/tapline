@@ -1,3 +1,4 @@
+use crate::assets::AssetIndex;
 use crossterm::{
     cursor, queue,
     style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
@@ -29,7 +30,9 @@ pub(crate) fn draw(
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.as_ref().map(|entry| &entry.0) != Some(&path) {
-            let image = load_image(&path);
+            let image = AssetIndex::new(dir)
+                .resolve_path(name, &[])
+                .and_then(|path| load_image(path));
             *cache = Some((path, image));
         }
         match cache.as_ref().and_then(|entry| entry.1.as_ref()) {
@@ -147,6 +150,57 @@ mod tests {
         .unwrap();
         std::fs::remove_file(path).unwrap();
         assert!(String::from_utf8(out).unwrap().contains('▀'));
+    }
+
+    #[test]
+    fn bga_stage_and_banner_share_case_insensitive_image_resolution() {
+        let dir = std::env::temp_dir().join(format!("tapline-artwork-case-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        DynamicImage::new_rgb8(2, 2)
+            .save(dir.join("images/cover.png"))
+            .unwrap();
+        DynamicImage::new_rgb8(2, 2)
+            .save(dir.join("cover.png"))
+            .unwrap();
+        ["COVER.PNG", "IMAGES\\COVER.PNG", ".\\IMAGES\\COVER.PNG"]
+            .iter()
+            .for_each(|name| {
+                let path = dir.join("song.bms");
+                std::fs::write(
+                    &path,
+                    format!("#BMP01 {name}\n#STAGEFILE {name}\n#BANNER {name}\n#00104:01\n"),
+                )
+                .unwrap();
+                let chart = crate::bms::load(&path, 0.0).unwrap();
+                assert!(load_image(&chart.bmp_paths[&1]).is_some());
+                let meta = crate::bms::read_meta(&path).unwrap();
+                [&chart.stagefile, &meta.banner].iter().for_each(|name| {
+                    let mut out = Vec::new();
+                    draw(&mut out, &dir, name, (0, 0, 2, 1)).unwrap();
+                    assert!(String::from_utf8(out).unwrap().contains('▀'));
+                });
+            });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn artwork_prefers_exact_case_when_names_collide() {
+        let dir =
+            std::env::temp_dir().join(format!("tapline-artwork-exact-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Cover.png"), b"invalid image").unwrap();
+        if !dir.join("cover.png").exists() {
+            DynamicImage::new_rgb8(2, 2)
+                .save(dir.join("cover.png"))
+                .unwrap();
+            let mut out = Vec::new();
+            draw(&mut out, &dir, "cover.png", (0, 0, 2, 1)).unwrap();
+            assert!(String::from_utf8(out).unwrap().contains('▀'));
+            let mut out = Vec::new();
+            draw(&mut out, &dir, "Cover.png", (0, 0, 2, 1)).unwrap();
+            assert!(out.is_empty());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]
