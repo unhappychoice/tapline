@@ -52,9 +52,9 @@ impl PlayLayout {
         let lanes = lane_count as u16;
         let field_width = LANE_WIDTH * lanes + 1;
         let x0 = cols.saturating_sub(field_width) / 2;
-        let top = 4u16;
+        let top = 5u16;
         let bottom = rows.saturating_sub(4);
-        if bottom <= top + 4 {
+        if bottom < top + 4 {
             return None;
         }
         Some(Self {
@@ -328,6 +328,27 @@ fn format_difficulty_badge(game: &Game) -> String {
     parts.join("  ·  ")
 }
 
+fn format_gauge(game: &Game) -> String {
+    format_gauge_status(game, game.gauge.is_clear())
+}
+
+fn format_result_gauge(game: &Game) -> String {
+    format_gauge_status(game, game.completed && game.gauge.is_clear())
+}
+
+fn format_gauge_status(game: &Game, clear: bool) -> String {
+    let gauge = &game.gauge;
+    let filled = (gauge.value() / 5.0).floor() as usize;
+    format!(
+        "{} [{}{}] {:>5.1}%  {:<6}",
+        gauge.label(),
+        "=".repeat(filled),
+        "-".repeat(20 - filled),
+        (gauge.value() * 10.0).floor() / 10.0,
+        if clear { "CLEAR" } else { "FAILED" }
+    )
+}
+
 /// Draw the play field using notes near the current time and active long notes.
 pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
@@ -367,6 +388,12 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     )?;
 
     draw_judgment_counters(out, game, cols, 3, now_ms)?;
+    let gauge = format_gauge(game);
+    queue!(
+        out,
+        cursor::MoveTo(cols.saturating_sub(gauge.len() as u16) / 2, 4),
+        Print(gauge)
+    )?;
 
     if let Some(tag) = format_bga_badge(&game.chart.bga, now_ms) {
         queue!(
@@ -515,6 +542,20 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn draw_stagefile(
+    out: &mut impl Write,
+    chart: &crate::chart::Chart,
+    cols: u16,
+    rows: u16,
+) -> std::io::Result<()> {
+    crate::artwork::draw(
+        out,
+        &chart.asset_dir,
+        &chart.stagefile,
+        (0, 0, cols, (rows / 2).saturating_sub(4)),
+    )
+}
+
 pub fn draw_intro(
     out: &mut Stdout,
     game: &Game,
@@ -534,12 +575,13 @@ pub fn draw_intro_full(
 ) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
     queue!(out, terminal::BeginSynchronizedUpdate)?;
+    draw_stagefile(out, &game.chart, cols, rows)?;
     let title = format_title_line(&game.chart.title, &game.chart.subtitle);
     queue!(
         out,
         cursor::MoveTo(
             cols.saturating_sub(title.chars().count() as u16) / 2,
-            rows / 2 - 3
+            (rows / 2).saturating_sub(3)
         ),
         SetForegroundColor(Color::Magenta),
         style::SetAttribute(style::Attribute::Bold),
@@ -552,7 +594,7 @@ pub fn draw_intro_full(
             out,
             cursor::MoveTo(
                 cols.saturating_sub(art.chars().count() as u16) / 2,
-                rows / 2 - 2
+                (rows / 2).saturating_sub(2)
             ),
             SetForegroundColor(Color::DarkGrey),
             Print(&art),
@@ -565,7 +607,7 @@ pub fn draw_intro_full(
             out,
             cursor::MoveTo(
                 cols.saturating_sub(badge.chars().count() as u16) / 2,
-                rows / 2 - 1
+                (rows / 2).saturating_sub(1)
             ),
             SetForegroundColor(Color::Cyan),
             Print(&badge),
@@ -598,7 +640,7 @@ pub fn draw_intro_full(
         out,
         cursor::MoveTo(
             cols.saturating_sub(badge.chars().count() as u16) / 2,
-            rows - 2
+            rows.saturating_sub(2)
         ),
         SetForegroundColor(if decode_failures > 0 {
             Color::Yellow
@@ -649,6 +691,8 @@ pub fn draw_result(out: &mut Stdout, game: &Game) -> anyhow::Result<()> {
         Color::Green,
         y,
     )?;
+    y += 1;
+    line(out, format_result_gauge(game), Color::Yellow, y)?;
     y += 2;
     line(
         out,
@@ -701,6 +745,74 @@ mod tests {
             keys: keys_for(lane_count),
             ..Chart::default()
         }
+    }
+
+    #[test]
+    fn gauge_display_shows_value_and_clear_threshold() {
+        let mut chart = base_chart(4);
+        chart.total = Some(60.0);
+        let mut game = Game::new(chart);
+        assert_eq!(
+            format_gauge(&game),
+            "NORMAL [====----------------]  20.0%  FAILED"
+        );
+        game.hit(0, 1000.0);
+        assert_eq!(
+            format_gauge(&game),
+            "NORMAL [================----]  80.0%  CLEAR "
+        );
+    }
+
+    #[test]
+    fn result_requires_completion_even_above_clear_threshold() {
+        let mut chart = base_chart(4);
+        chart.total = Some(60.0);
+        let mut game = Game::new(chart);
+        game.hit(0, 1000.0);
+        assert!(format_result_gauge(&game).ends_with("FAILED"));
+        assert!(game.advance_completion(game.chart.duration_ms.max(2000.0)));
+        assert!(format_result_gauge(&game).ends_with("CLEAR "));
+    }
+
+    #[test]
+    fn gauge_display_does_not_round_up_to_clear_threshold() {
+        let mut chart = base_chart(4);
+        chart.total = Some(59.99);
+        let mut game = Game::new(chart);
+        game.hit(0, 1000.0);
+        assert!(format_gauge(&game).contains("79.9%  FAILED"));
+    }
+
+    #[test]
+    fn play_layout_supports_thirteen_rows() {
+        let layout = PlayLayout::compute(80, 13, 4).unwrap();
+        assert_eq!(layout.lane_height, 4);
+        assert!(note_screen_y(0.0, &layout).is_some());
+    }
+
+    #[test]
+    fn intro_draws_stagefile_relative_to_chart_directory() {
+        crossterm::style::force_color_output(true);
+        let dir = std::env::current_dir()
+            .unwrap()
+            .join("target/intro-artwork-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        image::RgbImage::from_pixel(4, 4, image::Rgb([0, 255, 0]))
+            .save(dir.join("stage.png"))
+            .unwrap();
+        let chart = crate::chart::Chart {
+            asset_dir: dir,
+            stagefile: "stage.png".into(),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        draw_stagefile(&mut out, &chart, 80, 24).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains('▀'));
+        assert!(output.contains("38;2;0;255;0"));
+        let mut tiny = Vec::new();
+        draw_stagefile(&mut tiny, &chart, 10, 8).unwrap();
+        assert!(tiny.is_empty());
     }
 
     #[test]
@@ -1022,9 +1134,9 @@ mod tests {
     #[test]
     fn play_layout_computes_the_centered_playfield_for_4k() {
         let l = PlayLayout::compute(80, 24, 4).unwrap();
-        assert_eq!(l.top, 4);
+        assert_eq!(l.top, 5);
         assert_eq!(l.bottom, 20);
-        assert_eq!(l.lane_height, 16);
+        assert_eq!(l.lane_height, 15);
         assert_eq!(l.field_width, LANE_WIDTH * 4 + 1);
         // Field is centered on 80 cols.
         assert_eq!(l.x0, (80 - l.field_width) / 2);

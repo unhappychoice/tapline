@@ -123,7 +123,8 @@ fn draw(out: &mut Stdout, charts: &[ChartMeta], cursor_i: usize, scroll: &mut us
     )?;
 
     let list_top = 4u16;
-    let list_bottom = rows.saturating_sub(2);
+    let detail_rows = if rows >= 16 { 6 } else { 0 };
+    let list_bottom = rows.saturating_sub(2 + detail_rows);
     let view_rows = list_bottom.saturating_sub(list_top) as usize;
     if view_rows == 0 {
         queue!(out, terminal::EndSynchronizedUpdate)?;
@@ -162,6 +163,10 @@ fn draw(out: &mut Stdout, charts: &[ChartMeta], cursor_i: usize, scroll: &mut us
         )?;
     }
 
+    if detail_rows > 0 {
+        draw_details(out, &charts[cursor_i], cols, list_bottom)?;
+    }
+
     let hint = "↑↓ / j k  move    Enter  play    Esc  quit";
     queue!(
         out,
@@ -176,6 +181,17 @@ fn draw(out: &mut Stdout, charts: &[ChartMeta], cursor_i: usize, scroll: &mut us
 
     queue!(out, terminal::EndSynchronizedUpdate)?;
     out.flush()?;
+    Ok(())
+}
+
+fn draw_details(out: &mut impl Write, chart: &ChartMeta, cols: u16, top: u16) -> Result<()> {
+    let comment: String = crate::terminal_text::sanitize(&chart.comment)
+        .chars()
+        .take(cols.saturating_sub(4) as usize)
+        .collect();
+    queue!(out, cursor::MoveTo(2, top), Print(comment))?;
+    let dir = chart.path.parent().unwrap_or(Path::new("."));
+    crate::artwork::draw(out, dir, &chart.banner, (0, top + 1, cols, 4))?;
     Ok(())
 }
 
@@ -227,11 +243,33 @@ mod tests {
             subartist: String::new(),
             genre: String::new(),
             preview: None,
+            banner: String::new(),
+            comment: String::new(),
             bpm: 140.0,
             playlevel: Some(3),
             difficulty: Some(2),
             lane_count: 5,
         }
+    }
+
+    #[test]
+    fn selected_details_render_banner_and_sanitized_comment() {
+        crossterm::style::force_color_output(true);
+        let dir = tempdir();
+        image::RgbImage::from_pixel(4, 2, image::Rgb([255, 0, 0]))
+            .save(dir.join("banner.png"))
+            .unwrap();
+        let mut chart = meta("Song");
+        chart.path = dir.join("song.bms");
+        chart.banner = "banner.png".into();
+        chart.comment = "Great song!\x1b\x07".into();
+        let mut out = Vec::new();
+        draw_details(&mut out, &chart, 40, 10).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("Great song!"));
+        assert!(!output.contains('\x07'));
+        assert!(output.contains('▀'));
+        assert!(output.contains("38;2;255;0;0"));
     }
 
     #[test]

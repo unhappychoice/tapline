@@ -61,13 +61,24 @@ fn selector_discovers_bmson_metadata() {
     assert_eq!(meta.playlevel, Some(1));
     assert_eq!(meta.random_seed, 0);
     let args = cli::Args::parse_from(["tapline", "--countdown-ms", "1000"]);
-    let chart = cli::load_chart(&cli::ChartChoice::Selected(meta.clone()), &args)
+    let chart = cli::load_chart(&cli::ChartChoice::Selected(Box::new(meta.clone())), &args)
         .unwrap()
         .unwrap();
     assert_eq!(chart.title, meta.title);
     assert_eq!(chart.notes.len(), 2);
     assert_eq!(chart.notes[0].time_ms, 1000.0);
     assert!(bmson::is_bmson(Path::new("chart.BMSON")));
+}
+
+#[test]
+fn artwork_metadata_is_available_to_selector_and_intro() {
+    let chart = bmson::load(fixture(), 0.0).unwrap();
+    let meta = bmson::read_meta(fixture()).unwrap();
+    assert_eq!(chart.asset_dir, fixture().parent().unwrap());
+    assert_eq!(chart.stagefile, "stage.png");
+    assert_eq!(chart.banner, "banner.png");
+    assert_eq!(meta.banner, chart.banner);
+    assert!(meta.comment.is_empty());
 }
 
 #[test]

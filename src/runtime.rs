@@ -5,6 +5,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute, terminal,
 };
+use std::collections::HashSet;
 use std::io::Stdout;
 use std::time::{Duration, Instant};
 
@@ -56,7 +57,7 @@ fn run_game(
 
     while !state.quit {
         let now = elapsed_ms(start);
-        if now >= game.chart.duration_ms {
+        if game.advance_completion(now) {
             break;
         }
         draw_frame(out, game, bank, opts, &mut state, now)?;
@@ -68,6 +69,7 @@ fn run_game(
 
 struct LoopState {
     quit: bool,
+    pressed_keys: HashSet<char>,
     bgm_cursor: usize,
     note_snd_cursor: usize,
     prev_mode: u8,
@@ -78,6 +80,7 @@ impl LoopState {
     fn new(auto_notes: Vec<(f64, usize, Option<u32>)>) -> Self {
         Self {
             quit: false,
+            pressed_keys: HashSet::new(),
             bgm_cursor: 0,
             note_snd_cursor: 0,
             prev_mode: 0,
@@ -182,7 +185,7 @@ fn pump_input(
         if k.kind == KeyEventKind::Repeat {
             continue;
         }
-        if handle_key(k.code, k.kind, game, bank, opts, state, start) {
+        if handle_key(k.code, k.kind, game, bank, opts, state, elapsed_ms(start)) {
             return Ok(());
         }
         let _ = out;
@@ -196,7 +199,7 @@ fn handle_key(
     bank: &audio::SampleBank,
     opts: &PlayOptions,
     state: &mut LoopState,
-    start: Instant,
+    now: f64,
 ) -> bool {
     match code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') if kind == KeyEventKind::Press => {
@@ -204,7 +207,6 @@ fn handle_key(
             true
         }
         KeyCode::Char(c) => {
-            let now = elapsed_ms(start);
             if now < opts.countdown_ms {
                 return false;
             }
@@ -213,13 +215,20 @@ fn handle_key(
             };
             match kind {
                 KeyEventKind::Press => {
+                    state.pressed_keys.insert(c.to_ascii_uppercase());
                     let ks = game.hit(lane, now);
                     if !opts.auto_ks {
                         let gain = audio::playback_gain(&game.chart, VolumeTarget::Key, now);
                         bank.play_hit_with_gain(lane, ks, opts.synth_mode, gain);
                     }
                 }
-                KeyEventKind::Release => {
+                KeyEventKind::Release
+                    if state.pressed_keys.remove(&c.to_ascii_uppercase())
+                        && !state
+                            .pressed_keys
+                            .iter()
+                            .any(|&key| lane_for_key(key, &game.chart.keys) == Some(lane)) =>
+                {
                     game.release(lane, now);
                 }
                 _ => {}
@@ -364,6 +373,61 @@ mod tests {
             auto_ks,
             audio_lead_ms: 0.0,
         }
+    }
+
+    #[test]
+    fn completion_applies_final_rank_four_miss_before_result() {
+        let mut chart = base_chart(
+            4,
+            vec![
+                Note {
+                    time_ms: 1000.0,
+                    lane: 0,
+                    ..Note::default()
+                },
+                Note {
+                    time_ms: 2000.0,
+                    lane: 0,
+                    ..Note::default()
+                },
+            ],
+        );
+        chart.rank = Some(4);
+        chart.total = Some(120.0);
+        chart.duration_ms = 2192.0;
+        let mut game = Game::new(chart);
+        game.hit(0, 1000.0);
+        assert!(game.gauge.is_clear());
+        assert!(!game.advance_completion(2192.0));
+        assert!(!game.advance_completion(2240.0));
+        assert_eq!(game.miss, 0);
+        assert!(game.advance_completion(2241.0));
+        assert_eq!(game.miss, 1);
+        assert!(!game.gauge.is_clear());
+    }
+
+    #[test]
+    fn completion_waits_for_held_tail_and_audio_duration() {
+        let mut chart = base_chart(
+            4,
+            vec![Note {
+                time_ms: 1000.0,
+                lane: 0,
+                end_ms: Some(2000.0),
+                ..Note::default()
+            }],
+        );
+        chart.rank = Some(4);
+        chart.duration_ms = 2192.0;
+        let mut game = Game::new(chart);
+        game.hit(0, 1000.0);
+        assert!(!game.advance_completion(2240.0));
+        assert!(game.advance_completion(2241.0));
+        assert_eq!(game.perfect, 2);
+
+        let mut game = Game::new(base_chart(4, vec![]));
+        assert!(!game.advance_completion(29999.0));
+        assert!(game.advance_completion(30000.0));
     }
 
     #[test]
@@ -659,6 +723,71 @@ mod tests {
     }
 
     #[test]
+    fn shared_lane_long_note_waits_for_the_last_key_release() {
+        [('f', 'j'), ('j', 'f')]
+            .into_iter()
+            .for_each(|(held, other)| {
+                [4000.0, 5000.0, 5100.0].into_iter().for_each(|release_ms| {
+                    let note = Note {
+                        time_ms: 3000.0,
+                        end_ms: Some(5000.0),
+                        lane: 2,
+                        ..Note::default()
+                    };
+                    let mut game = Game::new(base_chart(5, vec![note]));
+                    let mut state = LoopState::new(Vec::new());
+                    let bank = SampleBank::silent();
+                    let options = opts(false);
+                    let events = [
+                        (held, KeyEventKind::Press, 3000.0),
+                        (other, KeyEventKind::Press, 3500.0),
+                        (other, KeyEventKind::Repeat, 3550.0),
+                        (other.to_ascii_uppercase(), KeyEventKind::Release, 3600.0),
+                        (other, KeyEventKind::Release, 3700.0),
+                        ('s', KeyEventKind::Press, 3800.0),
+                        (held, KeyEventKind::Release, release_ms),
+                        (held, KeyEventKind::Release, release_ms + 10.0),
+                    ];
+                    events
+                        .into_iter()
+                        .enumerate()
+                        .for_each(|(index, (key, kind, now))| {
+                            handle_key(
+                                KeyCode::Char(key),
+                                kind,
+                                &mut game,
+                                &bank,
+                                &options,
+                                &mut state,
+                                now,
+                            );
+                            if index < 6 {
+                                assert!(!game.chart.notes[0].hit);
+                                assert_eq!(game.chart.notes[0].held_since, Some(3000.0));
+                                assert_eq!(
+                                    (game.perfect, game.great, game.good, game.miss),
+                                    (1, 0, 0, 0)
+                                );
+                            } else {
+                                assert!(game.chart.notes[0].hit);
+                                assert_eq!(game.chart.notes[0].held_since, None);
+                                let expected = match release_ms {
+                                    4000.0 => (1, 0, 0, 1),
+                                    5000.0 => (2, 0, 0, 0),
+                                    _ => (1, 0, 1, 0),
+                                };
+                                assert_eq!(
+                                    (game.perfect, game.great, game.good, game.miss),
+                                    expected
+                                );
+                                assert_eq!(game.flash.last_judgment_at, release_ms);
+                            }
+                        });
+                });
+            });
+    }
+
+    #[test]
     fn handle_key_esc_marks_quit_and_returns_true() {
         let mut g = ready_game();
         let mut s = LoopState::new(Vec::new());
@@ -672,7 +801,7 @@ mod tests {
             &bank,
             &opts(false),
             &mut s,
-            start,
+            elapsed_ms(start),
         );
         assert!(handled, "Esc should short-circuit the input loop");
         assert!(s.quit);
@@ -692,7 +821,7 @@ mod tests {
                 &bank,
                 &opts(false),
                 &mut s,
-                start,
+                elapsed_ms(start),
             );
             assert!(handled);
             assert!(s.quit);
@@ -713,7 +842,7 @@ mod tests {
             &bank,
             &opts(false),
             &mut s,
-            start,
+            elapsed_ms(start),
         );
         assert!(!handled);
         assert!(!s.quit);
@@ -735,7 +864,7 @@ mod tests {
             &bank,
             &opts(false),
             &mut s,
-            start,
+            elapsed_ms(start),
         );
         assert!(!handled, "note hits should not exit the loop");
         assert_eq!(g.perfect, 1);
@@ -755,7 +884,7 @@ mod tests {
             &bank,
             &opts(false),
             &mut s,
-            start,
+            elapsed_ms(start),
         );
         assert!(!handled);
         assert_eq!(g.perfect + g.great + g.good + g.miss, 0);
@@ -782,7 +911,7 @@ mod tests {
                 &bank,
                 &opts(false),
                 &mut s,
-                start,
+                elapsed_ms(start),
             );
             assert!(!handled);
         }

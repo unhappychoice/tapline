@@ -32,6 +32,7 @@ pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
         _ => anyhow::bail!("Unsupported bmson mode: {mode}"),
     };
     let mut chart = Chart {
+        asset_dir: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
         title: data.info.title.clone(),
         subtitle: data.info.subtitle.clone(),
         artist: data.info.artist.clone(),
@@ -102,6 +103,8 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
         playlevel: c.playlevel,
         difficulty: c.difficulty,
         lane_count: c.lane_count,
+        banner: c.banner,
+        comment: c.comment,
     })
 }
 
