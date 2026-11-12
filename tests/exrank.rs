@@ -195,3 +195,28 @@ fn narrowed_windows_can_expire_later_notes_before_earlier_notes() {
     game.check_misses(820.1);
     assert_eq!(game.miss, 2);
 }
+
+#[test]
+fn ln_modes_preserve_dynamic_release_windows_and_completion_deadlines() {
+    for mode in [1, 2, 3] {
+        let headers = format!("#LNMODE {mode}\n#DEFEXRANK 200\n#EXRANK01 50");
+        let channels = "#00051:0101\n#000A0:0001";
+        let mut game = Game::new(chart(&headers, channels));
+        game.hit(0, 500.0);
+        game.release(0, 1530.0);
+        let expected = if mode == 1 { (2, 0) } else { (1, 1) };
+        assert_eq!((game.perfect, game.great), expected);
+
+        let mut game = Game::new(chart(&headers, channels));
+        game.hit(0, 500.0);
+        game.check_misses(1500.0);
+        assert_eq!(game.chart.notes[0].hit, mode == 1);
+        game.check_misses(1580.0);
+        assert_eq!(game.chart.notes[0].hit, mode == 1);
+        game.check_misses(1580.1);
+        assert!(game.chart.notes[0].hit);
+        assert_eq!((game.perfect, game.miss), (2, 0));
+        game.release(0, 1600.0);
+        assert_eq!(game.perfect, 2);
+    }
+}

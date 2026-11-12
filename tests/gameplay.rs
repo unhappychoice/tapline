@@ -174,6 +174,136 @@ fn playing_a_shipped_chart_through_hits_the_full_note_count() {
     assert_eq!(game.combo, total_notes as u32);
 }
 
+fn long_note_game(header: &str, channel: &str) -> Game {
+    Game::new(write_and_load(&format!("#BPM 60\n{header}\n{channel}\n")))
+}
+
+#[test]
+fn lnmode_is_loaded_and_invalid_or_missing_values_default_to_cn() {
+    use tapline::chart::LnMode;
+    for (header, mode) in [
+        ("#LNMODE 1", LnMode::Ln),
+        ("#LNMODE 2", LnMode::Cn),
+        ("#LNMODE 3", LnMode::Hcn),
+        ("#lnmode 1", LnMode::Ln),
+        ("", LnMode::Cn),
+        ("#LNMODE 0", LnMode::Cn),
+        ("#LNMODE 4", LnMode::Cn),
+        ("#LNMODE invalid", LnMode::Cn),
+    ] {
+        let game = long_note_game(header, "#00151:0101");
+        assert_eq!(game.chart.ln_mode, mode, "{header}");
+    }
+}
+
+#[test]
+fn lnmode_completion_preserves_scroll_and_speed_events() {
+    let mut game = long_note_game(
+        "#LNMODE 1\n#SCROLL01 -1\n#SPEED01 0.5\n#001SC:01\n#001SP:01",
+        "#00151:0101",
+    );
+    assert_eq!(game.chart.scroll[0].time_ms, 4000.0);
+    assert_eq!(game.chart.scroll[0].multiplier, -1.0);
+    assert_eq!(game.chart.speed[0].time_ms, 4000.0);
+    assert_eq!(game.chart.speed[0].multiplier, 0.5);
+    game.hit(0, 4000.0);
+    game.check_misses(6000.0);
+    assert_eq!((game.perfect, game.miss), (2, 0));
+    assert!(game.chart.notes[0].hit);
+}
+
+#[test]
+fn repeated_lnmode_headers_use_the_last_value() {
+    use tapline::chart::LnMode;
+    for (value, mode) in [
+        ("1", LnMode::Ln),
+        ("2", LnMode::Cn),
+        ("3", LnMode::Hcn),
+        ("0", LnMode::Cn),
+        ("4", LnMode::Cn),
+        ("invalid", LnMode::Cn),
+    ] {
+        for previous in ["1", "3"] {
+            let header = format!("#LNMODE {previous}\n#LNMODE {value}");
+            let game = long_note_game(&header, "#00151:0101");
+            assert_eq!(game.chart.ln_mode, mode, "{header}");
+        }
+    }
+}
+
+#[test]
+fn ln_completion_does_not_depend_on_release_timing_or_encoding() {
+    for channel in ["#00151:0101", "#LNOBJ ZZ\n#00111:01ZZ"] {
+        for release_delay in [0.0, 60.0, 120.0, 500.0] {
+            let mut game = long_note_game("#LNMODE 1", channel);
+            game.hit(0, 4000.0);
+            game.release(0, 6000.0 + release_delay);
+            game.check_misses(7000.0);
+            assert_eq!(
+                (game.perfect, game.great, game.good, game.miss),
+                (2, 0, 0, 0)
+            );
+            assert!(game.chart.notes[0].hit);
+            assert!(game.chart.notes[0].held_since.is_none());
+        }
+    }
+}
+
+#[test]
+fn ln_completes_at_the_end_without_a_release_event() {
+    let mut game = long_note_game("#LNMODE 1", "#00151:0101");
+    game.hit(0, 4000.0);
+    game.check_misses(5999.0);
+    assert!(!game.chart.notes[0].hit);
+    game.check_misses(6000.0);
+    assert!(game.chart.notes[0].hit);
+    game.release(0, 6500.0);
+    game.check_misses(7000.0);
+    assert_eq!((game.perfect, game.miss, game.combo), (2, 0, 2));
+}
+
+#[test]
+fn ln_requires_holding_through_the_end() {
+    let mut game = long_note_game("#LNMODE 1", "#00151:0101");
+    game.hit(0, 4000.0);
+    game.release(0, 5999.0);
+    game.check_misses(7000.0);
+    assert_eq!((game.perfect, game.miss, game.combo), (1, 1, 0));
+}
+
+#[test]
+fn cn_and_hcn_preserve_release_judgments_and_auto_completion() {
+    for header in ["", "#LNMODE 2", "#LNMODE 3"] {
+        for (delay, expected) in [
+            (0.0, (2, 0, 0, 0)),
+            (60.0, (1, 1, 0, 0)),
+            (120.0, (1, 0, 1, 0)),
+            (500.0, (1, 0, 0, 1)),
+        ] {
+            let mut game = long_note_game(header, "#00151:0101");
+            game.hit(0, 4000.0);
+            game.release(0, 6000.0 + delay);
+            assert_eq!((game.perfect, game.great, game.good, game.miss), expected);
+        }
+        let mut game = long_note_game(header, "#00151:0101");
+        game.hit(0, 4000.0);
+        game.check_misses(6000.0);
+        assert!(!game.chart.notes[0].hit);
+        game.check_misses(6161.0);
+        assert_eq!((game.perfect, game.miss), (2, 0));
+    }
+}
+
+#[test]
+fn ln_with_an_unpressed_start_is_missed_once() {
+    let mut game = long_note_game("#LNMODE 1", "#00151:0101");
+    game.check_misses(4161.0);
+    game.release(0, 6000.0);
+    game.check_misses(7000.0);
+    assert_eq!((game.perfect, game.miss), (0, 1));
+    assert!(game.chart.notes[0].hit);
+}
+
 #[test]
 fn invisible_notes_update_empty_press_sounds_without_judgment() {
     let chart = write_and_load(
@@ -270,4 +400,76 @@ fn pms_invisible_notes_follow_the_nine_button_mapping() {
             .collect::<Vec<_>>(),
         vec![(4, 500.0), (5, 500.0), (8, 500.0)]
     );
+}
+
+#[test]
+fn cn_and_hcn_use_rank_windows_for_release_and_auto_completion() {
+    for mode in [2, 3] {
+        for (rank, miss_delay, expected) in [(0, 80.0, (1, 0, 1)), (4, 240.0, (2, 0, 0))] {
+            let header = format!("#LNMODE {mode}\n#RANK {rank}");
+            let mut game = long_note_game(&header, "#00151:0101");
+            game.hit(0, 4000.0);
+            game.release(0, 6060.0);
+            assert_eq!((game.perfect, game.great, game.good), expected);
+
+            let mut game = long_note_game(&header, "#00151:0101");
+            game.hit(0, 4000.0);
+            game.check_misses(6000.0 + miss_delay);
+            assert!(!game.chart.notes[0].hit);
+            game.check_misses(6001.0 + miss_delay);
+            assert_eq!((game.perfect, game.miss), (2, 0));
+        }
+    }
+}
+
+#[test]
+fn ln_completion_ignores_rank_but_unpressed_starts_use_rank_delay() {
+    for (rank, miss_delay) in [(0, 80.0), (4, 240.0)] {
+        let header = format!("#LNMODE 1\n#RANK {rank}");
+        let mut game = long_note_game(&header, "#00151:0101");
+        game.hit(0, 4000.0);
+        game.check_misses(6000.0);
+        assert_eq!((game.perfect, game.miss), (2, 0));
+
+        let mut game = long_note_game(&header, "#00151:0101");
+        game.check_misses(4000.0 + miss_delay);
+        assert_eq!(game.miss, 0);
+        game.check_misses(4001.0 + miss_delay);
+        assert_eq!(game.miss, 1);
+    }
+}
+
+#[test]
+fn ln_modes_apply_gauge_recovery_once_per_start_and_end() {
+    [1, 2, 3].into_iter().for_each(|mode| {
+        let header = format!("#LNMODE {mode}\n#TOTAL 60");
+        let mut game = long_note_game(&header, "#00151:0101");
+        game.chart.duration_ms = 6000.0;
+        assert_eq!(game.gauge.value(), 20.0);
+        game.hit(0, 4000.0);
+        assert_eq!(game.gauge.value(), 50.0);
+        let completion = if mode == 1 { 6000.0 } else { 6161.0 };
+        assert!(game.advance_completion(completion));
+        assert_eq!(game.gauge.value(), 80.0);
+        assert!(game.gauge.is_clear());
+        game.release(0, 6500.0);
+        game.advance_completion(7000.0);
+        assert_eq!(game.gauge.value(), 80.0);
+        assert_eq!(game.perfect, 2);
+    });
+}
+
+#[test]
+fn ln_modes_apply_gauge_penalty_once_for_early_release() {
+    [1, 2, 3].into_iter().for_each(|mode| {
+        let header = format!("#LNMODE {mode}\n#TOTAL 60");
+        let mut game = long_note_game(&header, "#00151:0101");
+        game.chart.duration_ms = 6000.0;
+        game.hit(0, 4000.0);
+        game.release(0, 5000.0);
+        assert!(game.advance_completion(7000.0));
+        assert_eq!(game.gauge.value(), 44.0);
+        assert_eq!((game.perfect, game.miss), (1, 1));
+        assert!(!game.gauge.is_clear());
+    });
 }

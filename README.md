@@ -105,7 +105,7 @@ case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BACKBMP`, `#COMMENT`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#DEFEXRANK`, `#EXRANKxx`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#EXWAVxx`, `#WAVCMD`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#SCROLLxx`, `#SPEEDxx`, `#BMPxx`, `#TEXTxx` / `#SONGxx`, `#LNOBJ`, `#LNTYPE` |
+| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BACKBMP`, `#COMMENT`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#DEFEXRANK`, `#EXRANKxx`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#EXWAVxx`, `#WAVCMD`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#SCROLLxx`, `#SPEEDxx`, `#BMPxx`, `#TEXTxx` / `#SONGxx`, `#LNOBJ`, `#LNTYPE`, `#LNMODE` |
 | channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `SC` (scroll factor), `SP` (spacing factor), `97`/`98` (BGM/keysound volume), `99` (song text), `A0` (judgment-width change), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`), 9K PMS (`.pms`: `11–15 + 22–25`); 10K, 14K, and asymmetric double-play (`#PLAYER 3` or playable P2 channels); scratch (`16` / `26`) adds a lane on each populated side |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
@@ -183,12 +183,23 @@ lanes and place P2 notes in lanes 7–13, including sparse DP charts.
 
 ### Long notes and landmines
 
-Long-note starts are judged like regular notes. On terminals that report key
+Long-note starts are judged like regular notes. `#LNMODE` selects the hold behavior:
+
+- `1` (LN): holding through the end automatically completes as PERFECT, without
+  judging release timing. Releasing before the end is a MISS.
+- `2` (CN): the release is judged against the end time as described below.
+- `3` (HCN): currently uses CN judgments. Continuous hold gauge gains/losses
+  are not implemented yet.
+
+Omitted or invalid `#LNMODE` defaults to CN to preserve existing behavior.
+Both long-note channels and `#LNOBJ` notes use this setting.
+
+For CN/HCN on terminals that report key
 release events, releasing a held long note is judged separately against its end:
 the rank-dependent windows below apply. A release outside the GOOD window
 is a MISS and resets the combo.
 
-If no release event arrives and the note remains held in the game, it
+For CN/HCN, if no release event arrives and the note remains held in the game, it
 automatically completes as PERFECT once the current time passes its end plus
 the rank-dependent MISS delay. A long note whose start was never hit instead
 becomes a MISS after its start plus the same delay.

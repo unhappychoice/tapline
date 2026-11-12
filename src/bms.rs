@@ -1,5 +1,5 @@
 use crate::chart::{
-    keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, ExRankEvent, InvisibleNote, Mine, Note,
+    keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, ExRankEvent, InvisibleNote, LnMode, Mine, Note,
     ScrollEvent, TextEvent, VolumeEvent, VolumeTarget,
 };
 use anyhow::{ensure, Context, Result};
@@ -237,6 +237,7 @@ fn build_chart(
         exrank_events,
         total: pass.total,
         vol_wav: pass.vol_wav,
+        ln_mode: pass.ln_mode,
         volume_events: collect_volume_events(&raw, &timeline),
         notes,
         mines,
@@ -1172,6 +1173,7 @@ struct HeaderPass {
     text_defs: HashMap<u32, String>,
     lnobj: Option<u32>,
     lntype: u8,
+    ln_mode: LnMode,
 }
 
 impl Default for HeaderPass {
@@ -1208,6 +1210,7 @@ impl Default for HeaderPass {
             text_defs: HashMap::new(),
             lnobj: None,
             lntype: 1,
+            ln_mode: LnMode::default(),
         }
     }
 }
@@ -1304,6 +1307,12 @@ impl HeaderPass {
                     }
                 }
             }
+            "LNMODE" => match val.trim() {
+                "1" => self.ln_mode = LnMode::Ln,
+                "2" => self.ln_mode = LnMode::Cn,
+                "3" => self.ln_mode = LnMode::Hcn,
+                _ => self.ln_mode = LnMode::Cn,
+            },
             "WAVCMD" => self.absorb_wavcmd(val),
             "LNOBJ" => {
                 if let Some(id) = parse_id(val.trim(), self.base) {
