@@ -220,6 +220,26 @@ fn lntype_two_merges_runs_and_preserves_the_first_keysound_on_both_sides() {
 }
 
 #[test]
+fn lntype_two_preserves_base62_keysounds_on_both_sides() {
+    let path = write_text(
+        "#BASE 62\n#BPM 60\n#LNTYPE 2\n#00151:0A000a00\n#00161:0A000a00\n#00197:0a\n#00198:FF\n",
+    );
+    let chart = bms::load(&path, 0.0).unwrap();
+    for notes in [&chart.notes, &chart.p2_notes] {
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].keysound, Some(10));
+        assert_eq!(notes[0].time_ms, 4000.0);
+        assert_eq!(notes[0].end_ms, Some(5000.0));
+        assert_eq!(notes[1].keysound, Some(36));
+        assert_eq!(notes[1].time_ms, 6000.0);
+        assert_eq!(notes[1].end_ms, Some(7000.0));
+    }
+    assert_eq!(chart.volume_events.len(), 2);
+    assert_eq!(chart.volume_events[0].volume, 10);
+    assert_eq!(chart.volume_events[1].volume, 255);
+}
+
+#[test]
 fn lntype_two_merges_across_measures_with_different_resolutions_in_time_order() {
     let path = write_text("#BPM 60\n#LNTYPE 2\n#00251:02020300\n#00151:0001\n#00351:04\n");
     let chart = bms::load(&path, 250.0).unwrap();
