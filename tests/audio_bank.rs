@@ -48,15 +48,18 @@ fn silent_bank_constructor_creates_a_disabled_bank() {
     assert!(!bank.enabled);
 }
 
+// CPAL caches the WASAPI enumerator globally, but its COM apartment belongs
+// to the first calling thread. A mutex cannot keep that apartment alive after
+// a harness thread exits. Keep every native audio case on this one thread.
+// https://github.com/RustAudio/cpal/issues/1302
 #[test]
-fn backend_lifecycle_loads_samples_and_handles_missing_audio() {
-    // CPAL 0.15 caches a WASAPI COM enumerator process-wide. Keep every
-    // backend call on one thread so its COM apartment outlives all uses.
+fn native_audio_bank_lifecycle_stays_on_one_thread() {
     new_with_empty_map_never_panics_even_if_backend_is_absent();
     new_drops_wav_entries_pointing_at_missing_files();
     new_drops_wav_entries_that_are_not_valid_audio();
     new_loads_a_hand_crafted_pcm_wav_without_panicking();
     new_loads_the_same_wav_for_every_registered_id();
+    new_with_empty_map_never_panics_even_if_backend_is_absent();
 }
 
 fn new_with_empty_map_never_panics_even_if_backend_is_absent() {
@@ -82,6 +85,8 @@ fn new_drops_wav_entries_pointing_at_missing_files() {
     let mut wav_paths: HashMap<u32, PathBuf> = HashMap::new();
     wav_paths.insert(1, dir.join("missing.wav"));
     let bank = SampleBank::new(&wav_paths);
+    assert_eq!(bank.sample_count(), 0);
+    assert_eq!(bank.decode_failures, 1);
     // The missing WAV never made it into the bank; calling play with its id
     // is a no-op instead of a decode attempt.
     bank.play(1);
@@ -97,6 +102,8 @@ fn new_drops_wav_entries_that_are_not_valid_audio() {
     let mut wav_paths: HashMap<u32, PathBuf> = HashMap::new();
     wav_paths.insert(1, broken);
     let bank = SampleBank::new(&wav_paths);
+    assert_eq!(bank.sample_count(), 0);
+    assert_eq!(bank.decode_failures, 1);
     bank.play(1); // decode failure earlier → no-op now
 }
 
@@ -110,6 +117,8 @@ fn new_loads_a_hand_crafted_pcm_wav_without_panicking() {
     let mut wav_paths: HashMap<u32, PathBuf> = HashMap::new();
     wav_paths.insert(42, wav);
     let bank = SampleBank::new(&wav_paths);
+    assert_eq!(bank.sample_count(), 1);
+    assert_eq!(bank.decode_failures, 0);
     // Sample loaded → play should route through the WAV path.
     bank.play(42);
 }

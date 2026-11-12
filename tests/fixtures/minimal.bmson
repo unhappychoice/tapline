@@ -5,7 +5,9 @@
     "artist": "tapline test",
     "init_bpm": 120,
     "mode_hint": "generic-4keys",
-    "level": 1
+    "level": 1,
+    "eyecatch_image": "stage.png",
+    "banner_image": "banner.png"
   },
   "bpm_events": [{"y": 240, "bpm": 240}],
   "sound_channels": [{

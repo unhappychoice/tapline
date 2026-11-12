@@ -41,6 +41,9 @@ pub struct Game {
     pub miss: u32,
     pub flash: FlashState,
     next_miss: usize,
+    miss_order: Vec<usize>,
+    next_deadline: usize,
+    max_good: f64,
     lane_notes: Vec<Vec<usize>>,
     held_notes: Vec<usize>,
     #[cfg(test)]
@@ -61,21 +64,15 @@ pub const MISS_AFTER: f64 = 160.0;
 pub const MINE_WINDOW: f64 = 40.0;
 
 #[derive(Clone, Copy)]
-struct JudgmentWindows {
+pub(crate) struct JudgmentWindows {
     perfect: f64,
     great: f64,
-    good: f64,
-    miss_after: f64,
+    pub(crate) good: f64,
+    pub(crate) miss_after: f64,
 }
 
 impl JudgmentWindows {
-    fn for_rank(rank: Option<u8>) -> Self {
-        // Scale tapline's NORMAL windows consistently across all tiers.
-        const RANK_SCALES: [f64; 5] = [0.5, 0.75, 1.0, 1.25, 1.5];
-        let scale = rank
-            .and_then(|rank| RANK_SCALES.get(usize::from(rank)))
-            .copied()
-            .unwrap_or(1.0);
+    pub(crate) fn for_scale(scale: f64) -> Self {
         Self {
             perfect: WINDOW_PERFECT * scale,
             great: WINDOW_GREAT * scale,
@@ -107,6 +104,17 @@ impl Game {
                 lane.push(i);
             }
         });
+        let mut miss_order: Vec<usize> = (0..chart.notes.len()).collect();
+        let deadline = |i: usize| {
+            let note = &chart.notes[i];
+            note.time_ms + JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms)).miss_after
+        };
+        miss_order.sort_by(|&a, &b| deadline(a).total_cmp(&deadline(b)).then(a.cmp(&b)));
+        let max_good = chart
+            .notes
+            .iter()
+            .map(|note| JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms)).good)
+            .fold(0.0, f64::max);
         let bga = crate::bga::ImageBank::load(&chart.bmp_paths);
         let mut events = chart.notes.clone();
         events.extend(chart.invisible_notes.iter().map(|note| Note {
@@ -126,6 +134,9 @@ impl Game {
             gauge: Gauge::new(GaugeKind::Normal, &chart),
             completed: false,
             next_miss: 0,
+            miss_order,
+            next_deadline: 0,
+            max_good,
             lane_notes,
             held_notes: Vec::new(),
             #[cfg(test)]
@@ -167,7 +178,6 @@ impl Game {
         if lane >= self.flash.last_lane_hit.len() {
             return None;
         }
-        let windows = JudgmentWindows::for_rank(self.chart.rank);
         self.update_keysounds(now_ms);
         self.trigger_mines(lane, now_ms);
         let mut best: Option<(usize, f64)> = None;
@@ -177,7 +187,7 @@ impl Game {
                 continue;
             }
             let dt = (n.time_ms - now_ms).abs();
-            if dt > windows.good {
+            if dt > JudgmentWindows::for_scale(self.chart.judgment_scale(n.time_ms)).good {
                 continue;
             }
             if best.is_none_or(|(_, b)| dt < b) {
@@ -188,7 +198,9 @@ impl Game {
         if let Some((i, dt)) = best {
             let keysound = self.chart.notes[i].keysound;
             let is_ln = self.chart.notes[i].end_ms.is_some();
-            let j = windows.judge(dt);
+            let j =
+                JudgmentWindows::for_scale(self.chart.judgment_scale(self.chart.notes[i].time_ms))
+                    .judge(dt);
             if is_ln {
                 self.chart.notes[i].held_since = Some(now_ms);
                 self.held_notes.push(i);
@@ -246,7 +258,7 @@ impl Game {
             return;
         };
         let dt = (end_ms - now_ms).abs();
-        let j = JudgmentWindows::for_rank(self.chart.rank).judge(dt);
+        let j = JudgmentWindows::for_scale(self.chart.judgment_scale(end_ms)).judge(dt);
         self.chart.notes[i].hit = true;
         self.chart.notes[i].held_since = None;
         self.apply(j, now_ms);
@@ -254,9 +266,11 @@ impl Game {
 
     /// Advance pending starts once, then judge tails only for currently held LNs.
     pub fn check_misses(&mut self, now_ms: f64) {
-        let miss_after = JudgmentWindows::for_rank(self.chart.rank).miss_after;
         self.update_keysounds(now_ms);
-        while let Some(note) = self.chart.notes.get(self.next_miss) {
+        while let Some(&i) = self.miss_order.get(self.next_deadline) {
+            let note = &self.chart.notes[i];
+            let miss_after =
+                JudgmentWindows::for_scale(self.chart.judgment_scale(note.time_ms)).miss_after;
             if note.time_ms + miss_after >= now_ms {
                 break;
             }
@@ -264,12 +278,19 @@ impl Game {
             {
                 self.miss_visits += 1;
             }
-            let i = self.next_miss;
-            self.next_miss += 1;
+            self.next_deadline += 1;
             if !note.hit && note.held_since.is_none() {
                 self.chart.notes[i].hit = true;
                 self.apply(Judgment::Miss, now_ms);
             }
+        }
+        while self
+            .chart
+            .notes
+            .get(self.next_miss)
+            .is_some_and(|note| note.hit || note.held_since.is_some())
+        {
+            self.next_miss += 1;
         }
         let mut position = 0;
         while position < self.held_notes.len() {
@@ -278,10 +299,9 @@ impl Game {
                 self.miss_visits += 1;
             }
             let i = self.held_notes[position];
-            if self.chart.notes[i]
-                .end_ms
-                .is_some_and(|end| end + miss_after < now_ms)
-            {
+            if self.chart.notes[i].end_ms.is_some_and(|end| {
+                end + JudgmentWindows::for_scale(self.chart.judgment_scale(end)).miss_after < now_ms
+            }) {
                 self.held_notes.remove(position);
                 self.chart.notes[i].hit = true;
                 self.chart.notes[i].held_since = None;
@@ -294,7 +314,7 @@ impl Game {
 
     /// Select lane-local note indexes within the inclusive good judgment window.
     fn hit_candidates(&self, lane: usize, now_ms: f64) -> &[usize] {
-        let good = JudgmentWindows::for_rank(self.chart.rank).good;
+        let good = self.max_good;
         let ids = &self.lane_notes[lane];
         let start = ids.partition_point(|&i| self.chart.notes[i].time_ms < now_ms - good);
         let end = ids.partition_point(|&i| self.chart.notes[i].time_ms <= now_ms + good);

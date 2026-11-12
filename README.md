@@ -105,8 +105,8 @@ case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
-| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `97`/`98` (BGM/keysound volume), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
+| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BACKBMP`, `#COMMENT`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#DEFEXRANK`, `#EXRANKxx`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
+| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `97`/`98` (BGM/keysound volume), `A0` (judgment-width change), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`), 9K PMS (`.pms`: `11–15 + 22–25`); 10K, 14K, and asymmetric double-play (`#PLAYER 3` or playable P2 channels); scratch (`16` / `26`) adds a lane on each populated side |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
@@ -120,10 +120,16 @@ follow the same button order as visible notes.
 share the same draw so displayed metadata matches gameplay. Set
 `TAPLINE_RANDOM_SEED` to an unsigned 64-bit integer for reproducible branches.
 
+The selector displays the selected chart’s `#BANNER` and `#COMMENT` when the
+terminal is at least 16 rows tall. During the countdown, `#STAGEFILE` appears
+above the song information. PNG, JPEG, BMP, and GIF artwork is rendered with
+true-color half-block characters; missing or invalid images are skipped.
+`#BACKBMP` is stored as metadata for future background rendering.
+
 Scratch channels `16/26`, `56/66` (long notes), and `D6/E6` (landmines)
 are playable. Free-zone / pedal channels `17/27` and their long-note /
 landmine counterparts are ignored. Scratch is the last lane on each side.
-Lane modes are inferred from populated channels; empty channels do not count.
+Channel-based inference uses populated channels; empty channels do not count.
 Asymmetric DP uses the layout for its total lane count, including the scratch
 layouts in the Keys section for totals of 8, 12, or 16 and the PMS layout for 9 lanes.
 
@@ -149,6 +155,19 @@ Frames are decoded in the background at 30 fps and start at each layer event,
 including repeated events for the same file. Playback holds the last frame at
 the end; video audio is ignored. Missing decoders and unsupported or corrupt
 videos are silently skipped. Sixel and Kitty graphics are not supported.
+
+Mode detection uses the extension, `#PLAYER`, and materialized note channels.
+`.bme` reserves seven keys per side even when channels `18`/`19` are unused;
+`.bms` and `.bml` infer seven keys from extended key channels, otherwise five.
+`#PLAYER 2` (Couple) and `#PLAYER 3` (DP) declare two sides. Populated playable P2 channels also select two-sided playback.
+For `.bms` and `.bml`, each side infers its own width, allowing asymmetric DP.
+`.pms` identifies nine keys without scratch; BMS scratch usage is detected from
+channel `16`/`26` and their long-note/landmine equivalents.
+
+PMS uses the full 9K playback layout. 10K makes all five keys on each side playable,
+and sparse undeclared `.bms`/`.bml`
+charts retain the legacy 4K fallback. `.bme` DP charts reserve all seven P1
+lanes and place P2 notes in lanes 7–13, including sparse DP charts.
 
 ### Long notes and landmines
 
@@ -207,6 +226,13 @@ scaled from NORMAL by 0.5 / 0.75 / 1 / 1.25 / 1.5 respectively.
 Window boundaries are inclusive. Presses outside GOOD are ignored; unhit notes
 become MISS strictly after the MISS delay. Landmine timing remains ±40 ms.
 Base points are PERFECT: 300, GREAT: 200, GOOD: 100, MISS: 0.
+
+`#DEFEXRANK` overrides `#RANK` with a percentage of NORMAL (50 halves the
+windows). `#EXRANKxx` defines percentages selected by channel `A0`, effective
+from the event timestamp. Undefined objects and non-positive or non-finite
+percentages are ignored. Tap and long-note start windows use the note timestamp;
+release windows use the long-note end timestamp. Automatic MISS and held-note
+completion deadlines scale too; landmine windows remain fixed.
 
 Combo (up to +50) is added on top of every non-miss hit.
 
