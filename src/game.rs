@@ -61,15 +61,15 @@ pub const MISS_AFTER: f64 = 160.0;
 pub const MINE_WINDOW: f64 = 40.0;
 
 #[derive(Clone, Copy)]
-struct JudgmentWindows {
+pub(crate) struct JudgmentWindows {
     perfect: f64,
     great: f64,
-    good: f64,
-    miss_after: f64,
+    pub(crate) good: f64,
+    pub(crate) miss_after: f64,
 }
 
 impl JudgmentWindows {
-    fn for_scale(scale: f64) -> Self {
+    pub(crate) fn for_scale(scale: f64) -> Self {
         Self {
             perfect: WINDOW_PERFECT * scale,
             great: WINDOW_GREAT * scale,
