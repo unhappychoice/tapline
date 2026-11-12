@@ -231,6 +231,29 @@ fn double_play_invisible_notes_use_the_second_side_lanes() {
 }
 
 #[test]
+fn noncanonical_double_play_offsets_invisible_notes_by_the_first_side_width() {
+    [
+        ("15", "25", "45", 10, 9),
+        ("19", "25", "45", 12, 11),
+        ("15", "29", "49", 12, 11),
+        ("11", "25", "45", 9, 8),
+    ]
+    .iter()
+    .for_each(|(p1, p2, invisible, lanes, last_lane)| {
+        let chart = write_and_load(&format!(
+            "#BPM 60\n#000{p1}:01\n#000{p2}:02\n#000{invisible}:0004\n"
+        ));
+        assert_eq!(chart.lane_count, *lanes);
+        assert_eq!(chart.keys.len(), *lanes);
+        assert!(chart.p2_invisible_notes.is_empty());
+        let mut game = Game::new(chart);
+        assert_eq!(game.hit(*last_lane, 0.0), Some(2));
+        assert_eq!(game.hit(*last_lane, 2001.0), Some(4));
+        assert_eq!(game.perfect, 1);
+    });
+}
+
+#[test]
 fn pms_invisible_notes_follow_the_nine_button_mapping() {
     let dir = tempdir();
     let path = dir.join("song.pms");
