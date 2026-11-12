@@ -6,6 +6,7 @@ use crossterm::{
 use image::{imageops, Rgba, RgbaImage};
 use std::{cell::RefCell, collections::HashMap, io::Write, path::PathBuf};
 
+mod timeline;
 mod video;
 
 #[derive(Default)]
@@ -22,10 +23,11 @@ pub struct ImageBank(
     HashMap<u32, RgbaImage>,
     HashMap<u32, PathBuf>,
     RefCell<[Playback; 3]>,
+    timeline::Timeline,
 );
 
 impl ImageBank {
-    pub fn load(paths: &HashMap<u32, PathBuf>) -> Self {
+    pub fn load(paths: &HashMap<u32, PathBuf>, events: &[crate::chart::BgaEvent]) -> Self {
         Self(
             paths
                 .iter()
@@ -55,22 +57,16 @@ impl ImageBank {
                 .map(|(id, path)| (*id, path.clone()))
                 .collect(),
             RefCell::default(),
+            timeline::Timeline::new(events),
         )
     }
 
     fn layer(&self, game: &Game, layer: BgaLayer, now_ms: f64) -> Option<RgbaImage> {
-        let event = game
-            .chart
-            .bga
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, event)| event.layer == layer && event.time_ms <= now_ms);
-        let slot = match layer {
-            BgaLayer::Base => 0,
-            BgaLayer::Overlay => 1,
-            BgaLayer::Poor => 2,
-        };
+        let slot = timeline::slot(layer);
+        let event = self
+            .3
+            .latest(layer, now_ms)
+            .map(|index| (index, &game.chart.bga[index]));
         let mut states = self.2.borrow_mut();
         let state = &mut states[slot];
         let index = event.map(|(index, _)| index);

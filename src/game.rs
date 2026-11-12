@@ -115,7 +115,7 @@ impl Game {
             .iter()
             .map(|note| JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms)).good)
             .fold(0.0, f64::max);
-        let bga = crate::bga::ImageBank::load(&chart.bmp_paths);
+        let bga = crate::bga::ImageBank::load(&chart.bmp_paths, &chart.bga);
         let mut events = chart.notes.clone();
         events.extend(chart.invisible_notes.iter().map(|note| Note {
             time_ms: note.time_ms,
