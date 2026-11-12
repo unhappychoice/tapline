@@ -166,8 +166,13 @@ impl SampleBank {
             .iter()
             .map(|note| note.time_ms + 2500.0)
             .fold(0.0, f64::max);
+        let bga_end = chart
+            .bga
+            .iter()
+            .map(|event| event.time_ms + 2500.0)
+            .fold(0.0, f64::max);
         audio_end
-            .map(|end| end.max(judgment_end + 32.0).max(invisible_end))
+            .map(|end| end.max(judgment_end + 32.0).max(invisible_end).max(bga_end))
             .unwrap_or(chart.duration_ms)
     }
 
@@ -426,6 +431,65 @@ mod tests {
         assert_eq!(bank.chart_duration_ms(&chart, false), 14032.0);
         chart.duration_ms = 60000.0;
         assert_eq!(bank.chart_duration_ms(&chart, false), 14032.0);
+    }
+
+    #[test]
+    fn duration_reaches_trailing_bga_with_and_without_audio() {
+        let mut bank = duration_bank();
+        let dir = std::env::temp_dir().join(format!("tapline-trailing-bga-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (channel, events) in [
+            ("04", "bga_events"),
+            ("07", "layer_events"),
+            ("06", "poor_events"),
+        ] {
+            for extension in ["bms", "bmson"] {
+                let path = dir.join(format!("{channel}.{extension}"));
+                let content = if extension == "bms" {
+                    format!("#BPM 120\n#WAV01 tone.wav\n#BMP01 image.png\n#00001:01\n#010{channel}:01\n#02011:00\n")
+                } else {
+                    serde_json::json!({
+                        "version": "1.0.0",
+                        "info": {"title": "Trailing BGA", "artist": "tapline test",
+                            "init_bpm": 120, "mode_hint": "generic-4keys"},
+                        "sound_channels": [{"name": "tone.wav", "notes": [
+                            {"x": 0, "y": 0, "l": 0, "c": false}
+                        ]}],
+                        "bga": {"bga_header": [{"id": 1, "name": "image.png"}],
+                            events: [{"y": 9600, "id": 1}]}
+                    })
+                    .to_string()
+                };
+                std::fs::write(&path, content).unwrap();
+                let mut chart = if extension == "bms" {
+                    crate::bms::load(&path, 0.0).unwrap()
+                } else {
+                    crate::bmson::load(&path, 0.0).unwrap()
+                };
+                std::fs::remove_file(path).unwrap();
+                assert_eq!(chart.bga.len(), 1);
+                assert_eq!(chart.bga[0].time_ms, 20000.0);
+                let sample = bank.samples.values().next().unwrap().clone();
+                bank.samples.insert(chart.bgm[0].keysound, sample);
+                let loaded_duration = chart.duration_ms;
+                for enabled in [false, true] {
+                    bank.enabled = enabled;
+                    for auto_ks in [false, true] {
+                        chart.duration_ms = loaded_duration;
+                        chart.duration_ms = bank.chart_duration_ms(&chart, auto_ks);
+                        assert!(chart.bga[0].time_ms + 16.0 < chart.duration_ms);
+                        assert_eq!(
+                            chart.duration_ms,
+                            if enabled { 22500.0 } else { loaded_duration }
+                        );
+                    }
+                }
+                if extension == "bms" {
+                    assert!(loaded_duration > 22500.0);
+                }
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
