@@ -240,6 +240,51 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
         wait_for(1500.0, 1);
         wait_for(1999.0, 1);
         wait_for(2000.0, 0);
+        for layer in [BgaLayer::Base, BgaLayer::Poor] {
+            let mut delayed = Game::new(crate::bms::load(&chart, 1000.0).unwrap());
+            delayed.chart.bga.truncate(1);
+            delayed.chart.bga[0].layer = layer;
+            delayed.flash.last_miss_at = Some(1750.0);
+            if layer == BgaLayer::Base {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                loop {
+                    if delayed.bga.frame(&delayed, 1000.0).get_pixel(32, 32)[0] > 240 {
+                        break;
+                    }
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            let mut hidden = Vec::new();
+            draw(&mut hidden, &delayed, 1000.0, 17, 4, 16).unwrap();
+            assert!(hidden.is_empty());
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let mut output = Vec::new();
+                draw(&mut output, &delayed, 1750.0, 18, 4, 16).unwrap();
+                let pixel = delayed.bga.frame(&delayed, 1750.0).get_pixel(32, 32).0;
+                assert!(pixel[0] < 20, "Delayed playback displayed an old red frame");
+                if pixel[1] > 240 {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "Delayed video did not catch up");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if layer == BgaLayer::Base {
+                let mut hidden = Vec::new();
+                draw(&mut hidden, &delayed, 1760.0, 17, 4, 16).unwrap();
+                // Reopening after EOF must retain the last frame.
+                let deadline = Instant::now() + Duration::from_secs(10);
+                loop {
+                    draw(&mut hidden, &delayed, 10000.0, 18, 4, 16).unwrap();
+                    if delayed.bga.frame(&delayed, 10000.0).get_pixel(32, 32)[1] > 240 {
+                        break;
+                    }
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
         let mut output = Vec::new();
         draw(&mut output, &game, 2000.0, 18, 4, 16).unwrap();
         assert!(String::from_utf8(output).unwrap().contains('▀'));

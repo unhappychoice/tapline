@@ -4,14 +4,18 @@ use std::{
     io::Read,
     path::Path,
     process::{Child, Command, Stdio},
-    sync::mpsc::{sync_channel, Receiver},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc::{sync_channel, Receiver},
+        Arc,
+    },
 };
 
 pub(super) struct Video {
     child: Child,
-    frames: Receiver<RgbaImage>,
-    current: Option<RgbaImage>,
-    next: u64,
+    frames: Receiver<(u64, RgbaImage, bool)>,
+    current: Option<(u64, RgbaImage, bool)>,
+    target: Arc<AtomicU64>,
 }
 
 impl Video {
@@ -35,34 +39,54 @@ impl Video {
             .ok()?;
         let mut stdout = child.stdout.take()?;
         let (sender, frames) = sync_channel(2);
-        std::thread::spawn(move || loop {
-            let mut bytes = vec![0; (SIZE * SIZE * 4) as usize];
-            if stdout.read_exact(&mut bytes).is_err() {
-                break;
-            }
-            let frame = RgbaImage::from_raw(SIZE, SIZE, bytes).unwrap();
-            if sender.send(frame).is_err() {
-                break;
+        let target = Arc::new(AtomicU64::new(0));
+        let requested = Arc::clone(&target);
+        std::thread::spawn(move || {
+            let mut index = 0;
+            let mut last = None;
+            loop {
+                let mut bytes = vec![0; (SIZE * SIZE * 4) as usize];
+                if stdout.read_exact(&mut bytes).is_err() {
+                    if let Some((index, frame)) = last {
+                        let _ = sender.send((index, frame, true));
+                    }
+                    break;
+                }
+                let frame = RgbaImage::from_raw(SIZE, SIZE, bytes).unwrap();
+                if index >= requested.load(Ordering::Relaxed)
+                    && sender.send((index, frame.clone(), false)).is_err()
+                {
+                    break;
+                }
+                last = Some((index, frame));
+                index += 1;
             }
         });
         Some(Self {
             child,
             frames,
             current: None,
-            next: 0,
+            target,
         })
     }
 
     pub fn frame(&mut self, elapsed_ms: f64) -> Option<RgbaImage> {
         let target = (elapsed_ms.max(0.0) * 30.0 / 1000.0).floor() as u64;
-        while self.next <= target {
+        self.target.store(target, Ordering::Relaxed);
+        while self
+            .current
+            .as_ref()
+            .is_none_or(|(index, _, eof)| *index < target && !eof)
+        {
             let Ok(frame) = self.frames.try_recv() else {
                 break;
             };
             self.current = Some(frame);
-            self.next += 1;
         }
-        self.current.clone()
+        self.current
+            .as_ref()
+            .filter(|(index, _, eof)| *index == target || *eof)
+            .map(|(_, frame, _)| frame.clone())
     }
 }
 
@@ -88,12 +112,12 @@ mod tests {
     #[test]
     fn frames_follow_elapsed_time_and_hold_at_eof() {
         let (sender, frames) = sync_channel(2);
-        sender.send(RgbaImage::new(SIZE, SIZE)).unwrap();
+        sender.send((0, RgbaImage::new(SIZE, SIZE), false)).unwrap();
         sender
-            .send(RgbaImage::from_pixel(
-                SIZE,
-                SIZE,
-                image::Rgba([1, 2, 3, 255]),
+            .send((
+                1,
+                RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255])),
+                true,
             ))
             .unwrap();
         drop(sender);
@@ -106,7 +130,7 @@ mod tests {
             child,
             frames,
             current: None,
-            next: 0,
+            target: Arc::new(AtomicU64::new(0)),
         };
         assert_eq!(video.frame(0.0).unwrap().get_pixel(0, 0).0, [0; 4]);
         assert_eq!(video.frame(32.0).unwrap().get_pixel(0, 0).0, [0; 4]);
