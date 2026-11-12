@@ -55,6 +55,14 @@ pub struct BgaEvent {
     pub bmp_id: u32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LnMode {
+    Ln,
+    #[default]
+    Cn,
+    Hcn,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ScrollEvent {
     pub time_ms: f64,
@@ -108,6 +116,7 @@ pub struct Chart {
     pub exrank_events: Vec<ExRankEvent>,
     pub total: Option<f64>,
     pub vol_wav: Option<u8>,
+    pub ln_mode: LnMode,
     pub volume_events: Vec<VolumeEvent>,
     pub notes: Vec<Note>,
     pub invisible_notes: Vec<InvisibleNote>,
@@ -168,6 +177,7 @@ impl Default for Chart {
             exrank_events: Vec::new(),
             total: None,
             vol_wav: None,
+            ln_mode: LnMode::default(),
             volume_events: Vec::new(),
             notes: Vec::new(),
             invisible_notes: Vec::new(),

@@ -1,6 +1,6 @@
 mod bga_extensions;
 use crate::chart::{
-    keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, ExRankEvent, InvisibleNote, Mine, Note,
+    keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, ExRankEvent, InvisibleNote, LnMode, Mine, Note,
     ScrollEvent, VolumeEvent, VolumeTarget,
 };
 use anyhow::{ensure, Context, Result};
@@ -248,6 +248,7 @@ fn build_chart(
         exrank_events,
         total: pass.total,
         vol_wav: pass.vol_wav,
+        ln_mode: pass.ln_mode,
         volume_events: collect_volume_events(&raw, &timeline),
         notes,
         mines,
@@ -1180,6 +1181,7 @@ struct HeaderPass {
     lnobj: Option<u32>,
     lntype: u8,
     bga_extensions: crate::bga::Extensions,
+    ln_mode: LnMode,
 }
 
 impl Default for HeaderPass {
@@ -1216,6 +1218,7 @@ impl Default for HeaderPass {
             lnobj: None,
             lntype: 1,
             bga_extensions: Default::default(),
+            ln_mode: LnMode::default(),
         }
     }
 }
@@ -1315,6 +1318,12 @@ impl HeaderPass {
                     }
                 }
             }
+            "LNMODE" => match val.trim() {
+                "1" => self.ln_mode = LnMode::Ln,
+                "2" => self.ln_mode = LnMode::Cn,
+                "3" => self.ln_mode = LnMode::Hcn,
+                _ => self.ln_mode = LnMode::Cn,
+            },
             "WAVCMD" => self.absorb_wavcmd(val),
             "LNOBJ" => {
                 if let Some(id) = parse_id(val.trim(), self.base) {
@@ -2694,16 +2703,17 @@ mod tests {
     }
 
     #[test]
-    fn double_play_preserves_bga_extensions() {
+    fn double_play_preserves_bga_extensions_and_ln_mode() {
         let dir = tempdir();
         let path = dir.join("song.bms");
         std::fs::write(
             &path,
-            "#BPM 120\n#PLAYER 3\n#POORBGA 1\n#ARGB01 255,20,40,60\n#00115:01\n#00125:01\n#0010A:01\n",
+            "#BPM 120\n#PLAYER 3\n#LNMODE 1\n#POORBGA 1\n#ARGB01 255,20,40,60\n#00115:01\n#00125:01\n#0010A:01\n",
         )
         .unwrap();
         let chart = load(&path, 0.0).unwrap();
         assert_eq!(chart.lane_count, 10);
+        assert_eq!(chart.ln_mode, LnMode::Ln);
         assert_eq!(chart.bga_extensions.poor_mode, 1);
         assert_eq!(chart.bga_extensions.argb[&1], [255, 20, 40, 60]);
         assert_eq!(chart.bga[0].layer, BgaLayer::Overlay2);
