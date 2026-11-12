@@ -40,7 +40,12 @@ pub fn play_chart(out: &mut Stdout, args: &Args, mut chart: chart::Chart) -> Res
     let mut game = game::Game::new(chart);
     execute!(out, terminal::Clear(terminal::ClearType::All))?;
     run_game(out, &mut game, &bank, &opts)?;
-    show_result(out, &game)
+    after_playback(bank, || show_result(out, &game))
+}
+
+fn after_playback<T, R>(playback: T, show_result: impl FnOnce() -> R) -> R {
+    drop(playback);
+    show_result()
 }
 
 const FRAME_DT: Duration = Duration::from_millis(16);
@@ -808,6 +813,46 @@ mod tests {
                                 assert_eq!(game.flash.last_judgment_at, release_ms);
                             }
                         });
+                });
+            });
+    }
+
+    #[test]
+    fn quitting_stops_active_audio_before_results_without_further_input() {
+        [KeyCode::Esc, KeyCode::Char('q'), KeyCode::Char('Q')]
+            .into_iter()
+            .for_each(|code| {
+                let mut game = ready_game();
+                let mut state = LoopState::new(Vec::new());
+                let bank = SampleBank::silent();
+                let (sinks, mut outputs): (Vec<_>, Vec<_>) = (0..2)
+                    .map(|_| {
+                        let (sink, mut output) = rodio::Sink::new_idle();
+                        sink.append(rodio::buffer::SamplesBuffer::new(
+                            1,
+                            44_100,
+                            vec![0.5; 44_100 * 60],
+                        ));
+                        assert_eq!(output.next(), Some(0.5));
+                        (sink, output)
+                    })
+                    .unzip();
+                assert!(handle_key(
+                    code,
+                    KeyEventKind::Press,
+                    &mut game,
+                    &bank,
+                    &opts(false),
+                    &mut state,
+                    3000.0,
+                ));
+                assert!(state.quit);
+
+                after_playback((bank, sinks), || {
+                    outputs.iter_mut().for_each(|output| {
+                        assert!(output.by_ref().skip(1000).take(100).all(|s| s == 0.0));
+                        assert!(output.by_ref().take(100).all(|s| s == 0.0));
+                    });
                 });
             });
     }
