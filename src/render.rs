@@ -328,6 +328,7 @@ fn format_difficulty_badge(game: &Game) -> String {
     parts.join("  ·  ")
 }
 
+/// Draw the play field using notes near the current time and active long notes.
 pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
     let lanes = game.chart.lane_count as u16;
@@ -457,8 +458,8 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
         )?;
     }
 
-    for note in &game.chart.notes {
-        if note.hit || note.end_ms.unwrap_or(note.time_ms) < now_ms - 60.0 {
+    for note in game.visible_notes(now_ms, APPROACH_MS) {
+        if note.hit {
             continue;
         }
         let lx = x0 + 1 + note.lane as u16 * LANE_WIDTH + 2;
@@ -717,6 +718,108 @@ mod tests {
         assert_eq!(y(1000.0, 200.0) - y(1000.0, 0.0), 10);
         assert!(note_screen_y(chart.scroll_distance(1800.0, 0.0), &layout).is_some());
         assert_eq!(y(1000.0, 1000.0), layout.judgment_row());
+    }
+
+    #[test]
+    fn scroll_candidates_include_distant_notes_and_long_notes() {
+        for (scroll, speed) in [(0.5, 1.0), (1.0, 0.5), (0.0, 1.0), (-0.5, -1.0)] {
+            let mut chart = base_chart(4);
+            chart
+                .scroll
+                .extend((scroll != 1.0).then_some(crate::chart::ScrollEvent {
+                    time_ms: 0.0,
+                    multiplier: scroll,
+                }));
+            chart.speed.push(crate::chart::ScrollEvent {
+                time_ms: 0.0,
+                multiplier: speed,
+            });
+            chart.notes = vec![
+                Note {
+                    time_ms: 1800.0,
+                    lane: 0,
+                    ..Note::default()
+                },
+                Note {
+                    time_ms: 1800.0,
+                    end_ms: Some(2000.0),
+                    lane: 1,
+                    ..Note::default()
+                },
+            ];
+            let game = Game::new(chart);
+            let layout = PlayLayout::compute(80, 109, 4).unwrap();
+            let visible: Vec<_> = game.visible_notes(0.0, APPROACH_MS).collect();
+            assert_eq!(visible.len(), 2, "scroll={scroll}, speed={speed}");
+            assert!(note_screen_y(game.chart.scroll_distance(1800.0, 0.0), &layout).is_some());
+            assert!(long_note_screen_range(
+                game.chart.scroll_distance(1800.0, 0.0),
+                game.chart.scroll_distance(2000.0, 0.0),
+                &layout,
+            )
+            .is_some());
+        }
+    }
+
+    #[test]
+    fn bounded_candidates_match_full_scan_screen_geometry() {
+        let mut chart = base_chart(4);
+        chart.notes = vec![
+            Note {
+                time_ms: 1000.0,
+                lane: 0,
+                end_ms: Some(5000.0),
+                ..Note::default()
+            },
+            Note {
+                time_ms: 1000.0,
+                lane: 1,
+                end_ms: Some(3000.0),
+                ..Note::default()
+            },
+            Note {
+                time_ms: 2000.0,
+                lane: 2,
+                ..Note::default()
+            },
+            Note {
+                time_ms: 2000.0,
+                lane: 3,
+                ..Note::default()
+            },
+            Note {
+                time_ms: 100_000.0,
+                lane: 0,
+                ..Note::default()
+            },
+        ];
+        let mut game = Game::new(chart);
+        let layout = PlayLayout::compute(80, 24, 4).unwrap();
+        for now in [0.0, 1000.0, 1160.0, 2000.0, 2060.0, 3000.0, 5000.0, 5161.0] {
+            if now == 1000.0 {
+                game.hit(0, now);
+            }
+            if now == 2000.0 {
+                game.hit(2, now);
+            }
+            game.check_misses(now);
+            let geometry = |note: &Note| {
+                if note.hit {
+                    return None;
+                }
+                let range = match note.end_ms {
+                    Some(end) => long_note_screen_range(note.time_ms - now, end - now, &layout),
+                    None => note_screen_y(note.time_ms - now, &layout).map(|y| (y, y)),
+                }?;
+                Some((note.lane, range, note.held_since.is_some()))
+            };
+            let expected: Vec<_> = game.chart.notes.iter().filter_map(geometry).collect();
+            let actual: Vec<_> = game
+                .visible_notes(now, APPROACH_MS)
+                .filter_map(geometry)
+                .collect();
+            assert_eq!(actual, expected, "at {now} ms");
+        }
     }
 
     #[test]
