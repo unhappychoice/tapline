@@ -226,7 +226,8 @@ fn bpm_changes_and_stops_keep_all_event_times_finite() {
         .chain(&chart.p2_mines)
         .all(|mine| mine.time_ms.is_finite()));
     assert!(!chart.invisible_notes.is_empty());
-    assert!(!chart.p2_invisible_notes.is_empty());
+    assert!(chart.invisible_notes.iter().any(|note| note.lane == 4));
+    assert!(chart.p2_invisible_notes.is_empty());
     assert!(chart
         .invisible_notes
         .iter()
@@ -286,7 +287,13 @@ fn wav_references_that_do_not_exist_are_dropped_from_wav_paths() {
 fn lntype_two_merges_runs_and_preserves_the_first_keysound_on_both_sides() {
     let path = write_text("#BPM 60\n#LNTYPE 2\n#00151:0102030000040000\n#00161:0102030000040000\n");
     let chart = bms::load(&path, 0.0).unwrap();
-    for notes in [&chart.notes, &chart.p2_notes] {
+    assert!(chart.p2_notes.is_empty());
+    for lane in [0, 4] {
+        let notes = chart
+            .notes
+            .iter()
+            .filter(|note| note.lane == lane)
+            .collect::<Vec<_>>();
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].time_ms, 4000.0);
         assert_eq!(notes[0].end_ms, Some(5500.0));
@@ -303,7 +310,13 @@ fn lntype_two_preserves_base62_keysounds_on_both_sides() {
         "#BASE 62\n#BPM 60\n#LNTYPE 2\n#00151:0A000a00\n#00161:0A000a00\n#00197:0a\n#00198:FF\n",
     );
     let chart = bms::load(&path, 0.0).unwrap();
-    for notes in [&chart.notes, &chart.p2_notes] {
+    assert!(chart.p2_notes.is_empty());
+    for lane in [0, 4] {
+        let notes = chart
+            .notes
+            .iter()
+            .filter(|note| note.lane == lane)
+            .collect::<Vec<_>>();
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].keysound, Some(10));
         assert_eq!(notes[0].time_ms, 4000.0);
@@ -377,11 +390,9 @@ fn duplicate_normal_notes_use_the_last_keysound_on_both_sides() {
     for channel in ["11", "21"] {
         let path = write_text(&format!("#BPM 60\n#001{channel}:01\n#001{channel}:02\n"));
         let chart = bms::load(&path, 0.0).unwrap();
-        let notes = if channel == "11" {
-            &chart.notes
-        } else {
-            &chart.p2_notes
-        };
+        assert!(chart.p2_notes.is_empty());
+        let notes = &chart.notes;
+        assert_eq!(notes[0].lane, if channel == "11" { 0 } else { 5 });
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].keysound, Some(2));
         assert_eq!(notes[0].time_ms, 4000.0);
@@ -407,11 +418,9 @@ fn duplicate_long_note_endpoints_merge_before_pairing_on_both_sides() {
             "#BPM 60\n#001{channel}:0101\n#001{channel}:02000200\n"
         ));
         let chart = bms::load(&path, 0.0).unwrap();
-        let notes = if channel == "51" {
-            &chart.notes
-        } else {
-            &chart.p2_notes
-        };
+        assert!(chart.p2_notes.is_empty());
+        let notes = &chart.notes;
+        assert_eq!(notes[0].lane, if channel == "51" { 0 } else { 5 });
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].keysound, Some(2));
         assert_eq!(notes[0].time_ms, 4000.0);
@@ -424,11 +433,9 @@ fn duplicate_landmines_use_the_last_hex_damage_on_both_sides() {
     for channel in ["D1", "E1"] {
         let path = write_text(&format!("#BPM 60\n#001{channel}:0A\n#001{channel}:FF00\n"));
         let chart = bms::load(&path, 0.0).unwrap();
-        let mines = if channel == "D1" {
-            &chart.mines
-        } else {
-            &chart.p2_mines
-        };
+        assert!(chart.p2_mines.is_empty());
+        let mines = &chart.mines;
+        assert_eq!(mines[0].lane, if channel == "D1" { 0 } else { 5 });
         assert_eq!(mines.len(), 1);
         assert_eq!(mines[0].damage, 255);
         assert_eq!(mines[0].time_ms, 4000.0);

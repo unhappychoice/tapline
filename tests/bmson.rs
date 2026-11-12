@@ -70,6 +70,17 @@ fn selector_discovers_bmson_metadata() {
 }
 
 #[test]
+fn artwork_metadata_is_available_to_selector_and_intro() {
+    let chart = bmson::load(fixture(), 0.0).unwrap();
+    let meta = bmson::read_meta(fixture()).unwrap();
+    assert_eq!(chart.asset_dir, fixture().parent().unwrap());
+    assert_eq!(chart.stagefile, "stage.png");
+    assert_eq!(chart.banner, "banner.png");
+    assert_eq!(meta.banner, chart.banner);
+    assert!(meta.comment.is_empty());
+}
+
+#[test]
 fn stops_follow_notes_and_use_last_bpm_at_same_pulse() {
     let mut data = base();
     data["bpm_events"] = json!([{"y":240,"bpm":60},{"y":240,"bpm":240}]);
