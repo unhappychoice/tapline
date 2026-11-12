@@ -52,9 +52,9 @@ impl PlayLayout {
         let lanes = lane_count as u16;
         let field_width = LANE_WIDTH * lanes + 1;
         let x0 = cols.saturating_sub(field_width) / 2;
-        let top = 4u16;
+        let top = 5u16;
         let bottom = rows.saturating_sub(4);
-        if bottom <= top + 4 {
+        if bottom < top + 4 {
             return None;
         }
         Some(Self {
@@ -361,6 +361,27 @@ fn draw_song_text(
     Ok(())
 }
 
+fn format_gauge(game: &Game) -> String {
+    format_gauge_status(game, game.gauge.is_clear())
+}
+
+fn format_result_gauge(game: &Game) -> String {
+    format_gauge_status(game, game.completed && game.gauge.is_clear())
+}
+
+fn format_gauge_status(game: &Game, clear: bool) -> String {
+    let gauge = &game.gauge;
+    let filled = (gauge.value() / 5.0).floor() as usize;
+    format!(
+        "{} [{}{}] {:>5.1}%  {:<6}",
+        gauge.label(),
+        "=".repeat(filled),
+        "-".repeat(20 - filled),
+        (gauge.value() * 10.0).floor() / 10.0,
+        if clear { "CLEAR" } else { "FAILED" }
+    )
+}
+
 /// Draw the play field using notes near the current time and active long notes.
 pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
@@ -402,6 +423,12 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     )?;
 
     draw_judgment_counters(out, game, cols, 3, now_ms)?;
+    let gauge = format_gauge(game);
+    queue!(
+        out,
+        cursor::MoveTo(cols.saturating_sub(gauge.len() as u16) / 2, 4),
+        Print(gauge)
+    )?;
 
     if let Some(tag) = format_bga_badge(&game.chart.bga, now_ms) {
         queue!(
@@ -699,6 +726,8 @@ pub fn draw_result(out: &mut Stdout, game: &Game) -> anyhow::Result<()> {
         Color::Green,
         y,
     )?;
+    y += 1;
+    line(out, format_result_gauge(game), Color::Yellow, y)?;
     y += 2;
     line(
         out,
@@ -830,6 +859,49 @@ mod tests {
         let rendered = String::from_utf8(out).unwrap();
         assert!(rendered.contains("\x1b[2K"));
         assert!(rendered.ends_with("Hello"));
+    }
+
+    #[test]
+    fn gauge_display_shows_value_and_clear_threshold() {
+        let mut chart = base_chart(4);
+        chart.total = Some(60.0);
+        let mut game = Game::new(chart);
+        assert_eq!(
+            format_gauge(&game),
+            "NORMAL [====----------------]  20.0%  FAILED"
+        );
+        game.hit(0, 1000.0);
+        assert_eq!(
+            format_gauge(&game),
+            "NORMAL [================----]  80.0%  CLEAR "
+        );
+    }
+
+    #[test]
+    fn result_requires_completion_even_above_clear_threshold() {
+        let mut chart = base_chart(4);
+        chart.total = Some(60.0);
+        let mut game = Game::new(chart);
+        game.hit(0, 1000.0);
+        assert!(format_result_gauge(&game).ends_with("FAILED"));
+        assert!(game.advance_completion(game.chart.duration_ms.max(2000.0)));
+        assert!(format_result_gauge(&game).ends_with("CLEAR "));
+    }
+
+    #[test]
+    fn gauge_display_does_not_round_up_to_clear_threshold() {
+        let mut chart = base_chart(4);
+        chart.total = Some(59.99);
+        let mut game = Game::new(chart);
+        game.hit(0, 1000.0);
+        assert!(format_gauge(&game).contains("79.9%  FAILED"));
+    }
+
+    #[test]
+    fn play_layout_supports_thirteen_rows() {
+        let layout = PlayLayout::compute(80, 13, 4).unwrap();
+        assert_eq!(layout.lane_height, 4);
+        assert!(note_screen_y(0.0, &layout).is_some());
     }
 
     #[test]
@@ -1176,9 +1248,9 @@ mod tests {
     #[test]
     fn play_layout_computes_the_centered_playfield_for_4k() {
         let l = PlayLayout::compute(80, 24, 4).unwrap();
-        assert_eq!(l.top, 4);
+        assert_eq!(l.top, 5);
         assert_eq!(l.bottom, 20);
-        assert_eq!(l.lane_height, 16);
+        assert_eq!(l.lane_height, 15);
         assert_eq!(l.field_width, LANE_WIDTH * 4 + 1);
         // Field is centered on 80 cols.
         assert_eq!(l.x0, (80 - l.field_width) / 2);
