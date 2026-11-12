@@ -124,12 +124,9 @@ impl SampleBank {
         if !self.enabled {
             return chart.duration_ms;
         }
+        let windows = crate::game::JudgmentWindows::for_rank(chart.rank);
         let notes = chart.notes.iter().map(|note| {
-            let delay = if auto_ks {
-                0.0
-            } else {
-                crate::game::WINDOW_GOOD
-            };
+            let delay = if auto_ks { 0.0 } else { windows.good };
             (note.time_ms + delay, note.keysound)
         });
         let bgm = chart
@@ -152,7 +149,7 @@ impl SampleBank {
         let judgment_end = chart
             .notes
             .iter()
-            .map(|note| note.end_ms.unwrap_or(note.time_ms) + crate::game::MISS_AFTER)
+            .map(|note| note.end_ms.unwrap_or(note.time_ms) + windows.miss_after)
             .chain(
                 chart
                     .mines
@@ -385,13 +382,17 @@ mod tests {
     use super::*;
 
     fn duration_bank() -> SampleBank {
+        duration_bank_with_length(10000)
+    }
+
+    fn duration_bank_with_length(duration_ms: u32) -> SampleBank {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let path =
             std::env::temp_dir().join(format!("tapline-duration-{}-{id}.wav", std::process::id()));
         let mut wav = b"RIFF".to_vec();
-        let data_size = 8000u32 * 2 * 2 * 10;
+        let data_size = 8000u32 * 2 * 2 * duration_ms / 1000;
         wav.extend((36 + data_size).to_le_bytes());
         wav.extend(b"WAVEfmt ");
         wav.extend(16u32.to_le_bytes());
@@ -488,6 +489,74 @@ mod tests {
         chart.notes[0].time_ms = 9000.0;
         chart.notes[0].keysound = Some(2);
         assert_eq!(bank.chart_duration_ms(&chart, true), 11032.0);
+    }
+
+    #[test]
+    fn duration_allows_ranked_long_note_completion_without_release() {
+        let bank = duration_bank_with_length(80);
+        for (rank, delay) in [(0, 80.0), (1, 120.0), (2, 160.0), (3, 200.0), (4, 240.0)] {
+            for auto_ks in [false, true] {
+                let mut chart = Chart {
+                    rank: Some(rank),
+                    lane_count: 4,
+                    notes: vec![crate::chart::Note {
+                        time_ms: 1000.0,
+                        end_ms: Some(5000.0),
+                        keysound: Some(1),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+                chart.duration_ms = bank.chart_duration_ms(&chart, auto_ks);
+                assert_eq!(chart.duration_ms, 5000.0 + delay + 32.0);
+                let mut game = crate::game::Game::new(chart);
+                game.hit(0, 1000.0);
+                game.check_misses(5000.0 + delay);
+                assert_eq!(game.perfect, 1);
+                assert!(game.chart.notes[0].held_since.is_some());
+                let mut now = 5000.0 + delay + 16.0;
+                while now < game.chart.duration_ms {
+                    game.check_misses(now);
+                    now += 16.0;
+                }
+                assert!(game.chart.notes[0].hit);
+                assert!(game.chart.notes[0].held_since.is_none());
+                assert_eq!(game.perfect, 2);
+                assert_eq!(game.miss, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn duration_covers_audio_from_latest_ranked_good_hit() {
+        let bank = duration_bank_with_length(80);
+        for (rank, good, miss) in [
+            (Some(0), 70.0, 80.0),
+            (Some(1), 105.0, 120.0),
+            (Some(2), 140.0, 160.0),
+            (Some(3), 175.0, 200.0),
+            (Some(4), 210.0, 240.0),
+            (None, 140.0, 160.0),
+            (Some(255), 140.0, 160.0),
+        ] {
+            let mut chart = Chart {
+                rank,
+                lane_count: 4,
+                notes: vec![crate::chart::Note {
+                    time_ms: 1000.0,
+                    keysound: Some(1),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            chart.duration_ms = bank.chart_duration_ms(&chart, false);
+            assert_eq!(chart.duration_ms, 1000.0 + good + 80.0 + 32.0);
+            assert_eq!(bank.chart_duration_ms(&chart, true), 1000.0 + miss + 32.0);
+            let mut game = crate::game::Game::new(chart);
+            assert_eq!(game.hit(0, 1000.0 + good), Some(1));
+            assert_eq!(game.good, 1);
+            assert!(1000.0 + good + 80.0 < game.chart.duration_ms);
+        }
     }
 
     #[test]
