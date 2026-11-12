@@ -127,6 +127,21 @@ fn judgment_and_volume_changes_coexist_at_the_same_timestamp() {
 }
 
 #[test]
+fn judgment_changes_and_song_text_share_the_timeline() {
+    let c = chart(
+        "#DEFEXRANK 100\n#EXRANK01 50\n#TEXT01 Verse\n#SONG02 Chorus",
+        "#00011:0101\n#000A0:0001\n#00099:0102",
+    );
+    assert_eq!(c.text_events.len(), 2);
+    assert_eq!(c.text_events[0].text, "Verse");
+    assert_eq!(c.text_events[1].text, "Chorus");
+    assert_eq!(c.text_events[0].time_ms, 500.0);
+    assert_eq!(c.text_events[1].time_ms, c.exrank_events[0].time_ms);
+    assert_eq!(c.judgment_scale(c.text_events[1].time_ms), 0.5);
+    assert_eq!(c.notes[1].time_ms, c.text_events[1].time_ms);
+}
+
+#[test]
 fn base62_exrank_definitions_and_a0_preserve_case_and_prescan_base() {
     let c = chart(
         "#exrank0A 50\n#ExRank0a 200\n#EXRANKzz 75\n#BASE 62",

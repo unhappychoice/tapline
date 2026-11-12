@@ -1,7 +1,7 @@
 mod bga_extensions;
 use crate::chart::{
     keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, ExRankEvent, InvisibleNote, LnMode, Mine, Note,
-    ScrollEvent, VolumeEvent, VolumeTarget,
+    ScrollEvent, TextEvent, VolumeEvent, VolumeTarget,
 };
 use anyhow::{ensure, Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -162,6 +162,7 @@ fn build_chart(
         .unwrap_or(0);
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true, is_pms(path))?;
     let mut bga = collect_bga_events(&raw, &timeline, pass.base);
+    let text_events = collect_text_events(&raw, &timeline, &pass.text_defs, pass.base);
     let exrank_events = collect_exrank_events(&raw, &timeline, &pass.exrank_defs, pass.base);
     let bmp_paths = resolve_bmp_paths(&assets, &pass.bmp_defs);
     let mode = detect_mode(path, pass.player, &raw, &acc, &p2_acc);
@@ -259,6 +260,7 @@ fn build_chart(
         bgm,
         bga,
         bga_extensions: bga_extensions::collect(pass.bga_extensions, &raw, &timeline, pass.base),
+        text_events,
         bmp_paths,
         scroll,
         speed,
@@ -753,6 +755,30 @@ fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
     }
 }
 
+fn collect_text_events(
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    defs: &HashMap<u32, String>,
+    base: u32,
+) -> Vec<TextEvent> {
+    let mut events: Vec<_> = raw
+        .iter()
+        .filter(|(_, ch, _)| ch == "99")
+        .flat_map(|(measure, _, data)| {
+            let slots = parse_slots(data, base);
+            let count = slots.len();
+            slots.into_iter().enumerate().filter_map(move |(i, id)| {
+                defs.get(&id).filter(|_| id != 0).map(|text| TextEvent {
+                    time_ms: timeline.time_at(*measure, i as f64 / count as f64),
+                    text: text.clone(),
+                })
+            })
+        })
+        .collect();
+    events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+    events
+}
+
 fn collect_scroll_events(
     raw: &[(u32, String, String)],
     timeline: &Timeline,
@@ -1178,6 +1204,7 @@ struct HeaderPass {
     speed_defs: HashMap<u32, f64>,
     stp_events: Vec<TimingEvent>,
     bmp_defs: HashMap<u32, String>,
+    text_defs: HashMap<u32, String>,
     lnobj: Option<u32>,
     lntype: u8,
     bga_extensions: crate::bga::Extensions,
@@ -1215,6 +1242,7 @@ impl Default for HeaderPass {
             speed_defs: HashMap::new(),
             stp_events: Vec::new(),
             bmp_defs: HashMap::new(),
+            text_defs: HashMap::new(),
             lnobj: None,
             lntype: 1,
             bga_extensions: Default::default(),
@@ -1340,7 +1368,18 @@ impl HeaderPass {
                 }
             }
             _ => {
-                if let Some((rest, definitions)) = up
+                if let Some(rest) = up
+                    .strip_prefix("TEXT")
+                    .or_else(|| up.strip_prefix("SONG"))
+                    .and_then(|_| cmd.get(4..))
+                {
+                    if rest.len() == 2 {
+                        if let Some(id) = parse_id(rest, self.base) {
+                            self.text_defs
+                                .insert(id, crate::terminal_text::sanitize(val));
+                        }
+                    }
+                } else if let Some((rest, definitions)) = up
                     .strip_prefix("SCROLL")
                     .and_then(|_| cmd.get(6..))
                     .map(|rest| (rest, &mut self.scroll_defs))
@@ -1802,6 +1841,121 @@ mod tests {
     }
 
     #[test]
+    fn text_events_resolve_aliases_sanitize_and_follow_the_timeline() {
+        let dir = tempdir();
+        let path = dir.join("text.bms");
+        std::fs::write(&path, "#BPM 120\n#BPM01 240\n#STOP01 48\n#TEXT01 First\x1b[2J\x07\n#songZZ 日本語\n#TEXT02\n#00299:ZZ02\n#00199:000100XX\n#00102:0.5\n#00108:01\n#00109:01\n#TEXT00 Ignored\n#00099:00\n").unwrap();
+        let chart = load(&path, 500.0).unwrap();
+        let texts: Vec<_> = chart.text_events.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(texts, vec!["First[2J", "日本語", ""]);
+        let times: Vec<_> = chart.text_events.iter().map(|e| e.time_ms).collect();
+        assert_eq!(times, vec![2875.0, 3250.0, 3750.0]);
+        assert!(chart.duration_ms > times[2]);
+    }
+
+    #[test]
+    fn song_text_and_bga_extensions_share_the_timeline() {
+        let dir = tempdir();
+        let path = dir.join("text_and_bga.bms");
+        std::fs::write(
+            &path,
+            "#BPM 120\n#TEXT01 Chorus\n#POORBGA 2\n#ARGB01 255,1,2,3\n#00199:01\n#0010A:01\n#0010B:80\n#001A1:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 500.0).unwrap();
+        assert_eq!(chart.text_events[0].text, "Chorus");
+        assert_eq!(chart.text_events[0].time_ms, 2500.0);
+        assert_eq!(chart.bga[0].layer, BgaLayer::Overlay2);
+        assert_eq!(chart.bga[0].time_ms, chart.text_events[0].time_ms);
+        assert_eq!(chart.bga_extensions.poor_mode, 2);
+        assert_eq!(chart.bga_extensions.argb[&1], [255, 1, 2, 3]);
+        assert_eq!(chart.bga_extensions.events.len(), 2);
+        assert!(chart
+            .bga_extensions
+            .events
+            .iter()
+            .all(|event| event.time_ms == 2500.0));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn song_text_and_volume_events_coexist_with_note_channels() {
+        let dir = tempdir();
+        let path = dir.join("text_and_keysounds.bms");
+        std::fs::write(
+            &path,
+            "#BPM 120\n#TEXT01 Chorus\n#00199:01\n#00197:40\n#00198:80\n#00131:02\n#00111:03\n",
+        )
+        .unwrap();
+        let chart = load(&path, 500.0).unwrap();
+        assert_eq!(chart.text_events.len(), 1);
+        assert_eq!(chart.text_events[0].text, "Chorus");
+        assert_eq!(chart.text_events[0].time_ms, 2500.0);
+        assert_eq!(chart.volume_events.len(), 2);
+        assert_eq!(chart.volume_events[0].target, VolumeTarget::Bgm);
+        assert_eq!(chart.volume_events[0].volume, 64);
+        assert_eq!(chart.volume_events[1].target, VolumeTarget::Key);
+        assert_eq!(chart.volume_events[1].volume, 128);
+        assert!(chart
+            .volume_events
+            .iter()
+            .all(|event| event.time_ms == 2500.0));
+        assert_eq!(chart.invisible_notes.len(), 1);
+        assert_eq!(chart.invisible_notes[0].keysound, 2);
+        assert_eq!(chart.invisible_notes[0].time_ms, 2500.0);
+        assert_eq!(chart.notes.len(), 1);
+        assert_eq!(chart.notes[0].keysound, Some(3));
+        assert_eq!(chart.notes[0].time_ms, 2500.0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn song_text_uses_the_selected_object_id_base() {
+        let dir = tempdir();
+        let path = dir.join("text_base.bms");
+        [
+            ("#BASE 62", vec!["Upper", "Lower"]),
+            ("#BASE 36", vec!["Lower", "Lower"]),
+        ]
+        .into_iter()
+        .for_each(|(base, expected)| {
+            std::fs::write(
+                &path,
+                format!("#BPM 120\n#TEXT0A Upper\n#song0a Lower\n#00099:0A0a\n{base}\n"),
+            )
+            .unwrap();
+            let chart = load(&path, 0.0).unwrap();
+            assert_eq!(
+                chart
+                    .text_events
+                    .iter()
+                    .map(|e| e.text.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(chart.text_events[0].time_ms, 0.0);
+            assert_eq!(chart.text_events[1].time_ms, 1000.0);
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn text_headers_require_two_base36_digits_and_last_definition_wins() {
+        let mut pass = HeaderPass::default();
+        [
+            "TEXT01 First",
+            "SONG01 Last",
+            "TEXT1 Short",
+            "TEXT001 Long",
+            "TEXT!! Invalid",
+        ]
+        .iter()
+        .for_each(|line| pass.absorb(line).unwrap());
+        assert_eq!(pass.text_defs.len(), 1);
+        assert_eq!(pass.text_defs.get(&1).unwrap(), "Last");
+    }
+
+    #[test]
     fn scroll_and_speed_preserve_judgment_and_audio_timing_with_stops() {
         let dir = tempdir();
         let path = dir.join("scroll.bms");
@@ -1918,7 +2072,7 @@ mod tests {
     }
 
     #[test]
-    fn load_extended_wav_combines_base62_settings_volume_and_exrank_events() {
+    fn load_extended_wav_combines_base62_settings_volume_exrank_and_text_events() {
         let dir = tempdir();
         let path = dir.join("extended-base62.bms");
         ["upper.wav", "lower.wav"].iter().for_each(|name| {
@@ -1926,10 +2080,15 @@ mod tests {
         });
         std::fs::write(
             &path,
-            "#BPM 120\n#DEFEXRANK 75\n#EXRANK0a 50\n#000A0:0a\n#SCROLL0A 0.5\n#SPEED0a 2\n#000SC:0A\n#000SP:0a\n#EXWAV0A p -10000 upper.wav\n#exwav0a v -2000 lower.wav\n#WAVCMD 00 0A 72\n#WAVCMD 01 0a 50\n#WAVCMD 02 0a 200\n#00011:0A0a\n#00097:80\n#00098:40\n#BASE 62\n",
+            "#BPM 120\n#DEFEXRANK 75\n#EXRANK0a 50\n#000A0:0a\n#TEXT0A Upper\n#SONG0a Lower\n#00099:0A0a\n#SCROLL0A 0.5\n#SPEED0a 2\n#000SC:0A\n#000SP:0a\n#EXWAV0A p -10000 upper.wav\n#exwav0a v -2000 lower.wav\n#WAVCMD 00 0A 72\n#WAVCMD 01 0a 50\n#WAVCMD 02 0a 200\n#00011:0A0a\n#00097:80\n#00098:40\n#BASE 62\n",
         )
         .unwrap();
         let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.text_events.len(), 2);
+        assert_eq!(chart.text_events[0].text, "Upper");
+        assert_eq!(chart.text_events[0].time_ms, chart.notes[0].time_ms);
+        assert_eq!(chart.text_events[1].text, "Lower");
+        assert_eq!(chart.text_events[1].time_ms, chart.notes[1].time_ms);
         assert_eq!(chart.scroll[0].multiplier, 0.5);
         assert_eq!(chart.speed[0].multiplier, 2.0);
         assert_eq!(chart.wav_paths[&10], dir.join("upper.wav"));
