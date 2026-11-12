@@ -36,7 +36,7 @@ pub fn play_chart(out: &mut Stdout, args: &Args, mut chart: chart::Chart) -> Res
             .with_slices(&chart.sample_slices)
             .with_layers(&chart.sound_layers)
     };
-    chart.duration_ms = bank.chart_duration_ms(&chart, opts.auto_ks);
+    chart.duration_ms = bank.chart_duration_ms(&chart, opts.auto_ks, opts.audio_lead_ms);
     let mut game = game::Game::new(chart);
     execute!(out, terminal::Clear(terminal::ClearType::All))?;
     run_game(out, &mut game, &bank, &opts)?;
@@ -596,6 +596,31 @@ mod tests {
                 assert!(game.chart.notes.iter().all(|note| !note.hit));
             }
         }
+    }
+
+    #[test]
+    fn scheduled_audio_waits_for_negative_lead_delay() {
+        let mut chart = base_chart(
+            4,
+            vec![Note {
+                time_ms: 2000.0,
+                keysound: Some(1),
+                ..Default::default()
+            }],
+        );
+        chart.bgm.push(BgmEvent {
+            time_ms: 2000.0,
+            keysound: 1,
+        });
+        let game = Game::new(chart);
+        let mut options = opts(true);
+        options.audio_lead_ms = -5000.0;
+        let bank = SampleBank::silent();
+        let mut state = LoopState::new(build_auto_notes(&game, &options));
+        fire_scheduled_audio(&bank, &options, &mut state, &game, 6999.0);
+        assert_eq!((state.bgm_cursor, state.note_snd_cursor), (0, 0));
+        fire_scheduled_audio(&bank, &options, &mut state, &game, 7000.0);
+        assert_eq!((state.bgm_cursor, state.note_snd_cursor), (1, 1));
     }
 
     #[test]
