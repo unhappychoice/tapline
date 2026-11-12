@@ -202,6 +202,18 @@ pub fn keys_for(lane_count: usize) -> Vec<Vec<char>> {
         }
         return keys;
     }
+    if (8..=16).contains(&lane_count) && lane_count != 9 {
+        let layout = if lane_count == 10 {
+            "SDFKLZXCNM"
+        } else {
+            "SDF JKLZXCVBNM,A"
+        };
+        return layout
+            .chars()
+            .take(lane_count)
+            .map(|key| vec![key])
+            .collect();
+    }
     let raw: &[&[char]] = match lane_count {
         5 => &[&['S'], &['D'], &['F', 'J'], &['K'], &['L']],
         7 => &[&['S'], &['D'], &['F'], &[' '], &['J'], &['K'], &['L']],
@@ -215,24 +227,6 @@ pub fn keys_for(lane_count: usize) -> Vec<Vec<char>> {
             &['K'],
             &['L'],
             &[';'],
-        ],
-        // Double-play 14K: P1 hands on the home-row style layout,
-        // P2 hands on the row below.
-        14 => &[
-            &['S'],
-            &['D'],
-            &['F'],
-            &[' '],
-            &['J'],
-            &['K'],
-            &['L'],
-            &['Z'],
-            &['X'],
-            &['C'],
-            &['V'],
-            &['B'],
-            &['N'],
-            &['M'],
         ],
         _ => &[&['S'], &['D'], &['K'], &['L']],
     };
@@ -412,6 +406,24 @@ mod tests {
         assert_eq!(keys[3], vec![' ']);
         assert_eq!(keys[0], vec!['S']);
         assert_eq!(keys[6], vec!['L']);
+    }
+
+    #[test]
+    fn double_play_keys_are_unique_and_cover_every_lane() {
+        for count in 8..=16 {
+            let keys = keys_for(count);
+            assert_eq!(keys.len(), count);
+            let unique: std::collections::HashSet<_> = keys.iter().flatten().collect();
+            assert_eq!(unique.len(), keys.iter().map(Vec::len).sum::<usize>());
+        }
+        assert_eq!(
+            keys_for(10).concat(),
+            "SDFKLZXCNM".chars().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            keys_for(14).concat(),
+            "SDF JKLZXCVBNM".chars().collect::<Vec<_>>()
+        );
     }
 
     #[test]
