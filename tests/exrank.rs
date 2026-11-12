@@ -107,3 +107,21 @@ fn narrowed_windows_preserve_invisible_keysounds_on_empty_presses() {
     assert_eq!(game.hit(0, 1600.0), Some(2));
     assert_eq!(game.perfect + game.great + game.good + game.miss, 0);
 }
+
+#[test]
+fn judgment_and_volume_changes_coexist_at_the_same_timestamp() {
+    use tapline::chart::VolumeTarget;
+
+    let c = chart(
+        "#DEFEXRANK 75\n#EXRANK01 50",
+        "#00011:0101\n#000A0:0001\n#00097:0040\n#00098:0080",
+    );
+    assert_eq!(c.judgment_scale(1499.0), 0.75);
+    assert_eq!(c.judgment_scale(1500.0), 0.5);
+    assert_eq!(c.volume_events.len(), 2);
+    assert_eq!(c.volume_events[0].target, VolumeTarget::Bgm);
+    assert_eq!(c.volume_events[0].volume, 64);
+    assert_eq!(c.volume_events[1].target, VolumeTarget::Key);
+    assert_eq!(c.volume_events[1].volume, 128);
+    assert!(c.volume_events.iter().all(|event| event.time_ms == 1500.0));
+}

@@ -1,3 +1,4 @@
+use crate::chart::VolumeTarget;
 use crate::{audio, chart, cli::Args, game, render};
 use anyhow::Result;
 use crossterm::{
@@ -139,14 +140,17 @@ fn fire_scheduled_audio(
     while state.bgm_cursor < game.chart.bgm.len()
         && game.chart.bgm[state.bgm_cursor].time_ms <= horizon
     {
-        bank.play(game.chart.bgm[state.bgm_cursor].keysound);
+        let event = &game.chart.bgm[state.bgm_cursor];
+        let gain = audio::playback_gain(&game.chart, VolumeTarget::Bgm, event.time_ms);
+        bank.play_with_gain(event.keysound, gain);
         state.bgm_cursor += 1;
     }
     while state.note_snd_cursor < state.auto_notes.len()
         && state.auto_notes[state.note_snd_cursor].0 <= horizon
     {
-        let (_, lane, ks) = state.auto_notes[state.note_snd_cursor];
-        bank.play_hit(lane, ks, opts.synth_mode);
+        let (time_ms, lane, ks) = state.auto_notes[state.note_snd_cursor];
+        let gain = audio::playback_gain(&game.chart, VolumeTarget::Key, time_ms);
+        bank.play_hit_with_gain(lane, ks, opts.synth_mode, gain);
         state.note_snd_cursor += 1;
     }
 }
@@ -207,7 +211,8 @@ fn handle_key(
                 KeyEventKind::Press => {
                     let ks = game.hit(lane, now);
                     if !opts.auto_ks {
-                        bank.play_hit(lane, ks, opts.synth_mode);
+                        let gain = audio::playback_gain(&game.chart, VolumeTarget::Key, now);
+                        bank.play_hit_with_gain(lane, ks, opts.synth_mode, gain);
                     }
                 }
                 KeyEventKind::Release => {
