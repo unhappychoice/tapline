@@ -136,8 +136,12 @@ true-color half-block characters to the left of the lanes when space permits.
 Channel `04` selects the base; `07` overlays it with pure black treated as
 transparent. Channel `06` replaces both for 500 ms after each MISS. Missing or
 undecodable images are skipped. Narrow terminals hide BGA without moving the
-lanes. Animated images use their first frame; video, Sixel, and Kitty graphics
-are not supported.
+lanes. Animated images use their first frame. Video BGA (including MP4 and WebM)
+uses an optional `ffmpeg` executable on PATH, with no build-time dependency.
+Frames are decoded in the background at 30 fps and start at each layer event,
+including repeated events for the same file. Playback holds the last frame at
+the end; video audio is ignored. Missing decoders and unsupported or corrupt
+videos are silently skipped. Sixel and Kitty graphics are not supported.
 
 ### Long notes and landmines
 
