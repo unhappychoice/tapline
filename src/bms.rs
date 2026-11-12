@@ -252,6 +252,7 @@ fn build_chart(
         lane_count,
         keys: keys_for(lane_count),
         wav_paths,
+        sample_settings: pass.sample_settings,
         sample_slices: HashMap::new(),
         sound_layers: HashMap::new(),
     })
@@ -472,7 +473,7 @@ fn merge_note_lines(
     let mut merged = raw.to_vec();
     for (measure, ch, data) in merged.iter_mut().rev() {
         let slots = if (lanes.mine)(ch).is_some() {
-            parse_slots_hex(data)
+            parse_slots(data, 36)
         } else if (lanes.normal)(ch).is_some()
             || (lanes.long)(ch).is_some()
             || (lanes.invisible)(ch).is_some()
@@ -655,7 +656,7 @@ fn materialize_mines_with(
         let Some(lane) = lane_of(ch) else {
             continue;
         };
-        let slots = parse_slots_hex(data);
+        let slots = parse_slots(data, 36);
         let n = slots.len();
         if n == 0 {
             continue;
@@ -1134,6 +1135,7 @@ struct HeaderPass {
     exrank_defs: HashMap<u32, f64>,
     total: Option<f64>,
     vol_wav: Option<u8>,
+    sample_settings: HashMap<u32, crate::sample_settings::SampleSettings>,
     wav_defs: HashMap<u32, String>,
     bpm_defs: HashMap<u32, f64>,
     stop_defs: HashMap<u32, f64>,
@@ -1168,6 +1170,7 @@ impl Default for HeaderPass {
             exrank_defs: HashMap::new(),
             total: None,
             vol_wav: None,
+            sample_settings: HashMap::new(),
             wav_defs: HashMap::new(),
             bpm_defs: HashMap::new(),
             stop_defs: HashMap::new(),
@@ -1182,6 +1185,21 @@ impl Default for HeaderPass {
 }
 
 impl HeaderPass {
+    fn absorb_wavcmd(&mut self, value: &str) {
+        let parts: Vec<_> = value.split_whitespace().collect();
+        if let [command, id, value] = parts.as_slice() {
+            if let (Some(id), Ok(value)) = (parse_id(id, self.base), value.parse::<u32>()) {
+                let settings = self.sample_settings.entry(id).or_default();
+                match *command {
+                    "00" if value <= 127 => settings.pitch = Some(value as u8),
+                    "01" => settings.volume = Some(value),
+                    "02" => settings.length = Some(value),
+                    _ => {}
+                }
+            }
+        }
+    }
+
     fn for_text(text: &str) -> Self {
         let base = header_lines(text)
             .filter_map(|line| {
@@ -1258,6 +1276,7 @@ impl HeaderPass {
                     }
                 }
             }
+            "WAVCMD" => self.absorb_wavcmd(val),
             "LNOBJ" => {
                 if let Some(id) = parse_id(val.trim(), self.base) {
                     if id > 0 {
@@ -1292,6 +1311,17 @@ impl HeaderPass {
                             }
                         }
                     }
+                } else if let Some(rest) = up.strip_prefix("EXWAV").and_then(|_| cmd.get(5..)) {
+                    if let (Some(id), Some((settings, path))) = (
+                        parse_id(rest, self.base),
+                        crate::sample_settings::SampleSettings::parse_exwav(val),
+                    ) {
+                        let current = self.sample_settings.entry(id).or_default();
+                        current.pan = settings.pan;
+                        current.attenuation = settings.attenuation;
+                        current.frequency = settings.frequency;
+                        self.wav_defs.insert(id, path.to_string());
+                    }
                 } else if let Some(rest) = up.strip_prefix("EXRANK").and_then(|_| cmd.get(6..)) {
                     if rest.len() == 2 {
                         if let (Some(id), Some(v)) =
@@ -1305,6 +1335,11 @@ impl HeaderPass {
                 } else if let Some(rest) = up.strip_prefix("WAV").and_then(|_| cmd.get(3..)) {
                     if let Some(id) = parse_id(rest, self.base) {
                         self.wav_defs.insert(id, val.trim().to_string());
+                        if let Some(settings) = self.sample_settings.get_mut(&id) {
+                            settings.pan = 0;
+                            settings.attenuation = 0;
+                            settings.frequency = None;
+                        }
                     }
                 } else if let Some(rest) = up
                     .strip_prefix("BPM")
@@ -1814,6 +1849,59 @@ mod tests {
     }
 
     #[test]
+    fn extended_wav_parses_flags_in_order_and_keeps_filename_spaces() {
+        let mut pass = HeaderPass::default();
+        pass.absorb("exwav0E vFp -2000 22050 -10000 sound file.wav")
+            .unwrap();
+        pass.absorb("WAVCMD 00 0E 72").unwrap();
+        pass.absorb("WAVCMD 01 0E 50").unwrap();
+        pass.absorb("WAVCMD 02 0E 200").unwrap();
+        let settings = pass.sample_settings[&14].clone();
+        assert_eq!(pass.wav_defs[&14], "sound file.wav");
+        assert_eq!(settings.pan, -10000);
+        assert_eq!(settings.attenuation, -2000);
+        assert_eq!(settings.frequency, Some(22050));
+        assert_eq!(settings.pitch, Some(72));
+        assert_eq!(settings.volume, Some(50));
+        assert_eq!(settings.length, Some(200));
+        pass.absorb("EXWAV0E p 10001 invalid.wav").unwrap();
+        pass.absorb("WAVCMD 00 0E 128").unwrap();
+        assert_eq!(pass.sample_settings[&14], settings);
+    }
+
+    #[test]
+    fn load_extended_wav_combines_base62_settings_volume_and_exrank_events() {
+        let dir = tempdir();
+        let path = dir.join("extended-base62.bms");
+        ["upper.wav", "lower.wav"].iter().for_each(|name| {
+            std::fs::write(dir.join(name), b"").unwrap();
+        });
+        std::fs::write(
+            &path,
+            "#BPM 120\n#DEFEXRANK 75\n#EXRANK0a 50\n#000A0:0a\n#SCROLL0A 0.5\n#SPEED0a 2\n#000SC:0A\n#000SP:0a\n#EXWAV0A p -10000 upper.wav\n#exwav0a v -2000 lower.wav\n#WAVCMD 00 0A 72\n#WAVCMD 01 0a 50\n#WAVCMD 02 0a 200\n#00011:0A0a\n#00097:80\n#00098:40\n#BASE 62\n",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.scroll[0].multiplier, 0.5);
+        assert_eq!(chart.speed[0].multiplier, 2.0);
+        assert_eq!(chart.wav_paths[&10], dir.join("upper.wav"));
+        assert_eq!(chart.wav_paths[&36], dir.join("lower.wav"));
+        assert_eq!(chart.sample_settings[&10].pan, -10000);
+        assert_eq!(chart.sample_settings[&10].pitch, Some(72));
+        assert_eq!(chart.sample_settings[&10].volume, None);
+        assert_eq!(chart.sample_settings[&36].attenuation, -2000);
+        assert_eq!(chart.sample_settings[&36].pitch, None);
+        assert_eq!(chart.sample_settings[&36].volume, Some(50));
+        assert_eq!(chart.sample_settings[&36].length, Some(200));
+        assert_eq!(chart.notes[0].keysound, Some(10));
+        assert_eq!(chart.notes[1].keysound, Some(36));
+        assert_eq!(chart.volume_events.len(), 2);
+        assert_eq!(chart.exrank_defs[&36], 50.0);
+        assert_eq!(chart.judgment_scale(0.0), 0.5);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn parse_slots_distinguishes_base62_letters_and_keeps_base36_case_insensitive() {
         assert_eq!(parse_slots("0A0aZZzz10", 62), vec![10, 36, 2205, 3843, 62]);
         assert_eq!(parse_slots("0A0aZZzz10", 36), vec![10, 10, 1295, 1295, 36]);
@@ -1985,7 +2073,7 @@ mod tests {
                 assert_eq!(chart.bgm.len(), 1);
                 let mut lanes = if channels.starts_with('D') {
                     assert!(chart.notes.is_empty());
-                    assert!(chart.mines.iter().all(|mine| mine.damage == 100));
+                    assert!(chart.mines.iter().all(|mine| mine.damage == 220));
                     chart.mines.iter().map(|mine| mine.lane).collect::<Vec<_>>()
                 } else {
                     assert!(chart.notes.iter().all(|note| note.keysound == Some(1)));
@@ -2006,7 +2094,7 @@ mod tests {
                     }
                 });
                 if channels.starts_with('D') {
-                    assert_eq!(game.miss, 9);
+                    assert_eq!(game.miss, 0);
                     assert!(game.chart.mines.iter().all(|mine| mine.exploded));
                 } else {
                     assert_eq!(game.perfect, if long { 18 } else { 9 });
@@ -2424,7 +2512,7 @@ mod tests {
         assert!(chart.p2_notes.is_empty());
         assert!(chart.p2_mines.is_empty());
         assert_eq!(chart.mines[0].lane, 4);
-        assert_eq!(chart.mines[0].damage, 100);
+        assert_eq!(chart.mines[0].damage, 220);
     }
 
     #[test]
@@ -3024,7 +3112,7 @@ Always
     fn load_extracts_mines_from_channel_d1() {
         let dir = tempdir();
         let path = dir.join("song.bms");
-        // BPM 60 → 4000ms/measure. Slot 0 (00 = no mine), slot 1 (0x64 = 100
+        // BPM 60 → 4000ms/measure. Slot 0 (00 = no mine), slot 1 (base-36 64 = 220
         // damage). Also a regular note in channel 11 so lane 0 counts.
         std::fs::write(
             &path,
@@ -3039,7 +3127,7 @@ Always
         let chart = load(&path, 0.0).unwrap();
         assert_eq!(chart.mines.len(), 1);
         assert_eq!(chart.mines[0].lane, 0);
-        assert_eq!(chart.mines[0].damage, 100);
+        assert_eq!(chart.mines[0].damage, 220);
         assert!((chart.mines[0].time_ms - 6000.0).abs() < 1e-6);
     }
 

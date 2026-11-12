@@ -30,7 +30,7 @@ pub struct BgmEvent {
 pub struct Mine {
     pub time_ms: f64,
     pub lane: usize,
-    /// Damage value from the BMS chart (0–255).
+    /// Base-36 damage value from the BMS chart (1–1295), in half percentage points.
     pub damage: u32,
     /// Set once the player triggers the mine so it isn't punished twice.
     pub exploded: bool,
@@ -122,6 +122,7 @@ pub struct Chart {
     pub duration_ms: f64,
     pub lane_count: usize,
     pub keys: Vec<Vec<char>>,
+    pub sample_settings: std::collections::HashMap<u32, crate::sample_settings::SampleSettings>,
     pub sound_layers: std::collections::HashMap<u32, Vec<u32>>,
     pub sample_slices: std::collections::HashMap<u32, SampleSlice>,
     pub wav_paths: std::collections::HashMap<u32, PathBuf>,
@@ -180,6 +181,7 @@ impl Default for Chart {
             duration_ms: 0.0,
             lane_count: 4,
             keys: keys_for(4),
+            sample_settings: Default::default(),
             sound_layers: std::collections::HashMap::new(),
             sample_slices: std::collections::HashMap::new(),
             wav_paths: std::collections::HashMap::new(),
