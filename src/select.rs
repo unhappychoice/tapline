@@ -9,10 +9,10 @@ use crossterm::{
     terminal,
 };
 use std::io::{Stdout, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
-const EXTS: [&str; 4] = ["bms", "bml", "bme", "pms"];
+const EXTS: [&str; 5] = ["bms", "bml", "bme", "pms", "bmson"];
 
 pub fn scan(root: &Path) -> Vec<ChartMeta> {
     let mut out = Vec::new();
@@ -39,7 +39,12 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<ChartMeta>) {
         if ty.map(|t| t.is_dir()).unwrap_or(false) {
             walk(&path, depth + 1, out);
         } else if is_bms(&path) {
-            if let Ok(meta) = bms::read_meta(&path) {
+            let meta = if crate::bmson::is_bmson(&path) {
+                crate::bmson::read_meta(&path)
+            } else {
+                bms::read_meta(&path)
+            };
+            if let Ok(meta) = meta {
                 out.push(meta);
             }
         }
@@ -53,7 +58,7 @@ fn is_bms(p: &Path) -> bool {
         .unwrap_or(false)
 }
 
-pub fn run(out: &mut Stdout, charts: &[ChartMeta]) -> Result<Option<PathBuf>> {
+pub fn run(out: &mut Stdout, charts: &[ChartMeta]) -> Result<Option<ChartMeta>> {
     if charts.is_empty() {
         return Ok(None);
     }
@@ -76,7 +81,7 @@ pub fn run(out: &mut Stdout, charts: &[ChartMeta]) -> Result<Option<PathBuf>> {
                     KeyCode::End | KeyCode::Char('G') => cursor_i = charts.len() - 1,
                     KeyCode::PageUp => cursor_i = cursor_i.saturating_sub(10),
                     KeyCode::PageDown => cursor_i = (cursor_i + 10).min(charts.len() - 1),
-                    KeyCode::Enter => return Ok(Some(charts[cursor_i].path.clone())),
+                    KeyCode::Enter => return Ok(Some(charts[cursor_i].clone())),
                     _ => {}
                 }
             }
@@ -205,10 +210,12 @@ fn format_badge(m: &ChartMeta) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn meta(title: &str) -> ChartMeta {
         ChartMeta {
             path: PathBuf::from(format!("/tmp/{}.bms", title)),
+            random_seed: 0,
             title: title.to_string(),
             subtitle: String::new(),
             artist: String::new(),
