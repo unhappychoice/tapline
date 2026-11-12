@@ -103,26 +103,12 @@ fn long_note_screen_range(
 }
 
 fn long_note_scroll_range(
-    chart: &crate::chart::Chart,
+    scroll: &crate::scroll::ScrollFrame<'_>,
     start_ms: f64,
     end_ms: f64,
-    now_ms: f64,
     layout: &PlayLayout,
 ) -> Option<(u16, u16)> {
-    let distances = [start_ms, end_ms]
-        .into_iter()
-        .chain(
-            chart
-                .scroll
-                .iter()
-                .filter(|event| event.time_ms > start_ms && event.time_ms < end_ms)
-                .map(|event| event.time_ms),
-        )
-        .map(|time| chart.scroll_distance(time, now_ms));
-    let (min, max) = distances.fold(
-        (f64::INFINITY, f64::NEG_INFINITY),
-        |(min, max), distance| (min.min(distance), max.max(distance)),
-    );
+    let (min, max) = scroll.range(start_ms, end_ms);
     long_note_screen_range(min, max, layout)
 }
 
@@ -522,12 +508,12 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
         )?;
     }
 
+    let scroll = game.scroll.frame(&game.chart, now_ms);
     for mine in &game.chart.mines {
         if mine.exploded || mine.time_ms < now_ms - 60.0 {
             continue;
         }
-        let Some(y) = note_screen_y(game.chart.scroll_distance(mine.time_ms, now_ms), &layout)
-        else {
+        let Some(y) = note_screen_y(scroll.distance(mine.time_ms), &layout) else {
             continue;
         };
         let lx = x0 + 1 + mine.lane as u16 * LANE_WIDTH + 2;
@@ -550,9 +536,7 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
         let base = lane_key_color(game, note.lane);
         match note.end_ms {
             None => {
-                let Some(y) =
-                    note_screen_y(game.chart.scroll_distance(note.time_ms, now_ms), &layout)
-                else {
+                let Some(y) = note_screen_y(scroll.distance(note.time_ms), &layout) else {
                     continue;
                 };
                 queue!(
@@ -572,7 +556,7 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
                 };
                 draw_long_note(
                     out,
-                    long_note_scroll_range(&game.chart, note.time_ms, end_ms, now_ms, &layout),
+                    long_note_scroll_range(&scroll, note.time_ms, end_ms, &layout),
                     lx,
                     color,
                 )?;
@@ -911,10 +895,9 @@ mod tests {
             let layout = PlayLayout::compute(80, 24, 4).unwrap();
             let note = game.visible_notes(0.0, APPROACH_MS).next().unwrap();
             let range = long_note_scroll_range(
-                &game.chart,
+                &game.scroll.frame(&game.chart, 0.0),
                 note.time_ms,
                 note.end_ms.unwrap(),
-                0.0,
                 &layout,
             );
             let expected_top = if speed > 0.0 {
@@ -943,11 +926,21 @@ mod tests {
         });
         let layout = PlayLayout::compute(80, 24, 4).unwrap();
         assert_eq!(
-            long_note_scroll_range(&chart, 2000.0, 3000.0, 0.0, &layout),
+            long_note_scroll_range(
+                &crate::scroll::ScrollMap::new(&chart.scroll).frame(&chart, 0.0),
+                2000.0,
+                3000.0,
+                &layout
+            ),
             None
         );
         assert_eq!(
-            long_note_scroll_range(&chart, 9000.0, 10000.0, 0.0, &layout),
+            long_note_scroll_range(
+                &crate::scroll::ScrollMap::new(&chart.scroll).frame(&chart, 0.0),
+                9000.0,
+                10000.0,
+                &layout
+            ),
             None
         );
     }
