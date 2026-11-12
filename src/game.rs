@@ -1,4 +1,4 @@
-use crate::chart::{Chart, Note};
+use crate::chart::{Chart, LnMode, Note};
 use crate::gauge::{Gauge, GaugeKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,7 +241,7 @@ impl Game {
         }
     }
 
-    /// Release the LN currently held on `lane`, judging against its end_ms.
+    /// Release the long note currently held on `lane` using the chart mode.
     /// No-op if the lane isn't holding anything.
     pub fn release(&mut self, lane: usize, now_ms: f64) {
         if lane >= self.flash.last_lane_hit.len() {
@@ -259,7 +259,15 @@ impl Game {
             return;
         };
         let dt = (end_ms - now_ms).abs();
-        let j = JudgmentWindows::for_scale(self.chart.judgment_scale(end_ms)).judge(dt);
+        let j = if self.chart.ln_mode == LnMode::Ln {
+            if now_ms >= end_ms {
+                Judgment::Perfect
+            } else {
+                Judgment::Miss
+            }
+        } else {
+            JudgmentWindows::for_scale(self.chart.judgment_scale(end_ms)).judge(dt)
+        };
         self.chart.notes[i].hit = true;
         self.chart.notes[i].held_since = None;
         self.apply(j, now_ms);
@@ -301,7 +309,12 @@ impl Game {
             }
             let i = self.held_notes[position];
             if self.chart.notes[i].end_ms.is_some_and(|end| {
-                end + JudgmentWindows::for_scale(self.chart.judgment_scale(end)).miss_after < now_ms
+                if self.chart.ln_mode == LnMode::Ln {
+                    end <= now_ms
+                } else {
+                    end + JudgmentWindows::for_scale(self.chart.judgment_scale(end)).miss_after
+                        < now_ms
+                }
             }) {
                 self.held_notes.remove(position);
                 self.chart.notes[i].hit = true;
@@ -676,6 +689,29 @@ mod tests {
         for rank in [None, Some(0), Some(1), Some(2), Some(3), Some(4)] {
             assert_eq!(work(0, rank), (1, 2, 1));
             assert_eq!(work(100_000, rank), (1, 2, 1));
+        }
+    }
+
+    #[test]
+    fn completed_holds_leave_the_active_set_in_every_mode() {
+        for mode in [LnMode::Ln, LnMode::Cn, LnMode::Hcn] {
+            let mut chart = chart_with(vec![ln(1000.0, 2000.0, 0), ln(1000.0, 3000.0, 1)], 4);
+            chart.ln_mode = mode;
+            let mut g = Game::new(chart);
+            g.hit(0, 1000.0);
+            g.hit(1, 1000.0);
+            let deadline = if mode == LnMode::Ln { 2000.0 } else { 2160.1 };
+            g.check_misses(deadline);
+            assert_eq!(g.held_notes, vec![1]);
+            assert_eq!(g.perfect, 3);
+            g.release(0, deadline);
+            assert_eq!(g.perfect, 3);
+            g.check_misses(3200.0);
+            assert!(g.held_notes.is_empty());
+            assert_eq!(g.perfect, 4);
+            g.miss_visits = 0;
+            g.check_misses(4000.0);
+            assert_eq!(g.miss_visits, 0);
         }
     }
 
