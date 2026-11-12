@@ -725,7 +725,7 @@ fn positive_percent(value: &str) -> Option<f64> {
         .trim()
         .parse::<f64>()
         .ok()
-        .filter(|v| v.is_finite() && *v > 0.0)
+        .filter(|v| crate::game::JudgmentWindows::valid_percent(*v))
 }
 
 fn collect_exrank_events(
