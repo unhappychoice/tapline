@@ -197,6 +197,22 @@ fn lnmode_is_loaded_and_invalid_or_missing_values_default_to_cn() {
 }
 
 #[test]
+fn lnmode_completion_preserves_scroll_and_speed_events() {
+    let mut game = long_note_game(
+        "#LNMODE 1\n#SCROLL01 -1\n#SPEED01 0.5\n#001SC:01\n#001SP:01",
+        "#00151:0101",
+    );
+    assert_eq!(game.chart.scroll[0].time_ms, 4000.0);
+    assert_eq!(game.chart.scroll[0].multiplier, -1.0);
+    assert_eq!(game.chart.speed[0].time_ms, 4000.0);
+    assert_eq!(game.chart.speed[0].multiplier, 0.5);
+    game.hit(0, 4000.0);
+    game.check_misses(6000.0);
+    assert_eq!((game.perfect, game.miss), (2, 0));
+    assert!(game.chart.notes[0].hit);
+}
+
+#[test]
 fn repeated_lnmode_headers_use_the_last_value() {
     use tapline::chart::LnMode;
     for (value, mode) in [
