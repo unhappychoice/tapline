@@ -58,15 +58,15 @@ pub const MISS_AFTER: f64 = 160.0;
 pub const MINE_WINDOW: f64 = 40.0;
 
 #[derive(Clone, Copy)]
-struct JudgmentWindows {
+pub(crate) struct JudgmentWindows {
     perfect: f64,
     great: f64,
-    good: f64,
-    miss_after: f64,
+    pub(crate) good: f64,
+    pub(crate) miss_after: f64,
 }
 
 impl JudgmentWindows {
-    fn for_rank(rank: Option<u8>) -> Self {
+    pub(crate) fn for_rank(rank: Option<u8>) -> Self {
         // Scale tapline's NORMAL windows consistently across all tiers.
         const RANK_SCALES: [f64; 5] = [0.5, 0.75, 1.0, 1.25, 1.5];
         let scale = rank
