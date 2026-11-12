@@ -54,6 +54,20 @@ pub struct BgaEvent {
     pub bmp_id: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeTarget {
+    Bgm,
+    Key,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct VolumeEvent {
+    pub time_ms: f64,
+    pub target: VolumeTarget,
+    /// Linear volume, 1..=255; 255 is the original volume.
+    pub volume: u8,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct SampleSlice {
     pub start_ms: f64,
@@ -75,6 +89,7 @@ pub struct Chart {
     pub rank: Option<u8>,
     pub total: Option<f64>,
     pub vol_wav: Option<u8>,
+    pub volume_events: Vec<VolumeEvent>,
     pub notes: Vec<Note>,
     pub invisible_notes: Vec<InvisibleNote>,
     pub mines: Vec<Mine>,
@@ -109,6 +124,7 @@ impl Default for Chart {
             rank: None,
             total: None,
             vol_wav: None,
+            volume_events: Vec::new(),
             notes: Vec::new(),
             invisible_notes: Vec::new(),
             mines: Vec::new(),

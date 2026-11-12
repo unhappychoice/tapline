@@ -1,4 +1,7 @@
-use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, InvisibleNote, Mine, Note};
+use crate::chart::{
+    keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, InvisibleNote, Mine, Note, VolumeEvent,
+    VolumeTarget,
+};
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -27,7 +30,7 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
 pub fn read_meta_with_seed(path: &Path, seed: u64) -> Result<ChartMeta> {
     let text = read_text(path)?;
     let text = resolve_control_flow(&text, seed);
-    let mut pass = HeaderPass::default();
+    let mut pass = HeaderPass::for_text(&text);
     let mut raw = Vec::new();
     for line in header_lines(&text) {
         if let Some(parsed) = parse_channel_line(line) {
@@ -61,7 +64,7 @@ pub fn load_with_seed(path: &Path, lead_in_ms: f64, seed: u64) -> Result<Chart> 
     let text = read_text(path)?;
     let text = resolve_control_flow(&text, seed);
     let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let mut pass = HeaderPass::default();
+    let mut pass = HeaderPass::for_text(&text);
     let mut raw: Vec<(u32, String, String)> = Vec::new();
     for line in header_lines(&text) {
         match parse_channel_line(line) {
@@ -143,11 +146,12 @@ fn build_chart(
     lead_in_ms: f64,
     pms: bool,
 ) -> Result<Chart> {
-    let wav_paths = resolve_wavs(&dir, &pass.wav_defs);
+    let assets = AssetIndex::new(&dir);
+    let wav_paths = resolve_wavs(&assets, &pass.wav_defs);
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true, pms);
-    let mut bga = collect_bga_events(&raw, &timeline);
-    let bmp_paths = resolve_bmp_paths(&dir, &pass.bmp_defs);
+    let mut bga = collect_bga_events(&raw, &timeline, pass.base);
+    let bmp_paths = resolve_bmp_paths(&assets, &pass.bmp_defs);
     let lane_count = playable_lane_count(&acc, &p2_acc, pms);
     let p1_lane_count = if pms { 9 } else { acc.lanes.count() };
     let p2_lane_count = p2_acc.lanes.count();
@@ -211,6 +215,7 @@ fn build_chart(
         rank: pass.rank,
         total: pass.total,
         vol_wav: pass.vol_wav,
+        volume_events: collect_volume_events(&raw, &timeline),
         notes,
         mines,
         p2_notes,
@@ -238,14 +243,14 @@ fn collect_chart_sides(
 ) -> (Timeline, ChartAcc, ChartAcc) {
     let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
     let scales = collect_measure_scales(raw);
-    let events = collect_timing_events(raw, &pass.bpm_defs, &pass.stop_defs);
+    let events = collect_timing_events(raw, &pass.bpm_defs, &pass.stop_defs, pass.base);
     let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
     let lanes = if pms { PMS_LANES } else { P1_LANES };
-    let acc = accumulate_side(raw, &timeline, lanes, collect_bgm);
+    let acc = accumulate_side(raw, &timeline, lanes, collect_bgm, pass.lntype, pass.base);
     let p2_acc = if pms {
         ChartAcc::default()
     } else {
-        accumulate_side(raw, &timeline, P2_LANES, false)
+        accumulate_side(raw, &timeline, P2_LANES, false, pass.lntype, pass.base)
     };
     (timeline, acc, p2_acc)
 }
@@ -335,15 +340,17 @@ fn accumulate_side(
     timeline: &Timeline,
     lanes: LaneMap,
     collect_bgm: bool,
+    lntype: u8,
+    base: u32,
 ) -> ChartAcc {
-    let raw = merge_note_lines(raw, lanes);
+    let raw = merge_note_lines(raw, lanes, base);
     let raw = raw.as_slice();
     let mut acc = ChartAcc::default();
     for (measure, ch, data) in raw {
         if let Some(lane) = (lanes.normal)(ch) {
-            push_normal_slots(&mut acc, lane, ch, *measure, data, timeline);
+            push_normal_slots(&mut acc, lane, *measure, data, timeline, base);
         } else if let Some(lane) = (lanes.invisible)(ch) {
-            let slots = parse_slots(data);
+            let slots = parse_slots(data, base);
             slots
                 .iter()
                 .enumerate()
@@ -357,15 +364,23 @@ fn accumulate_side(
                     });
                 });
         } else if collect_bgm && ch == "01" {
-            push_bgm_slots(&mut acc, *measure, data, timeline);
+            push_bgm_slots(&mut acc, *measure, data, timeline, base);
         }
     }
-    materialize_long_notes_with(&mut acc, raw, timeline, lanes.long);
+    if lntype == 2 {
+        materialize_continuous_long_notes(&mut acc, raw, timeline, lanes.long, base);
+    } else {
+        materialize_long_notes_with(&mut acc, raw, timeline, lanes.long, base);
+    }
     materialize_mines_with(&mut acc, raw, timeline, lanes.mine);
     acc
 }
 
-fn merge_note_lines(raw: &[(u32, String, String)], lanes: LaneMap) -> Vec<(u32, String, String)> {
+fn merge_note_lines(
+    raw: &[(u32, String, String)],
+    lanes: LaneMap,
+    base: u32,
+) -> Vec<(u32, String, String)> {
     let mut seen = HashSet::new();
     let mut merged = raw.to_vec();
     for (measure, ch, data) in merged.iter_mut().rev() {
@@ -375,7 +390,7 @@ fn merge_note_lines(raw: &[(u32, String, String)], lanes: LaneMap) -> Vec<(u32, 
             || (lanes.long)(ch).is_some()
             || (lanes.invisible)(ch).is_some()
         {
-            parse_slots(data)
+            parse_slots(data, base)
         } else {
             continue;
         };
@@ -402,12 +417,12 @@ fn greatest_common_divisor(a: usize, b: usize) -> usize {
 fn push_normal_slots(
     acc: &mut ChartAcc,
     lane: usize,
-    _ch: &str,
     measure: u32,
     data: &str,
     timeline: &Timeline,
+    base: u32,
 ) {
-    let slots = parse_slots(data);
+    let slots = parse_slots(data, base);
     let n = slots.len();
     if n == 0 {
         return;
@@ -429,8 +444,8 @@ fn push_normal_slots(
     }
 }
 
-fn push_bgm_slots(acc: &mut ChartAcc, measure: u32, data: &str, timeline: &Timeline) {
-    let slots = parse_slots(data);
+fn push_bgm_slots(acc: &mut ChartAcc, measure: u32, data: &str, timeline: &Timeline, base: u32) {
+    let slots = parse_slots(data, base);
     let n = slots.len();
     if n == 0 {
         return;
@@ -452,13 +467,14 @@ fn materialize_long_notes_with(
     raw: &[(u32, String, String)],
     timeline: &Timeline,
     lane_of: fn(&str) -> Option<usize>,
+    base: u32,
 ) {
     let mut per_lane: HashMap<usize, Vec<(f64, u32)>> = HashMap::new();
     for (measure, ch, data) in raw {
         let Some(lane) = lane_of(ch) else {
             continue;
         };
-        let slots = parse_slots(data);
+        let slots = parse_slots(data, base);
         let n = slots.len();
         if n == 0 {
             continue;
@@ -486,6 +502,56 @@ fn materialize_long_notes_with(
                 hit: false,
                 keysound: Some(ks),
                 end_ms: Some(end_ms),
+                held_since: None,
+            });
+        }
+    }
+}
+
+fn materialize_continuous_long_notes(
+    acc: &mut ChartAcc,
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    lane_of: fn(&str) -> Option<usize>,
+    base: u32,
+) {
+    let mut per_lane: HashMap<usize, Vec<(f64, f64, u32)>> = HashMap::new();
+    for (measure, ch, data) in raw {
+        let Some(lane) = lane_of(ch) else {
+            continue;
+        };
+        let slots = parse_slots(data, base);
+        let n = slots.len() as f64;
+        per_lane.entry(lane).or_default().extend(
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| **slot != 0)
+                .map(|(i, slot)| {
+                    let start = *measure as f64 + i as f64 / n;
+                    let end = *measure as f64 + (i + 1) as f64 / n;
+                    (start, end, *slot)
+                }),
+        );
+    }
+    for (lane, mut spans) in per_lane {
+        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let mut merged: Vec<(f64, f64, u32)> = Vec::new();
+        for (start, end, keysound) in spans {
+            if let Some(previous) = merged.last_mut().filter(|span| start <= span.1) {
+                previous.1 = previous.1.max(end);
+            } else {
+                merged.push((start, end, keysound));
+            }
+        }
+        for (start, end, keysound) in merged {
+            acc.lanes.observe_lane(lane);
+            acc.notes.push(Note {
+                time_ms: timeline.time_at(start.floor() as u32, start.fract()),
+                lane,
+                hit: false,
+                keysound: Some(keysound),
+                end_ms: Some(timeline.time_at(end.floor() as u32, end.fract())),
                 held_since: None,
             });
         }
@@ -532,13 +598,42 @@ fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
     }
 }
 
-fn collect_bga_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec<BgaEvent> {
+fn collect_volume_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec<VolumeEvent> {
+    let mut events = Vec::new();
+    for (measure, channel, data) in raw {
+        let target = match channel.as_str() {
+            "97" => VolumeTarget::Bgm,
+            "98" => VolumeTarget::Key,
+            _ => continue,
+        };
+        let slots = parse_slots_hex(data);
+        events.extend(
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| **v != 0)
+                .map(|(i, &volume)| VolumeEvent {
+                    time_ms: timeline.time_at(*measure, i as f64 / slots.len() as f64),
+                    target,
+                    volume: volume as u8,
+                }),
+        );
+    }
+    events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+    events
+}
+
+fn collect_bga_events(
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    base: u32,
+) -> Vec<BgaEvent> {
     let mut out: Vec<BgaEvent> = Vec::new();
     for (measure, ch, data) in raw {
         let Some(layer) = bga_channel_to_layer(ch) else {
             continue;
         };
-        let slots = parse_slots(data);
+        let slots = parse_slots(data, base);
         let n = slots.len();
         if n == 0 {
             continue;
@@ -558,24 +653,8 @@ fn collect_bga_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec
     out
 }
 
-fn resolve_bmp_paths(dir: &Path, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
-    defs.iter()
-        .filter_map(|(id, name)| {
-            let direct = dir.join(name);
-            if direct.exists() {
-                return Some((*id, direct));
-            }
-            let stem = Path::new(name)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(name);
-            ["png", "bmp", "jpg", "jpeg", "gif", "mp4", "webm"]
-                .iter()
-                .map(|ext| dir.join(format!("{stem}.{ext}")))
-                .find(|p| p.exists())
-                .map(|p| (*id, p))
-        })
-        .collect()
+fn resolve_bmp_paths(assets: &AssetIndex, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
+    assets.resolve(defs, &["png", "bmp", "jpg", "jpeg", "gif", "mp4", "webm"])
 }
 
 fn mine_channel_to_lane(ch: &str) -> Option<usize> {
@@ -683,6 +762,7 @@ fn collect_timing_events(
     raw: &[(u32, String, String)],
     bpm_defs: &HashMap<u32, f64>,
     stop_defs: &HashMap<u32, f64>,
+    base: u32,
 ) -> Vec<TimingEvent> {
     type TimingResolver<'a> = Box<dyn Fn(u32) -> Option<TimingEventKind> + 'a>;
     let mut out: Vec<TimingEvent> = Vec::new();
@@ -693,11 +773,11 @@ fn collect_timing_events(
                 Box::new(|v| Some(TimingEventKind::Bpm(v as f64))),
             ),
             "08" => (
-                parse_slots(data),
+                parse_slots(data, base),
                 Box::new(|v| bpm_defs.get(&v).copied().map(TimingEventKind::Bpm)),
             ),
             "09" => (
-                parse_slots(data),
+                parse_slots(data, base),
                 Box::new(|v| stop_defs.get(&v).copied().map(TimingEventKind::Stop)),
             ),
             _ => continue,
@@ -861,6 +941,7 @@ impl Timeline {
 }
 
 struct HeaderPass {
+    base: u32,
     title: String,
     subtitle: String,
     artist: String,
@@ -886,6 +967,7 @@ struct HeaderPass {
 impl Default for HeaderPass {
     fn default() -> Self {
         Self {
+            base: 36,
             title: String::new(),
             subtitle: String::new(),
             artist: String::new(),
@@ -911,6 +993,23 @@ impl Default for HeaderPass {
 }
 
 impl HeaderPass {
+    fn for_text(text: &str) -> Self {
+        let base = header_lines(text)
+            .filter_map(|line| {
+                let (cmd, val) = split_cmd_value(line);
+                cmd.eq_ignore_ascii_case("BASE")
+                    .then(|| val.trim().parse::<u32>().ok())
+                    .flatten()
+                    .filter(|base| matches!(base, 36 | 62))
+            })
+            .last()
+            .unwrap_or(36);
+        Self {
+            base,
+            ..Self::default()
+        }
+    }
+
     fn absorb(&mut self, line: &str) {
         let (cmd, val) = split_cmd_value(line);
         let up = cmd.to_ascii_uppercase();
@@ -960,7 +1059,7 @@ impl HeaderPass {
                 }
             }
             "LNOBJ" => {
-                if let Ok(id) = u32::from_str_radix(val.trim(), 36) {
+                if let Some(id) = parse_id(val.trim(), self.base) {
                     if id > 0 {
                         self.lnobj = Some(id);
                     }
@@ -974,35 +1073,37 @@ impl HeaderPass {
                 }
             }
             _ => {
-                if let Some(rest) = up.strip_prefix("WAV") {
-                    if let Ok(id) = u32::from_str_radix(rest, 36) {
+                if let Some(rest) = up.strip_prefix("WAV").and_then(|_| cmd.get(3..)) {
+                    if let Some(id) = parse_id(rest, self.base) {
                         self.wav_defs.insert(id, val.trim().to_string());
                     }
-                } else if let Some(rest) =
-                    up.strip_prefix("BPM").or_else(|| up.strip_prefix("EXBPM"))
+                } else if let Some(rest) = up
+                    .strip_prefix("BPM")
+                    .and_then(|_| cmd.get(3..))
+                    .or_else(|| up.strip_prefix("EXBPM").and_then(|_| cmd.get(5..)))
                 {
                     if !rest.is_empty() {
-                        if let (Ok(id), Ok(v)) =
-                            (u32::from_str_radix(rest, 36), val.trim().parse::<f64>())
+                        if let (Some(id), Ok(v)) =
+                            (parse_id(rest, self.base), val.trim().parse::<f64>())
                         {
                             if v > 0.0 {
                                 self.bpm_defs.insert(id, v);
                             }
                         }
                     }
-                } else if let Some(rest) = up.strip_prefix("STOP") {
+                } else if let Some(rest) = up.strip_prefix("STOP").and_then(|_| cmd.get(4..)) {
                     if !rest.is_empty() {
-                        if let (Ok(id), Ok(v)) =
-                            (u32::from_str_radix(rest, 36), val.trim().parse::<f64>())
+                        if let (Some(id), Ok(v)) =
+                            (parse_id(rest, self.base), val.trim().parse::<f64>())
                         {
                             if v > 0.0 {
                                 self.stop_defs.insert(id, v);
                             }
                         }
                     }
-                } else if let Some(rest) = up.strip_prefix("BMP") {
+                } else if let Some(rest) = up.strip_prefix("BMP").and_then(|_| cmd.get(3..)) {
                     if !rest.is_empty() {
-                        if let Ok(id) = u32::from_str_radix(rest, 36) {
+                        if let Some(id) = parse_id(rest, self.base) {
                             self.bmp_defs.insert(id, val.trim().to_string());
                         }
                     }
@@ -1256,7 +1357,25 @@ fn split_cmd_value(body: &str) -> (&str, &str) {
     }
 }
 
-fn parse_slots(data: &str) -> Vec<u32> {
+fn parse_id(value: &str, base: u32) -> Option<u32> {
+    if base == 36 {
+        return u32::from_str_radix(value, 36).ok();
+    }
+    if value.is_empty() {
+        return None;
+    }
+    value.bytes().try_fold(0u32, |id, byte| {
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'A'..=b'Z' => byte - b'A' + 10,
+            b'a'..=b'z' => byte - b'a' + 36,
+            _ => return None,
+        };
+        id.checked_mul(base)?.checked_add(u32::from(digit))
+    })
+}
+
+fn parse_slots(data: &str, base: u32) -> Vec<u32> {
     let bytes = data.as_bytes();
     let take = bytes.len() - (bytes.len() % 2);
     (0..take)
@@ -1264,7 +1383,7 @@ fn parse_slots(data: &str) -> Vec<u32> {
         .map(|i| {
             std::str::from_utf8(&bytes[i..i + 2])
                 .ok()
-                .and_then(|s| u32::from_str_radix(s, 36).ok())
+                .and_then(|s| parse_id(s, base))
                 .unwrap_or(0)
         })
         .collect()
@@ -1285,20 +1404,68 @@ fn channel_to_lane(ch: &str) -> Option<usize> {
     }
 }
 
-fn resolve_wavs(dir: &Path, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
-    defs.iter()
-        .filter_map(|(id, name)| {
-            let direct = dir.join(name);
-            if direct.exists() {
-                return Some((*id, direct));
+struct AssetIndex {
+    exact: HashMap<PathBuf, PathBuf>,
+    folded: HashMap<String, PathBuf>,
+}
+
+impl AssetIndex {
+    fn new(dir: &Path) -> Self {
+        let mut assets = Self {
+            exact: HashMap::new(),
+            folded: HashMap::new(),
+        };
+        assets.scan(dir, Path::new(""));
+        assets
+    }
+
+    fn resolve(&self, defs: &HashMap<u32, String>, extensions: &[&str]) -> HashMap<u32, PathBuf> {
+        defs.iter()
+            .filter_map(|(id, name)| {
+                let normalized = name.replace('\\', "/");
+                let path: PathBuf = Path::new(&normalized)
+                    .components()
+                    .filter(|component| *component != std::path::Component::CurDir)
+                    .collect();
+                self.find(&path)
+                    .or_else(|| {
+                        extensions
+                            .iter()
+                            .find_map(|ext| self.find(&path.with_extension(ext)))
+                    })
+                    .map(|path| (*id, path.clone()))
+            })
+            .collect()
+    }
+
+    fn find(&self, path: &Path) -> Option<&PathBuf> {
+        self.exact
+            .get(path)
+            .or_else(|| self.folded.get(&path.to_string_lossy().to_lowercase()))
+    }
+
+    fn scan(&mut self, dir: &Path, relative: &Path) {
+        let Ok(entries) = std::fs::read_dir(dir.join(relative)) else {
+            return;
+        };
+        let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = relative.join(entry.file_name());
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                self.scan(dir, &path);
+            } else if entry.path().is_file() {
+                self.folded
+                    .entry(path.to_string_lossy().to_lowercase())
+                    .or_insert_with(|| entry.path());
+                self.exact.insert(path, entry.path());
             }
-            ["wav", "ogg", "mp3", "flac"]
-                .iter()
-                .map(|ext| direct.with_extension(ext))
-                .find(|p| p.exists())
-                .map(|p| (*id, p))
-        })
-        .collect()
+        }
+    }
+}
+
+fn resolve_wavs(assets: &AssetIndex, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
+    assets.resolve(defs, &["wav", "ogg", "mp3", "flac"])
 }
 
 #[cfg(test)]
@@ -1314,6 +1481,145 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn parse_slots_distinguishes_base62_letters_and_keeps_base36_case_insensitive() {
+        assert_eq!(parse_slots("0A0aZZzz10", 62), vec![10, 36, 2205, 3843, 62]);
+        assert_eq!(parse_slots("0A0aZZzz10", 36), vec![10, 10, 1295, 1295, 36]);
+        assert_eq!(parse_slots("!!é0?", 62), vec![0, 0, 0]);
+        assert_eq!(parse_id("", 62), None);
+        assert_eq!(parse_id("zzzzzzzz", 62), None);
+    }
+
+    #[test]
+    fn header_prescan_uses_the_last_supported_base_in_active_control_flow() {
+        let text = resolve_control_flow(
+            "#BASE 62\n#SETRANDOM 1\n#IF 2\n#BASE 36\n#ENDIF\n#BASE 16\n",
+            0,
+        );
+        assert_eq!(HeaderPass::for_text(&text).base, 62);
+        assert_eq!(HeaderPass::for_text("#BASE 62\n#BASE 36").base, 36);
+        assert_eq!(HeaderPass::for_text("#BASE invalid").base, 36);
+    }
+
+    #[test]
+    fn load_prescans_base62_and_preserves_object_ids_across_channels() {
+        let dir = tempdir();
+        let path = dir.join("base62.bms");
+        ["upper.wav", "lower.wav", "upper.png", "lower.png"]
+            .iter()
+            .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        std::fs::write(
+            &path,
+            "#BPM 60
+#wav0A upper.wav
+#WaV0a lower.wav
+#BMP0A upper.png
+#bmp0a lower.png
+#BPM0A 120
+#bpm0a 240
+#STOP0A 48
+#stop0a 96
+#LNOBJ 0a
+#00011:0A0a
+#00021:0a
+#00052:0a0A
+#00062:0a0A
+#00001:0A0a
+#00004:0A0a
+#00008:0A0a
+#00009:0A0a
+#00003:0a
+#000D1:0a
+#bAsE 62
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.wav_paths[&10], dir.join("upper.wav"));
+        assert_eq!(chart.wav_paths[&36], dir.join("lower.wav"));
+        assert_eq!(chart.bmp_paths[&10], dir.join("upper.png"));
+        assert_eq!(chart.bmp_paths[&36], dir.join("lower.png"));
+        assert_eq!(
+            chart.bgm.iter().map(|e| e.keysound).collect::<Vec<_>>(),
+            vec![10, 36]
+        );
+        assert_eq!(
+            chart.bga.iter().map(|e| e.bmp_id).collect::<Vec<_>>(),
+            vec![10, 36]
+        );
+        assert!(chart
+            .notes
+            .iter()
+            .any(|n| n.keysound == Some(10) && n.end_ms.is_some()));
+        assert!(chart
+            .notes
+            .iter()
+            .any(|n| n.keysound == Some(36) && n.end_ms.is_some()));
+        assert!(chart.p2_notes.iter().all(|n| n.keysound == Some(36)));
+        assert_eq!(chart.mines[0].damage, 10);
+        assert_eq!(read_meta(&path).unwrap().lane_count, chart.lane_count);
+    }
+
+    #[test]
+    fn base62_timing_references_are_case_sensitive_and_direct_bpm_stays_hexadecimal() {
+        let text = "#BPM0A 120\n#bpm0a 240\n#STOP0A 48\n#stop0a 96\n#BASE 62";
+        let mut pass = HeaderPass::for_text(text);
+        header_lines(text).for_each(|line| pass.absorb(line));
+        assert_eq!(pass.bpm_defs[&10], 120.0);
+        assert_eq!(pass.bpm_defs[&36], 240.0);
+        assert_eq!(pass.stop_defs[&10], 48.0);
+        assert_eq!(pass.stop_defs[&36], 96.0);
+        let raw = vec![
+            (0, "08".into(), "0A0a".into()),
+            (0, "09".into(), "0A0a".into()),
+        ];
+        let events = collect_timing_events(&raw, &pass.bpm_defs, &pass.stop_defs, pass.base);
+        assert!(matches!(events[0].kind, TimingEventKind::Bpm(120.0)));
+        assert!(matches!(events[2].kind, TimingEventKind::Bpm(240.0)));
+        assert!(matches!(events[1].kind, TimingEventKind::Stop(48.0)));
+        assert!(matches!(events[3].kind, TimingEventKind::Stop(96.0)));
+        let hex = collect_timing_events(
+            &[(0, "03".into(), "0a".into())],
+            &pass.bpm_defs,
+            &pass.stop_defs,
+            pass.base,
+        );
+        assert!(matches!(hex[0].kind, TimingEventKind::Bpm(10.0)));
+    }
+
+    #[test]
+    fn load_base62_keeps_uppercase_and_lowercase_notes_separate() {
+        let dir = tempdir();
+        let path = dir.join("notes.bms");
+        std::fs::write(&path, "#00011:0A0a\n#BASE 62").unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(
+            chart.notes.iter().map(|n| n.keysound).collect::<Vec<_>>(),
+            vec![Some(10), Some(36)]
+        );
+    }
+
+    #[test]
+    fn load_keeps_default_and_explicit_base36_ids_case_insensitive() {
+        let dir = tempdir();
+        let path = dir.join("base36.bms");
+        std::fs::write(dir.join("last.wav"), b"").unwrap();
+        for base in ["", "#BASE 36"] {
+            std::fs::write(
+                &path,
+                format!("#WAV0A first.wav\n#WAV0a last.wav\n#00011:0A0a\n{base}"),
+            )
+            .unwrap();
+            let chart = load(&path, 0.0).unwrap();
+            assert_eq!(chart.wav_paths.len(), 1);
+            assert_eq!(chart.wav_paths[&10], dir.join("last.wav"));
+            assert_eq!(
+                chart.notes.iter().map(|n| n.keysound).collect::<Vec<_>>(),
+                vec![Some(10), Some(10)]
+            );
+        }
     }
 
     #[test]
@@ -1414,23 +1720,49 @@ mod tests {
     }
 
     #[test]
+    fn base62_preserves_pms_invisible_ids_and_exbpm_aliases() {
+        let dir = tempdir();
+        let path = dir.join("base62.pms");
+        std::fs::write(
+            &path,
+            "#BASE 62\n#BPM 60\n#EXBPM0A 120\n#exbpm0a 240\n#00008:0A0a\n#00011:0A0a\n#00045:0A0a\n#00045:000A\n",
+        )
+        .unwrap();
+        let chart = load_with_seed(&path, 0.0, 42).unwrap();
+        assert_eq!(read_meta_with_seed(&path, 42).unwrap().lane_count, 9);
+        assert_eq!(chart.lane_count, 9);
+        assert_eq!(chart.notes[0].keysound, Some(10));
+        assert_eq!(chart.notes[1].keysound, Some(36));
+        assert_eq!(chart.notes[1].time_ms, 1000.0);
+        assert_eq!(chart.invisible_notes.len(), 2);
+        assert!(chart.invisible_notes.iter().all(|note| note.lane == 8));
+        assert!(chart.invisible_notes.iter().all(|note| note.keysound == 10));
+        assert!(chart.p2_invisible_notes.is_empty());
+        let text = "#BASE 62\n#EXBPM0A 120\n#exbpm0a 240";
+        let mut pass = HeaderPass::for_text(text);
+        header_lines(text).for_each(|line| pass.absorb(line));
+        assert_eq!(pass.bpm_defs[&10], 120.0);
+        assert_eq!(pass.bpm_defs[&36], 240.0);
+    }
+
+    #[test]
     fn parse_slots_reads_base36_pairs() {
-        assert_eq!(parse_slots("00010203"), vec![0, 1, 2, 3]);
+        assert_eq!(parse_slots("00010203", 36), vec![0, 1, 2, 3]);
     }
 
     #[test]
     fn parse_slots_handles_base36_letters() {
-        assert_eq!(parse_slots("0AZZ10"), vec![10, 1295, 36]);
+        assert_eq!(parse_slots("0AZZ10", 36), vec![10, 1295, 36]);
     }
 
     #[test]
     fn parse_slots_drops_a_trailing_odd_char() {
-        assert_eq!(parse_slots("010"), vec![1]);
+        assert_eq!(parse_slots("010", 36), vec![1]);
     }
 
     #[test]
     fn parse_slots_treats_bad_hex_as_zero() {
-        assert_eq!(parse_slots("!!!!"), vec![0, 0]);
+        assert_eq!(parse_slots("!!!!", 36), vec![0, 0]);
     }
 
     #[test]
@@ -1676,7 +2008,7 @@ mod tests {
         ];
         let bpm_defs: HashMap<u32, f64> = [(1u32, 175.5)].into();
         let stop_defs: HashMap<u32, f64> = [(1u32, 96.0)].into();
-        let evs = collect_timing_events(&raw, &bpm_defs, &stop_defs);
+        let evs = collect_timing_events(&raw, &bpm_defs, &stop_defs, 36);
         assert_eq!(evs.len(), 3);
         assert!(matches!(evs[0].kind, TimingEventKind::Bpm(v) if (v - 120.0).abs() < 1e-6));
         assert!(matches!(evs[1].kind, TimingEventKind::Bpm(v) if (v - 175.5).abs() < 1e-6));
@@ -1690,7 +2022,7 @@ mod tests {
             (2u32, "09".to_string(), "0099".to_string()),
         ];
         let empty: HashMap<u32, f64> = HashMap::new();
-        assert!(collect_timing_events(&raw, &empty, &empty).is_empty());
+        assert!(collect_timing_events(&raw, &empty, &empty, 36).is_empty());
     }
 
     #[test]
@@ -1856,6 +2188,24 @@ mod tests {
     }
 
     #[test]
+    fn volume_events_use_hex_skip_rests_and_follow_the_timeline() {
+        let dir = tempdir();
+        let path = dir.join("volume.bms");
+        std::fs::write(&path, "#BPM 120\n#STOP01 192\n#00109:01\n#00103:003C\n#00102:0.5\n#00298:ff\n#00197:004000GG\n#00198:0080\n").unwrap();
+        let chart = load(&path, 100.0).unwrap();
+        assert_eq!(chart.volume_events.len(), 3);
+        let events = &chart.volume_events;
+        assert_eq!(events[0].target, VolumeTarget::Bgm);
+        assert_eq!(events[0].volume, 64);
+        assert_eq!(events[0].time_ms, 4350.0);
+        assert_eq!(events[1].target, VolumeTarget::Key);
+        assert_eq!(events[1].volume, 128);
+        assert_eq!(events[1].time_ms, 4600.0);
+        assert_eq!(events[2].volume, 255);
+        assert_eq!(events[2].time_ms, 5600.0);
+    }
+
+    #[test]
     fn load_records_bga_events_from_channels_04_06_07() {
         let dir = tempdir();
         let path = dir.join("song.bms");
@@ -1887,7 +2237,7 @@ mod tests {
         let dir = tempdir();
         std::fs::write(dir.join("cover.jpg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "cover.png".to_string())].into();
-        let out = resolve_bmp_paths(&dir, &defs);
+        let out = resolve_bmp_paths(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("cover.jpg"));
     }
 
@@ -2602,11 +2952,138 @@ Always
     }
 
     #[test]
+    fn load_resolves_windows_paths_and_case_insensitive_assets() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("sub/nested")).unwrap();
+        [
+            "sub/kick.wav",
+            "sub/nested/Snare.OGG",
+            "Cover.PNG",
+            "sub/Background.JPG",
+        ]
+        .iter()
+        .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        let chart_path = dir.join("chart.bms");
+        std::fs::write(
+            &chart_path,
+            "#BPM 120\n#WAV01 SUB\\KICK.WAV\n#WAV02 SUB\\NESTED\\SNARE.WAV\n\
+             #BMP01 cover.png\n#BMP02 SUB\\BACKGROUND.BMP\n#00111:0102\n",
+        )
+        .unwrap();
+        let chart = load(&chart_path, 0.0).unwrap();
+        assert_eq!(chart.wav_paths.get(&1), Some(&dir.join("sub/kick.wav")));
+        assert_eq!(
+            chart.wav_paths.get(&2),
+            Some(&dir.join("sub/nested/Snare.OGG"))
+        );
+        assert_eq!(chart.bmp_paths.get(&1), Some(&dir.join("Cover.PNG")));
+        assert_eq!(
+            chart.bmp_paths.get(&2),
+            Some(&dir.join("sub/Background.JPG"))
+        );
+    }
+
+    #[test]
+    fn load_pms_resolves_windows_assets_and_preserves_ninth_lane() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("assets/Kick.OGG"), b"").unwrap();
+        std::fs::write(dir.join("assets/Cover.PNG"), b"").unwrap();
+        let path = dir.join("chart.pms");
+        std::fs::write(
+            &path,
+            "#BPM 120\n#WAV01 ASSETS\\KICK.WAV\n#BMP01 ASSETS\\COVER.BMP\n#00125:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.lane_count, 9);
+        assert_eq!(chart.notes.len(), 1);
+        assert_eq!(chart.notes[0].lane, 8);
+        assert_eq!(chart.notes[0].keysound, Some(1));
+        assert_eq!(chart.wav_paths.get(&1), Some(&dir.join("assets/Kick.OGG")));
+        assert_eq!(chart.bmp_paths.get(&1), Some(&dir.join("assets/Cover.PNG")));
+    }
+
+    #[test]
+    fn resolve_assets_normalizes_leading_current_directory_components() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        [
+            "kick.wav",
+            "Cover.PNG",
+            "sub/Snare.OGG",
+            "sub/Background.JPG",
+        ]
+        .iter()
+        .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        let assets = AssetIndex::new(&dir);
+        ["./", ".\\", "././", ".\\.\\"].iter().for_each(|prefix| {
+            let wavs = [
+                (1, format!("{prefix}kick.wav")),
+                (2, format!("{prefix}SUB\\SNARE.WAV")),
+            ]
+            .into();
+            let bmps = [
+                (1, format!("{prefix}cover.png")),
+                (2, format!("{prefix}SUB\\BACKGROUND.BMP")),
+            ]
+            .into();
+            let wav_paths = resolve_wavs(&assets, &wavs);
+            let bmp_paths = resolve_bmp_paths(&assets, &bmps);
+            assert_eq!(wav_paths.get(&1), Some(&dir.join("kick.wav")));
+            assert_eq!(wav_paths.get(&2), Some(&dir.join("sub/Snare.OGG")));
+            assert_eq!(bmp_paths.get(&1), Some(&dir.join("Cover.PNG")));
+            assert_eq!(bmp_paths.get(&2), Some(&dir.join("sub/Background.JPG")));
+        });
+    }
+
+    #[test]
+    fn resolve_assets_prefers_requested_extension_over_fallback() {
+        let dir = tempdir();
+        ["Kick.WAV", "kick.ogg", "Cover.BMP", "cover.png"]
+            .iter()
+            .for_each(|name| std::fs::write(dir.join(name), b"").unwrap());
+        let assets = AssetIndex::new(&dir);
+        let wavs = [(1, "kick.wav".to_string())].into();
+        let bmps = [(1, "cover.bmp".to_string())].into();
+        assert_eq!(
+            resolve_wavs(&assets, &wavs).get(&1),
+            Some(&dir.join("Kick.WAV"))
+        );
+        assert_eq!(
+            resolve_bmp_paths(&assets, &bmps).get(&1),
+            Some(&dir.join("Cover.BMP"))
+        );
+    }
+
+    #[test]
+    fn resolve_assets_prefers_exact_case_when_names_collide() {
+        let dir = tempdir();
+        std::fs::write(dir.join("Kick.wav"), b"").unwrap();
+        if dir.join("kick.wav").exists() {
+            return;
+        }
+        std::fs::write(dir.join("kick.wav"), b"").unwrap();
+        let defs = [(1, "kick.wav".to_string()), (2, "KICK.WAV".to_string())].into();
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
+        assert_eq!(out.get(&1), Some(&dir.join("kick.wav")));
+        assert_eq!(out.get(&2), Some(&dir.join("Kick.wav")));
+    }
+
+    #[test]
+    fn resolve_bmp_paths_does_not_fall_back_to_chart_directory() {
+        let dir = tempdir();
+        std::fs::write(dir.join("cover.jpg"), b"").unwrap();
+        let defs = [(1, "sub/cover.bmp".to_string())].into();
+        assert!(resolve_bmp_paths(&AssetIndex::new(&dir), &defs).is_empty());
+    }
+
+    #[test]
     fn resolve_wavs_returns_direct_match_when_file_exists() {
         let dir = tempdir();
         std::fs::write(dir.join("kick.wav"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("kick.wav"));
     }
 
@@ -2615,7 +3092,7 @@ Always
         let dir = tempdir();
         std::fs::write(dir.join("kick.ogg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("kick.ogg"));
     }
 
@@ -2623,7 +3100,7 @@ Always
     fn resolve_wavs_drops_entries_with_no_matching_file() {
         let dir = tempdir();
         let defs: HashMap<u32, String> = [(1u32, "missing.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert!(out.is_empty());
     }
 
@@ -2634,7 +3111,7 @@ Always
         std::fs::write(dir.join("audio/kick.ogg"), b"").unwrap();
         std::fs::write(dir.join("kick.ogg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "audio/kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert_eq!(out.get(&1).unwrap(), &dir.join("audio/kick.ogg"));
     }
 
@@ -2643,7 +3120,7 @@ Always
         let dir = tempdir();
         std::fs::write(dir.join("kick.ogg"), b"").unwrap();
         let defs: HashMap<u32, String> = [(1u32, "audio/kick.wav".to_string())].into();
-        let out = resolve_wavs(&dir, &defs);
+        let out = resolve_wavs(&AssetIndex::new(&dir), &defs);
         assert!(out.is_empty());
     }
 
