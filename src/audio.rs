@@ -124,9 +124,12 @@ impl SampleBank {
         if !self.enabled {
             return chart.duration_ms;
         }
-        let windows = crate::game::JudgmentWindows::for_rank(chart.rank);
         let notes = chart.notes.iter().map(|note| {
-            let delay = if auto_ks { 0.0 } else { windows.good };
+            let delay = if auto_ks {
+                0.0
+            } else {
+                crate::game::JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms)).good
+            };
             (note.time_ms + delay, note.keysound)
         });
         let bgm = chart
@@ -149,7 +152,10 @@ impl SampleBank {
         let judgment_end = chart
             .notes
             .iter()
-            .map(|note| note.end_ms.unwrap_or(note.time_ms) + windows.miss_after)
+            .map(|note| {
+                let end = note.end_ms.unwrap_or(note.time_ms);
+                end + crate::game::JudgmentWindows::for_scale(chart.judgment_scale(end)).miss_after
+            })
             .chain(
                 chart
                     .mines
@@ -589,6 +595,42 @@ mod tests {
                 assert_eq!(game.miss, 0);
             }
         }
+    }
+
+    #[test]
+    fn duration_tracks_extended_rank_at_note_start_and_end() {
+        let bank = duration_bank_with_length(80);
+        let mut chart = Chart {
+            rank: Some(0),
+            def_exrank: Some(200.0),
+            notes: vec![crate::chart::Note {
+                time_ms: 1000.0,
+                keysound: Some(1),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(bank.chart_duration_ms(&chart, false), 1392.0);
+        assert_eq!(bank.chart_duration_ms(&chart, true), 1352.0);
+        chart.exrank_events = vec![crate::chart::ExRankEvent {
+            time_ms: 2000.0,
+            percent: 300.0,
+        }];
+        chart.notes[0].end_ms = Some(5000.0);
+        for auto_ks in [false, true] {
+            chart.duration_ms = bank.chart_duration_ms(&chart, auto_ks);
+            assert_eq!(chart.duration_ms, 5512.0);
+            let mut game = crate::game::Game::new(chart);
+            game.hit(0, 1000.0);
+            game.check_misses(5496.0);
+            assert_eq!(game.perfect, 2);
+            assert!(game.chart.notes[0].hit);
+            chart = game.chart;
+            chart.notes[0].hit = false;
+        }
+        chart.notes[0].time_ms = 5000.0;
+        chart.notes[0].end_ms = None;
+        assert_eq!(bank.chart_duration_ms(&chart, false), 5532.0);
     }
 
     #[test]
