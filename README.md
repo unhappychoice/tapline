@@ -98,14 +98,15 @@ All charts play with the synth fallback — no WAV assets required.
 
 ## BMS support
 
-Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
+Encoding is auto-detected (UTF-8 → fallback Shift-JIS). Object IDs default to
+case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 
 ### Supported
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
 | headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BACKBMP`, `#COMMENT`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
-| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
+| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `97`/`98` (BGM/keysound volume), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, 9K PMS (`.pms`: `11–15 + 22–25`), plus 14K double-play when both sides fill 7 lanes each |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
@@ -125,8 +126,24 @@ above the song information. PNG, JPEG, BMP, and GIF artwork is rendered with
 true-color half-block characters; missing or invalid images are skipped.
 `#BACKBMP` is stored as metadata for future background rendering.
 
+`#VOLWAV` scales sample and synth playback by a percentage (default 100).
+Channels `97` (BGM) and `98` (keysounds) set independent volume multipliers
+for sounds triggered at or after each event: hexadecimal `01`–`FF`, with
+`FF` at full volume and `00` leaving the volume unchanged. These multipliers
+combine with `#VOLWAV`; already playing sounds retain their starting gain.
+
 Invisible notes update the lane keysound for empty presses without being drawn,
 judged, counted as notes, or played automatically.
+
+### BGA
+
+BMP, PNG, JPEG, and GIF still images are loaded before playback and drawn with
+true-color half-block characters to the left of the lanes when space permits.
+Channel `04` selects the base; `07` overlays it with pure black treated as
+transparent. Channel `06` replaces both for 500 ms after each MISS. Missing or
+undecodable images are skipped. Narrow terminals hide BGA without moving the
+lanes. Animated images use their first frame; video, Sixel, and Kitty graphics
+are not supported.
 
 ### Long notes and landmines
 
@@ -147,7 +164,6 @@ The parsed `damage` value does not scale the penalty or subtract score.
 ### Not yet supported (v1)
 
 - Landmine penalties proportional to the parsed `damage` value
-- BGA rendering (channels `04` / `06` / `07` and `#BMPxx` are parsed and stored on `Chart.bga` / `Chart.bmp_paths`, but the terminal renderer does not draw them yet)
 - Non-canonical double-play like 5K DP or asymmetric side counts (only 7K + 7K is folded into the 14-lane playable pool; other DP shapes are still parsed into `Chart.p2_notes` but not merged)
 
 ## bmson support
@@ -165,7 +181,7 @@ Supported layouts are `beat-5k`, `beat-7k`, `beat-14k`, `popn-5k`, and
 `generic-4keys` / `generic-5keys` / `generic-7keys` / `generic-14keys`.
 Turntable notes play automatically as background audio. Other layouts and
 legacy bmson versions are rejected. BGA base, overlay, and poor events are
-stored on `Chart`; BGA rendering remains unsupported.
+rendered using the same half-block image support as BMS charts.
 
 The format follows the [bmson specification](https://bmson-spec.readthedocs.io/en/master/doc/index.html).
 A playable example is available at `tests/fixtures/minimal.bmson`.

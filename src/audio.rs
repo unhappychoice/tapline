@@ -1,3 +1,4 @@
+use crate::chart::{Chart, VolumeTarget};
 use rayon::prelude::*;
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
@@ -8,6 +9,16 @@ use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+pub fn playback_gain(chart: &Chart, target: VolumeTarget, time_ms: f64) -> f32 {
+    let volume = chart
+        .volume_events
+        .iter()
+        .rev()
+        .find(|event| event.target == target && event.time_ms <= time_ms)
+        .map_or(255, |event| event.volume);
+    chart.vol_wav.unwrap_or(100) as f32 / 100.0 * volume as f32 / 255.0
+}
 
 #[derive(Clone)]
 struct DecodedSample {
@@ -165,28 +176,46 @@ impl SampleBank {
     }
 
     pub fn play(&self, id: u32) {
+        self.play_with_gain(id, 1.0);
+    }
+
+    pub fn play_with_gain(&self, id: u32, gain: f32) {
         self.sound_ids(&id)
             .iter()
-            .for_each(|id| self.play_sample(*id));
+            .for_each(|id| self.play_sample(*id, gain));
     }
 
     pub fn play_synth(&self, freq: f32, duration_ms: u32) {
+        self.play_synth_with_gain(freq, duration_ms, 1.0);
+    }
+
+    fn play_synth_with_gain(&self, freq: f32, duration_ms: u32, gain: f32) {
         let Some(handle) = &self.handle else {
             return;
         };
         let sr: u32 = 44_100;
         let data = synth_ping(freq, duration_ms, sr);
         let buf = SamplesBuffer::new(1, sr, data);
-        let _ = handle.play_raw(buf);
+        let _ = handle.play_raw(buf.amplify(gain));
     }
 
     pub fn play_hit(&self, lane: usize, keysound: Option<u32>, synth_mode: bool) {
+        self.play_hit_with_gain(lane, keysound, synth_mode, 1.0);
+    }
+
+    pub fn play_hit_with_gain(
+        &self,
+        lane: usize,
+        keysound: Option<u32>,
+        synth_mode: bool,
+        gain: f32,
+    ) {
         match self.hit_sound(keysound, synth_mode) {
             HitSound::Synth => {
                 let f = LANE_PITCHES[lane % LANE_PITCHES.len()];
-                self.play_synth(f, 80);
+                self.play_synth_with_gain(f, 80, gain);
             }
-            HitSound::Sample(id) => self.play(id),
+            HitSound::Sample(id) => self.play_with_gain(id, gain),
             HitSound::Silent => {}
         }
     }
@@ -197,14 +226,13 @@ impl SampleBank {
             .map_or(std::slice::from_ref(id), Vec::as_slice)
     }
 
-    fn play_sample(&self, id: u32) {
+    fn play_sample(&self, id: u32, gain: f32) {
         let Some(handle) = &self.handle else {
             return;
         };
-        let Some(s) = self.samples.get(&id) else {
+        let Some(source) = self.sample_with_gain(id, gain) else {
             return;
         };
-        let source = sample_source(s, self.slices.get(&id));
         if self.slices.contains_key(&id) {
             if let Ok(sink) = Sink::try_new(handle) {
                 sink.append(source);
@@ -213,6 +241,12 @@ impl SampleBank {
         } else {
             let _ = handle.play_raw(source);
         }
+    }
+
+    fn sample_with_gain(&self, id: u32, gain: f32) -> Option<impl Source<Item = f32> + Send> {
+        self.samples
+            .get(&id)
+            .map(|sample| sample_source(sample, self.slices.get(&id)).amplify(gain))
     }
 
     fn replace_slice(&self, id: u32, sink: Sink) {
@@ -487,6 +521,50 @@ mod tests {
     }
 
     #[test]
+    fn playback_gain_defaults_to_unity_and_applies_volwav() {
+        let mut chart = Chart::default();
+        assert_eq!(playback_gain(&chart, VolumeTarget::Bgm, 0.0), 1.0);
+        chart.vol_wav = Some(50);
+        [VolumeTarget::Bgm, VolumeTarget::Key]
+            .into_iter()
+            .for_each(|target| {
+                assert_eq!(playback_gain(&chart, target, 0.0), 0.5);
+            });
+        chart.vol_wav = Some(0);
+        assert_eq!(playback_gain(&chart, VolumeTarget::Key, 0.0), 0.0);
+    }
+
+    #[test]
+    fn parsed_volume_events_change_each_target_from_the_event_time() {
+        let path = std::env::temp_dir().join(format!("tapline-volume-{}.bms", std::process::id()));
+        std::fs::write(
+            &path,
+            "#BPM 120\n#VOLWAV 50\n#00197:0040\n#00198:0080\n#00297:FF\n#00398:FF\n",
+        )
+        .unwrap();
+        let chart = crate::bms::load(&path, 100.0).unwrap();
+        std::fs::remove_file(path).unwrap();
+        [VolumeTarget::Bgm, VolumeTarget::Key]
+            .into_iter()
+            .for_each(|target| {
+                assert_eq!(playback_gain(&chart, target, 3099.0), 0.5);
+                let level = if target == VolumeTarget::Bgm {
+                    64.0
+                } else {
+                    128.0
+                };
+                assert_eq!(playback_gain(&chart, target, 3100.0), 0.5 * level / 255.0);
+                assert_eq!(playback_gain(&chart, target, 4000.0), 0.5 * level / 255.0);
+            });
+        assert_eq!(playback_gain(&chart, VolumeTarget::Bgm, 4100.0), 0.5);
+        assert_eq!(
+            playback_gain(&chart, VolumeTarget::Key, 4100.0),
+            0.5 * 128.0 / 255.0
+        );
+        assert_eq!(playback_gain(&chart, VolumeTarget::Key, 6100.0), 0.5);
+    }
+
+    #[test]
     fn layers_resolve_all_available_slices_even_if_one_is_missing() {
         let (samples, _) = decode_all(&HashMap::from([
             (1, PathBuf::from("tests/fixtures/tone.wav")),
@@ -501,6 +579,36 @@ mod tests {
         assert_eq!(bank.hit_sound(Some(3), false), HitSound::Sample(3));
         assert_eq!(bank.hit_sound(Some(3), true), HitSound::Synth);
         assert_eq!(bank.sound_ids(&1), &[1]);
+    }
+
+    #[test]
+    fn layered_slices_apply_gain_and_preserve_slice_boundaries() {
+        let mut bank = SampleBank::silent()
+            .with_layers(&HashMap::from([(3, vec![1, 2])]))
+            .with_slices(&HashMap::from([(
+                1,
+                crate::chart::SampleSlice {
+                    start_ms: 1.0,
+                    duration_ms: Some(2.0),
+                },
+            )]));
+        [1, 2].into_iter().for_each(|id| {
+            bank.samples.insert(
+                id,
+                DecodedSample {
+                    channels: 1,
+                    sample_rate: 1000,
+                    data: Arc::new(vec![0.0, 0.4, 0.8, 1.0]),
+                },
+            );
+        });
+        let output: Vec<Vec<f32>> = bank
+            .sound_ids(&3)
+            .iter()
+            .map(|id| bank.sample_with_gain(*id, 0.5).unwrap().collect())
+            .collect();
+        assert_eq!(output, [vec![0.2, 0.4], vec![0.0, 0.2, 0.4, 0.5]]);
+        assert!(bank.sample_with_gain(99, 0.5).is_none());
     }
 
     #[test]

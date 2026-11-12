@@ -97,6 +97,9 @@ pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::cha
     match choice {
         ChartChoice::File(p) if bmson::is_bmson(p) => Ok(Some(bmson::load(p, args.countdown_ms)?)),
         ChartChoice::File(p) => Ok(Some(bms::load(p, args.countdown_ms)?)),
+        ChartChoice::Selected(meta) if bmson::is_bmson(&meta.path) => {
+            Ok(Some(bmson::load(&meta.path, args.countdown_ms)?))
+        }
         ChartChoice::Selected(meta) => Ok(Some(bms::load_with_seed(
             &meta.path,
             args.countdown_ms,
