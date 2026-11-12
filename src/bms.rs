@@ -278,13 +278,16 @@ struct BmsMode {
     keys_per_side: usize,
     double_play: bool,
     scratch: bool,
+    reserve_seven: bool,
+    declared_sides: bool,
 }
 
 impl BmsMode {
     fn side_lane_count(&self, acc: &ChartAcc) -> usize {
         match self.keys_per_side {
             9 => 9,
-            7 => 7 + usize::from(acc.lanes.0.contains(&7)),
+            _ if self.reserve_seven => 7 + usize::from(acc.lanes.0.contains(&7)),
+            _ if self.declared_sides => acc.lanes.count().max(5),
             _ => acc.lanes.count(),
         }
     }
@@ -292,8 +295,8 @@ impl BmsMode {
     fn playable_lane_count(&self, acc: &ChartAcc, p2_acc: &ChartAcc) -> usize {
         let p1 = self.side_lane_count(acc);
         let p2 = self.side_lane_count(p2_acc);
-        if self.double_play && p1 == p2 && matches!(p1, 6..=8) {
-            p1 * 2
+        if self.double_play {
+            p1 + p2
         } else {
             p1
         }
@@ -313,16 +316,16 @@ fn detect_mode(
             keys_per_side: 9,
             double_play: false,
             scratch: false,
+            reserve_seven: false,
+            declared_sides: false,
         };
     }
     let extended = extension.eq_ignore_ascii_case("bme")
         || acc.lanes.0.iter().any(|lane| matches!(lane, 5 | 6))
         || (matches!(player, Some(2 | 3))
             && p2_acc.lanes.0.iter().any(|lane| matches!(lane, 5 | 6)));
-    let double_play = matches!(player, Some(2 | 3))
-        || (matches!(acc.lanes.count(), 6..=8)
-            && acc.lanes.count() == p2_acc.lanes.count()
-            && !p2_acc.notes.is_empty());
+    let double_play =
+        matches!(player, Some(2 | 3)) || !p2_acc.notes.is_empty() || !p2_acc.mines.is_empty();
     let scratch = raw.iter().any(|(_, ch, data)| {
         matches!(ch.as_str(), "16" | "26" | "56" | "66" | "D6" | "E6")
             && parse_slots(data, 36).iter().any(|slot| *slot != 0)
@@ -331,6 +334,8 @@ fn detect_mode(
         keys_per_side: if extended { 7 } else { 5 },
         double_play,
         scratch,
+        reserve_seven: extension.eq_ignore_ascii_case("bme"),
+        declared_sides: matches!(player, Some(2 | 3)),
     }
 }
 
@@ -1791,7 +1796,7 @@ mod tests {
             ("#00115:01", 5, 1, 0),
             ("#00119:01", 7, 1, 0),
             ("#00119:01\n#00129:01", 14, 2, 0),
-            ("#00115:01\n#00125:01", 5, 1, 1),
+            ("#00115:01\n#00125:01", 10, 2, 0),
             ("#00116:01", 6, 1, 0),
             ("#00119:01\n#00116:01", 8, 2, 0),
             ("#00116:01\n#00126:01", 12, 2, 0),
@@ -1805,6 +1810,7 @@ mod tests {
                 let expected = match (extension, count) {
                     ("bme", 4 | 5) => 7,
                     ("bme", 6) => 8,
+                    ("bme", 10) => 14,
                     ("bme", 12) => 16,
                     _ => count,
                 };
@@ -2165,12 +2171,9 @@ mod tests {
     }
 
     #[test]
-    fn load_captures_p2_notes_mines_and_long_notes_into_the_p2_pools() {
+    fn load_merges_p2_notes_mines_and_long_notes() {
         let dir = tempdir();
         let path = dir.join("song.bms");
-        // Populate: a P1 note (11), a P2 note (21), a P2 LN pair (61), a P2
-        // mine (E9). The P1 side has to have at least one note or lane_count
-        // clamps everything down.
         std::fs::write(
             &path,
             "\
@@ -2184,13 +2187,16 @@ mod tests {
         )
         .unwrap();
         let chart = load(&path, 0.0).unwrap();
-        assert_eq!(chart.notes.len(), 1, "one visible P1 note");
-        // P2 side: one 21 note + one paired LN start on 61 = 2 notes.
-        assert_eq!(chart.p2_notes.len(), 2);
-        assert!(chart.p2_notes.iter().any(|n| n.end_ms.is_some()));
-        assert_eq!(chart.p2_mines.len(), 1);
-        assert_eq!(chart.p2_mines[0].lane, 0);
-        assert_eq!(chart.p2_mines[0].damage, 100);
+        assert_eq!(chart.lane_count, 8);
+        assert_eq!(chart.notes.len(), 3);
+        assert!(chart
+            .notes
+            .iter()
+            .any(|n| n.lane == 4 && n.end_ms.is_some()));
+        assert!(chart.p2_notes.is_empty());
+        assert!(chart.p2_mines.is_empty());
+        assert_eq!(chart.mines[0].lane, 4);
+        assert_eq!(chart.mines[0].damage, 100);
     }
 
     #[test]
@@ -2212,6 +2218,8 @@ mod tests {
 #00125:0100
 #00128:0100
 #00129:0100
+#00161:01000100
+#001E9:0064
 ",
         )
         .unwrap();
@@ -2228,6 +2236,64 @@ mod tests {
             "P2 lane 0 should live at merged lane 7"
         );
         assert!(chart.notes.iter().any(|n| n.lane == 13));
+        assert!(chart
+            .notes
+            .iter()
+            .any(|n| n.lane == 7 && n.end_ms.is_some()));
+        assert_eq!(chart.mines[0].lane, 13);
+        assert!(chart.p2_mines.is_empty());
+    }
+
+    #[test]
+    fn double_play_merges_both_sides_and_matches_metadata() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        let cases = [
+            ("", "#00115:01", "#00125:01", 5, 5),
+            ("#PLAYER 3", "#00115:01", "#00125:01", 5, 5),
+            ("", "#00119:01", "#00125:01", 7, 5),
+            ("", "#00115:01", "#00129:01", 5, 7),
+            ("#PLAYER 3", "#00115:01", "", 5, 5),
+            ("#PLAYER 2", "#00111:01", "", 5, 5),
+            ("#PLAYER 3", "#00119:01", "#00125:01", 7, 5),
+            ("#PLAYER 3", "#00115:01", "#00129:01", 5, 7),
+        ];
+        for (header, p1, p2, left, right) in cases {
+            let text = format!("#BPM 120\n{header}\n#00111:01\n{p1}\n{p2}\n");
+            std::fs::write(&path, text).unwrap();
+            let chart = load(&path, 0.0).unwrap();
+            assert_eq!(chart.lane_count, left + right);
+            assert_eq!(read_meta(&path).unwrap().lane_count, chart.lane_count);
+            assert_eq!(chart.keys.len(), chart.lane_count);
+            assert!(chart.p2_notes.is_empty());
+            assert!(chart.p2_mines.is_empty());
+            if !p2.is_empty() {
+                assert!(chart.notes.iter().any(|n| n.lane == left + right - 1));
+            }
+        }
+    }
+
+    #[test]
+    fn ten_key_chart_makes_every_lane_playable() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        let channels = [11, 12, 13, 14, 15, 21, 22, 23, 24, 25];
+        let text = channels
+            .iter()
+            .map(|ch| format!("#001{ch}:01\n"))
+            .collect::<String>();
+        std::fs::write(&path, format!("#BPM 120\n{text}")).unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.lane_count, 10);
+        let mut lanes = chart.notes.iter().map(|n| n.lane).collect::<Vec<_>>();
+        lanes.sort_unstable();
+        assert_eq!(lanes, (0..10).collect::<Vec<_>>());
+        let mut game = crate::game::Game::new(chart);
+        for key in "sdfklzxcnm".chars() {
+            let lane = crate::runtime::lane_for_key(key, &game.chart.keys).unwrap();
+            game.hit(lane, 2000.0);
+        }
+        assert_eq!(game.combo, 10);
     }
 
     #[test]
@@ -2241,15 +2307,11 @@ mod tests {
             ("split long pair", "#00159:01\n#00259:01", 7),
             ("long note DP", "#00159:0101\n#00169:0101", 14),
             ("empty P2", "#00119:01\n#00129:00", 7),
-            ("asymmetric DP", "#00111:01\n#00129:01", 4),
+            ("asymmetric DP", "#00111:01\n#00129:01", 11),
             ("mine", "#00111:01\n#001D9:01", 7),
-            ("P2 mine only", "#00119:01\n#001E9:01", 7),
+            ("P2 mine only", "#00119:01\n#001E9:01", 14),
             ("invalid slot", "#00111:01\n#00119:!!", 4),
-            (
-                "non-playable channels",
-                "#00111:01\n#00101:01\n#00149:01",
-                4,
-            ),
+            ("invisible P2 channel", "#00111:01\n#00101:01\n#00149:01", 4),
             ("LNOBJ DP", "#LNOBJ ZZ\n#00119:01ZZ\n#00129:01ZZ", 14),
         ];
         for (name, channels, expected) in cases {
@@ -3172,7 +3234,9 @@ Always
                 BmsMode {
                     keys_per_side,
                     double_play,
-                    scratch
+                    scratch,
+                    reserve_seven: name.to_ascii_lowercase().ends_with(".bme"),
+                    declared_sides: !name.ends_with("pms") && matches!(player, Some(2 | 3)),
                 },
                 "{name}"
             );
@@ -3210,8 +3274,8 @@ Always
                 "extended.bms",
                 3,
                 "#00116:01\n#00129:02\n#00126:03",
-                16,
-                vec![7, 15],
+                14,
+                vec![5, 13],
             ),
         ] {
             let path = dir.join(name);

@@ -107,7 +107,7 @@ case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 | ------------- | ----------------------------------------------------------- |
 | headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
 | channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `97`/`98` (BGM/keysound volume), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
-| lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`), 9K PMS (`.pms`: `11–15 + 22–25`); scratch (`16` / `26`) adds a lane for 6/8-lane SP and 12/16-lane DP; 14K without scratch remains supported |
+| lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`), 9K PMS (`.pms`: `11–15 + 22–25`); 10K, 14K, and asymmetric double-play (`#PLAYER 3` or playable P2 channels); scratch (`16` / `26`) adds a lane on each populated side |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
 | control flow  | `#RANDOM`, `#SETRANDOM`, `#ENDRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF`, `#SWITCH`, `#SETSWITCH`, `#CASE`, `#SKIP`, `#DEF`, `#ENDSW` (nesting and switch fallthrough supported) |
@@ -124,6 +124,8 @@ Scratch channels `16/26`, `56/66` (long notes), and `D6/E6` (landmines)
 are playable. Free-zone / pedal channels `17/27` and their long-note /
 landmine counterparts are ignored. Scratch is the last lane on each side.
 Channel-based inference uses populated channels; empty channels do not count.
+Asymmetric DP uses the layout for its total lane count, including the scratch
+layouts in the Keys section for totals of 8, 12, or 16 and the PMS layout for 9 lanes.
 
 `#VOLWAV` scales sample and synth playback by a percentage (default 100).
 Channels `97` (BGM) and `98` (keysounds) set independent volume multipliers
@@ -151,14 +153,14 @@ videos are silently skipped. Sixel and Kitty graphics are not supported.
 Mode detection uses the extension, `#PLAYER`, and materialized note channels.
 `.bme` reserves seven keys per side even when channels `18`/`19` are unused;
 `.bms` and `.bml` infer seven keys from extended key channels, otherwise five.
-`#PLAYER 2` (Couple) and `#PLAYER 3` (DP) declare two sides. Without either
-header, the existing two-sided seven-key channel pattern still selects 14K.
+`#PLAYER 2` (Couple) and `#PLAYER 3` (DP) declare two sides. Populated playable P2 channels also select two-sided playback.
+For `.bms` and `.bml`, each side infers its own width, allowing asymmetric DP.
 `.pms` identifies nine keys without scratch; BMS scratch usage is detected from
 channel `16`/`26` and their long-note/landmine equivalents.
 
-PMS uses the full 9K playback layout. 10K retains the existing playable subset,
+PMS uses the full 9K playback layout. 10K makes all five keys on each side playable,
 and sparse undeclared `.bms`/`.bml`
-charts retain the legacy 4K fallback. Detected 14K charts reserve all seven P1
+charts retain the legacy 4K fallback. `.bme` DP charts reserve all seven P1
 lanes and place P2 notes in lanes 7–13, including sparse DP charts.
 
 ### Long notes and landmines
@@ -180,7 +182,6 @@ The parsed `damage` value does not scale the penalty or subtract score.
 ### Not yet supported (v1)
 
 - Landmine penalties proportional to the parsed `damage` value
-- Double-play with asymmetric side counts or 5K + 5K without scratch (these remain in `Chart.p2_notes` instead of being merged)
 
 ## bmson support
 
@@ -237,6 +238,8 @@ whichever finger is closer.
 | 12    | `S D F/J K L A / Z X C V B /` | 5K+scratch per side; P2 scratch uses slash |
 | 16    | `S D F SPACE J K L A / Z X C V B N M /` | 7K+scratch per side; P2 scratch uses slash |
 | 9     | `A S D F SPACE J K L ;`        | PMS buttons 1–9; spacebar is the center |
+| 10    | `S D F K L / Z X C N M` | five keys per side |
+| 11, 13, 15 | first N keys of `S D F SPACE J K L Z X C V B N M , A` | asymmetric DP |
 | 14    | `S D F SPACE J K L / Z X C V B N M` | 7K SP layout on the home row for P1, ZXCVBNM below for P2 |
 
 ## License
