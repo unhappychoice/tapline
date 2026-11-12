@@ -54,6 +54,12 @@ pub struct BgaEvent {
     pub bmp_id: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct TextEvent {
+    pub time_ms: f64,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LnMode {
     Ln,
@@ -127,6 +133,7 @@ pub struct Chart {
     pub scroll: Vec<ScrollEvent>,
     pub speed: Vec<ScrollEvent>,
     pub bga: Vec<BgaEvent>,
+    pub text_events: Vec<TextEvent>,
     pub bmp_paths: std::collections::HashMap<u32, PathBuf>,
     pub duration_ms: f64,
     pub lane_count: usize,
@@ -187,6 +194,7 @@ impl Default for Chart {
             scroll: Vec::new(),
             speed: Vec::new(),
             bga: Vec::new(),
+            text_events: Vec::new(),
             bmp_paths: std::collections::HashMap::new(),
             duration_ms: 0.0,
             lane_count: 4,

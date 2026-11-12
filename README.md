@@ -108,8 +108,8 @@ case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#PREVIEW`, `#BACKBMP`, `#COMMENT`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#DEFEXRANK`, `#EXRANKxx`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#EXWAVxx`, `#WAVCMD`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#SCROLLxx`, `#SPEEDxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE`, `#LNMODE` |
-| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `SC` (scroll factor), `SP` (spacing factor), `97`/`98` (BGM/keysound volume), `A0` (judgment-width change), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
+| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#PREVIEW`, `#BACKBMP`, `#COMMENT`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#DEFEXRANK`, `#EXRANKxx`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#EXWAVxx`, `#WAVCMD`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#SCROLLxx`, `#SPEEDxx`, `#BMPxx`, `#TEXTxx` / `#SONGxx`, `#LNOBJ`, `#LNTYPE`, `#LNMODE` |
+| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `SC` (scroll factor), `SP` (spacing factor), `97`/`98` (BGM/keysound volume), `99` (song text), `A0` (judgment-width change), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`), 9K PMS (`.pms`: `11–15 + 22–25`); 10K, 14K, and asymmetric double-play (`#PLAYER 3` or playable P2 channels); scratch (`16` / `26`) adds a lane on each populated side |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
@@ -122,6 +122,11 @@ follow the same button order as visible notes.
 `#RANDOM` branches are drawn afresh for each play. The selector and chart loader
 share the same draw so displayed metadata matches gameplay. Set
 `TAPLINE_RANDOM_SEED` to an unsigned 64-bit integer for reproducible branches.
+
+Song text from `#TEXTxx` (or `#SONGxx`) appears at the top of the HUD when
+channel `99` triggers its object ID (base 36 by default, or base 62 with `#BASE 62`). It remains until the next defined text
+event; an empty definition clears it. Undefined IDs and `00` are ignored.
+Terminal control characters are removed, and long text is clipped to fit.
 
 The selector displays the selected chart’s `#BANNER` and `#COMMENT` when the
 terminal is at least 16 rows tall. During the countdown, `#STAGEFILE` appears
