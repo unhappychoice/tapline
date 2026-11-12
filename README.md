@@ -105,9 +105,9 @@ case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#BMPxx`, `#LNOBJ`, `#LNTYPE`, `#BGAxx`, `#SWBGAxx`, `#ARGBxx`, `#POORBGA` |
+| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#BMPxx`, `#LNOBJ`, `#LNTYPE`, `#BGAxx`, `#SWBGAxx`, `#ARGBxx`, `#POORBGA` |
 | channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `0A` (second BGA overlay), `0B–0E` (BGA opacity), `A1–A4` (BGA transparent color), `A5` (key-bound BGA), `09` (STOP), `97`/`98` (BGM/keysound volume), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
-| lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`), 9K PMS (`.pms`: `11–15 + 22–25`); scratch (`16` / `26`) adds a lane for 6/8-lane SP and 12/16-lane DP; 14K without scratch remains supported |
+| lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`), 9K PMS (`.pms`: `11–15 + 22–25`); 10K, 14K, and asymmetric double-play (`#PLAYER 3` or playable P2 channels); scratch (`16` / `26`) adds a lane on each populated side |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
 | control flow  | `#RANDOM`, `#SETRANDOM`, `#ENDRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF`, `#SWITCH`, `#SETSWITCH`, `#CASE`, `#SKIP`, `#DEF`, `#ENDSW` (nesting and switch fallthrough supported) |
@@ -124,6 +124,8 @@ Scratch channels `16/26`, `56/66` (long notes), and `D6/E6` (landmines)
 are playable. Free-zone / pedal channels `17/27` and their long-note /
 landmine counterparts are ignored. Scratch is the last lane on each side.
 Lane modes are inferred from populated channels; empty channels do not count.
+Asymmetric DP uses the layout for its total lane count, including the scratch
+layouts in the Keys section for totals of 8, 12, or 16 and the PMS layout for 9 lanes.
 
 `#VOLWAV` scales sample and synth playback by a percentage (default 100).
 Channels `97` (BGM) and `98` (keysounds) set independent volume multipliers
@@ -178,7 +180,6 @@ The parsed `damage` value does not scale the penalty or subtract score.
 ### Not yet supported (v1)
 
 - Landmine penalties proportional to the parsed `damage` value
-- Double-play with asymmetric side counts or 5K + 5K without scratch (these remain in `Chart.p2_notes` instead of being merged)
 
 ## bmson support
 
@@ -235,6 +236,8 @@ whichever finger is closer.
 | 12    | `S D F/J K L A / Z X C V B /` | 5K+scratch per side; P2 scratch uses slash |
 | 16    | `S D F SPACE J K L A / Z X C V B N M /` | 7K+scratch per side; P2 scratch uses slash |
 | 9     | `A S D F SPACE J K L ;`        | PMS buttons 1–9; spacebar is the center |
+| 10    | `S D F K L / Z X C N M` | five keys per side |
+| 11, 13, 15 | first N keys of `S D F SPACE J K L Z X C V B N M , A` | asymmetric DP |
 | 14    | `S D F SPACE J K L / Z X C V B N M` | 7K SP layout on the home row for P1, ZXCVBNM below for P2 |
 
 ## License
