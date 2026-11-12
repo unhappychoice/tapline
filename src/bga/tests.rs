@@ -38,6 +38,8 @@ fn game() -> Game {
         ]
         .map(|(id, color)| (id, RgbaImage::from_pixel(SIZE, SIZE, Rgba(color))))
         .into(),
+        HashMap::new(),
+        RefCell::default(),
     );
     game.bga
         .0
@@ -161,4 +163,131 @@ fn bmson_images_are_loaded_and_rendered_through_game() {
     draw(&mut out, &game, 1000.0, 18, 4, 16).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert_eq!(text.matches('▀').count(), 16 * 8);
+}
+
+#[test]
+fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    if Command::new("ffmpeg")
+        .arg("-version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("Skipping video integration test: ffmpeg is not installed");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("tapline-video-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let raw = dir.join("frames.rgb");
+    let bytes: Vec<u8> = [[255, 0, 0], [0, 255, 0]]
+        .into_iter()
+        .flat_map(|color| std::iter::repeat_n(color, 64 * 64).flatten())
+        .collect();
+    std::fs::write(&raw, bytes).unwrap();
+    for (extension, codec) in [("mp4", "mpeg4"), ("webm", "libvpx-vp9")] {
+        let video = dir.join(format!("video.{extension}"));
+        assert!(Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "rawvideo",
+                "-pixel_format",
+                "rgb24",
+                "-video_size",
+                "64x64",
+                "-framerate",
+                "2",
+                "-i"
+            ])
+            .arg(&raw)
+            .args(["-c:v", codec, "-pix_fmt", "yuv420p"])
+            .arg(&video)
+            .status()
+            .unwrap()
+            .success());
+        let chart = dir.join("chart.bms");
+        std::fs::write(
+            &chart,
+            format!("#TITLE Video\n#BPM 120\n#BMP01 video.{extension}\n#00004:0101\n#00111:01\n"),
+        )
+        .unwrap();
+        let game = Game::new(crate::bms::load(&chart, 1000.0).unwrap());
+        assert_eq!(
+            game.bga.frame(&game, 999.0).get_pixel(32, 32).0,
+            [0, 0, 0, 255]
+        );
+        let wait_for = |time, channel: usize| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let frame = game.bga.frame(&game, time);
+                if frame.get_pixel(32, 32)[channel] > 240 {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "Video frame did not arrive at {time} ms"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        wait_for(1000.0, 0);
+        wait_for(1500.0, 1);
+        wait_for(1999.0, 1);
+        wait_for(2000.0, 0);
+        for layer in [BgaLayer::Base, BgaLayer::Poor] {
+            let mut delayed = Game::new(crate::bms::load(&chart, 1000.0).unwrap());
+            delayed.chart.bga.truncate(1);
+            delayed.chart.bga[0].layer = layer;
+            delayed.flash.last_miss_at = Some(1750.0);
+            if layer == BgaLayer::Base {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                loop {
+                    if delayed.bga.frame(&delayed, 1000.0).get_pixel(32, 32)[0] > 240 {
+                        break;
+                    }
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            let mut hidden = Vec::new();
+            draw(&mut hidden, &delayed, 1000.0, 17, 4, 16).unwrap();
+            assert!(hidden.is_empty());
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let mut output = Vec::new();
+                draw(&mut output, &delayed, 1750.0, 18, 4, 16).unwrap();
+                let pixel = delayed.bga.frame(&delayed, 1750.0).get_pixel(32, 32).0;
+                assert!(pixel[0] < 20, "Delayed playback displayed an old red frame");
+                if pixel[1] > 240 {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "Delayed video did not catch up");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if layer == BgaLayer::Base {
+                let mut hidden = Vec::new();
+                draw(&mut hidden, &delayed, 1760.0, 17, 4, 16).unwrap();
+                // Reopening after EOF must retain the last frame.
+                let deadline = Instant::now() + Duration::from_secs(10);
+                loop {
+                    draw(&mut hidden, &delayed, 10000.0, 18, 4, 16).unwrap();
+                    if delayed.bga.frame(&delayed, 10000.0).get_pixel(32, 32)[1] > 240 {
+                        break;
+                    }
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+        let mut output = Vec::new();
+        draw(&mut output, &game, 2000.0, 18, 4, 16).unwrap();
+        assert!(String::from_utf8(output).unwrap().contains('▀'));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
