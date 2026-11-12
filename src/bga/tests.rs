@@ -201,6 +201,34 @@ fn extended_layers_opacity_and_poor_modes() {
 }
 
 #[test]
+fn ten_key_double_play_renders_p2_key_bound_animations() {
+    let dir = std::env::temp_dir().join(format!("tapline-bga-dp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let color = [20, 40, 60, 255];
+    RgbaImage::from_pixel(256, 256, Rgba(color))
+        .save(dir.join("image.png"))
+        .unwrap();
+    let path = dir.join("chart.bms");
+    for key in 1..=5 {
+        std::fs::write(
+            &path,
+            format!("#BPM 120\n#PLAYER 3\n#BMP01 image.png\n#00015:01\n#00025:01\n#SWBGA01 100:300:2{key}:0:255,255,255,255 01\n#000A5:01\n"),
+        )
+        .unwrap();
+        let chart = crate::bms::load(&path, 0.0).unwrap();
+        assert_eq!(chart.lane_count, 10);
+        let mut game = Game::new(chart);
+        game.hit(key - 1, 0.0);
+        assert!(game.bga_switch.active.is_none());
+        assert_ne!(game.bga.frame(&game, 0.0).get_pixel(0, 0).0, color);
+        game.hit(key + 4, 0.0);
+        assert_eq!(game.bga_switch.active, Some((1, key + 4, 0.0)));
+        assert_eq!(game.bga.frame(&game, 0.0).get_pixel(0, 0).0, color);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn parses_extensions_and_renders_key_bound_animation() {
     let dir = std::env::temp_dir().join(format!("tapline-bga-ext-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

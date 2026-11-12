@@ -607,7 +607,7 @@ pub(crate) fn bga_switch_lane(channel: &str, lanes: usize) -> Option<usize> {
         return (PMS_LANES.normal)(channel);
     }
     let side_lanes = match lanes {
-        12 | 14 | 16 => lanes / 2,
+        10 | 12 | 14 | 16 => lanes / 2,
         _ => lanes,
     };
     let (lane, offset) = channel_to_lane(channel).map(|lane| (lane, 0)).or_else(|| {

@@ -191,7 +191,7 @@ mod lane_tests {
             assert_eq!(bga_switch_lane("17", lanes), None);
             assert_eq!(bga_switch_lane("27", lanes), None);
         }
-        for lanes in [5, 7, 14] {
+        for lanes in [5, 7, 10, 14] {
             assert_eq!(bga_switch_lane("16", lanes), None);
             assert_eq!(bga_switch_lane("26", lanes), None);
         }
@@ -200,5 +200,12 @@ mod lane_tests {
         assert_eq!(bga_switch_lane("29", 16), Some(14));
         assert_eq!(bga_switch_lane("29", 14), Some(13));
         assert_eq!(bga_switch_lane("25", 9), Some(8));
+        for key in 1..=5 {
+            assert_eq!(bga_switch_lane(&format!("1{key}"), 10), Some(key - 1));
+            assert_eq!(bga_switch_lane(&format!("2{key}"), 10), Some(key + 4));
+        }
+        for channel in ["17", "18", "19", "27", "28", "29"] {
+            assert_eq!(bga_switch_lane(channel, 10), None);
+        }
     }
 }
