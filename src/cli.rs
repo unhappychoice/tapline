@@ -68,7 +68,7 @@ impl Args {
 
 pub enum ChartChoice {
     File(PathBuf),
-    Selected(bms::ChartMeta),
+    Selected(Box<bms::ChartMeta>),
     Cancelled,
     BuiltIn,
 }
@@ -87,8 +87,8 @@ pub fn choose_chart(out: &mut Stdout, args: &Args) -> Result<ChartChoice> {
     if charts.is_empty() {
         return Ok(ChartChoice::BuiltIn);
     }
-    Ok(match select::run(out, &charts)? {
-        Some(meta) => ChartChoice::Selected(meta),
+    Ok(match select::run(out, &charts, args.no_audio)? {
+        Some(meta) => ChartChoice::Selected(Box::new(meta)),
         None => ChartChoice::Cancelled,
     })
 }

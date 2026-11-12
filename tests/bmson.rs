@@ -57,10 +57,11 @@ fn selector_discovers_bmson_metadata() {
     let meta = charts.iter().find(|m| m.path == fixture()).unwrap();
     assert_eq!(meta.title, "Minimal bmson");
     assert_eq!(meta.bpm, 120.0);
+    assert!(meta.preview.is_none());
     assert_eq!(meta.playlevel, Some(1));
     assert_eq!(meta.random_seed, 0);
     let args = cli::Args::parse_from(["tapline", "--countdown-ms", "1000"]);
-    let chart = cli::load_chart(&cli::ChartChoice::Selected(meta.clone()), &args)
+    let chart = cli::load_chart(&cli::ChartChoice::Selected(Box::new(meta.clone())), &args)
         .unwrap()
         .unwrap();
     assert_eq!(chart.title, meta.title);

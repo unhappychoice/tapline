@@ -58,13 +58,18 @@ fn is_bms(p: &Path) -> bool {
         .unwrap_or(false)
 }
 
-pub fn run(out: &mut Stdout, charts: &[ChartMeta]) -> Result<Option<ChartMeta>> {
+pub fn run(out: &mut Stdout, charts: &[ChartMeta], no_audio: bool) -> Result<Option<ChartMeta>> {
     if charts.is_empty() {
         return Ok(None);
     }
+    let audio = crate::audio::preview_output(!no_audio);
+    let mut preview = crate::preview::SelectionPreview::default();
     let mut cursor_i: usize = 0;
     let mut scroll: usize = 0;
     loop {
+        preview.update(cursor_i, charts[cursor_i].preview.as_deref(), |path| {
+            crate::preview::play(audio.as_ref().map(|(_, handle)| handle), path)
+        });
         draw(out, charts, cursor_i, &mut scroll)?;
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(k) = event::read()? {
@@ -237,6 +242,7 @@ mod tests {
             artist: String::new(),
             subartist: String::new(),
             genre: String::new(),
+            preview: None,
             banner: String::new(),
             comment: String::new(),
             bpm: 140.0,

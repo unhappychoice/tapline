@@ -17,6 +17,7 @@ pub struct ChartMeta {
     pub artist: String,
     pub subartist: String,
     pub genre: String,
+    pub preview: Option<PathBuf>,
     pub banner: String,
     pub comment: String,
     pub bpm: f64,
@@ -45,6 +46,11 @@ pub fn read_meta_with_seed(path: &Path, seed: u64) -> Result<ChartMeta> {
     let (_, acc, p2_acc) = collect_chart_sides(&raw, &pass, 0.0, false, is_pms(path))?;
     let mode = detect_mode(path, pass.player, &raw, &acc, &p2_acc);
     Ok(ChartMeta {
+        preview: pass.preview.filter(|name| !name.is_empty()).map(|name| {
+            path.parent()
+                .unwrap_or(Path::new("."))
+                .join(name.replace('\\', "/"))
+        }),
         path: path.to_path_buf(),
         random_seed: seed,
         title: pass.title,
@@ -1183,6 +1189,7 @@ struct HeaderPass {
     artist: String,
     subartist: String,
     genre: String,
+    preview: Option<String>,
     stagefile: String,
     banner: String,
     backbmp: String,
@@ -1221,6 +1228,7 @@ impl Default for HeaderPass {
             artist: String::new(),
             subartist: String::new(),
             genre: String::new(),
+            preview: None,
             stagefile: String::new(),
             banner: String::new(),
             backbmp: String::new(),
@@ -1302,6 +1310,7 @@ impl HeaderPass {
             "ARTIST" => self.artist = val.to_string(),
             "SUBARTIST" => self.subartist = val.to_string(),
             "GENRE" => self.genre = val.to_string(),
+            "PREVIEW" => self.preview = Some(val.to_string()),
             "STAGEFILE" => self.stagefile = val.trim().to_string(),
             "BANNER" => self.banner = val.trim().to_string(),
             "BACKBMP" => self.backbmp = val.trim().to_string(),
@@ -1841,6 +1850,59 @@ mod tests {
     }
 
     #[test]
+    fn read_meta_preserves_preview_and_selector_details() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "#TITLE Song\n#preview audio\\preview song.ogg\n#BANNER banner.png\n#COMMENT Song details\n#TEXT01 Chorus\n#00199:01\n",
+        )
+        .unwrap();
+        let meta = read_meta(&path).unwrap();
+        assert_eq!(meta.preview, Some(dir.join("audio/preview song.ogg")));
+        assert_eq!(meta.banner, "banner.png");
+        assert_eq!(meta.comment, "Song details");
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.text_events.len(), 1);
+        assert_eq!(chart.text_events[0].text, "Chorus");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn preview_and_loaded_chart_use_the_selected_random_branch() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "#RANDOM 2\n#IF 1\n#TITLE First\n#PREVIEW first.ogg\n#ELSE\n#TITLE Second\n#PREVIEW second.ogg\n#ENDIF\n#ENDRANDOM\n",
+        )
+        .unwrap();
+        (0..16).for_each(|seed| {
+            let meta = read_meta_with_seed(&path, seed).unwrap();
+            let chart = load_with_seed(&meta.path, 0.0, meta.random_seed).unwrap();
+            assert_eq!(chart.title, meta.title);
+            assert_eq!(
+                meta.preview,
+                Some(dir.join(format!("{}.ogg", meta.title.to_ascii_lowercase())))
+            );
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn read_meta_has_no_preview_for_missing_or_empty_header() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        ["#TITLE Song\n", "#TITLE Song\n#PREVIEW \n"]
+            .iter()
+            .for_each(|text| {
+                std::fs::write(&path, text).unwrap();
+                assert!(read_meta(&path).unwrap().preview.is_none());
+            });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn text_events_resolve_aliases_sanitize_and_follow_the_timeline() {
         let dir = tempdir();
         let path = dir.join("text.bms");
@@ -2105,6 +2167,7 @@ mod tests {
         assert_eq!(chart.volume_events.len(), 2);
         assert_eq!(chart.exrank_defs[&36], 50.0);
         assert_eq!(chart.judgment_scale(0.0), 0.5);
+
         std::fs::remove_dir_all(dir).unwrap();
     }
 

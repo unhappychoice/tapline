@@ -12,7 +12,7 @@ fn injected_play_seeds_change_branches_and_preserve_selector_metadata() {
     let titles: std::collections::HashSet<_> = (0..32)
         .map(|seed| {
             let meta = bms::read_meta_with_seed(&fixture(), seed).unwrap();
-            let chart = cli::load_chart(&cli::ChartChoice::Selected(meta.clone()), &args)
+            let chart = cli::load_chart(&cli::ChartChoice::Selected(Box::new(meta.clone())), &args)
                 .unwrap()
                 .unwrap();
             assert_eq!(meta.random_seed, seed);
