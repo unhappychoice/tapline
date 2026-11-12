@@ -1,3 +1,6 @@
+mod extensions;
+pub use extensions::*;
+
 use crate::{chart::BgaLayer, game::Game};
 use crossterm::{
     cursor, queue,
@@ -22,7 +25,7 @@ const POOR_MS: f64 = 500.0;
 pub struct ImageBank(
     HashMap<u32, RgbaImage>,
     HashMap<u32, PathBuf>,
-    RefCell<[Playback; 3]>,
+    RefCell<[Playback; 4]>,
     timeline::Timeline,
 );
 
@@ -61,6 +64,39 @@ impl ImageBank {
         )
     }
 
+    pub fn prepare_crops(&mut self, chart: &crate::chart::Chart) {
+        let crops = chart
+            .bga_extensions
+            .crops
+            .iter()
+            .filter_map(|(&id, crop)| {
+                let source = image::open(chart.bmp_paths.get(&crop.image)?)
+                    .ok()?
+                    .to_rgba8();
+                let [x1, y1, x2, y2, dx, dy] = crop.rect;
+                let mut canvas = RgbaImage::new(256, 256);
+                canvas.enumerate_pixels_mut().for_each(|(x, y, pixel)| {
+                    let sx = x as i64 - dx as i64 + x1.max(0) as i64;
+                    let sy = y as i64 - dy as i64 + y1.max(0) as i64;
+                    if sx >= x1.max(0) as i64
+                        && sy >= y1.max(0) as i64
+                        && sx < x2 as i64
+                        && sy < y2 as i64
+                        && sx < source.width() as i64
+                        && sy < source.height() as i64
+                    {
+                        *pixel = *source.get_pixel(sx as u32, sy as u32);
+                    }
+                });
+                Some((
+                    id,
+                    imageops::resize(&canvas, SIZE, SIZE, imageops::FilterType::Nearest),
+                ))
+            })
+            .collect::<Vec<_>>();
+        self.0.extend(crops);
+    }
+
     fn layer(&self, game: &Game, layer: BgaLayer, now_ms: f64) -> Option<RgbaImage> {
         let slot = timeline::slot(layer);
         let event = self
@@ -84,26 +120,67 @@ impl ImageBank {
     }
 
     fn frame(&self, game: &Game, now_ms: f64) -> RgbaImage {
-        let layer = |layer| self.layer(game, layer, now_ms);
+        let ext = &game.chart.bga_extensions;
         let mut frame = RgbaImage::from_pixel(SIZE, SIZE, Rgba([0, 0, 0, 255]));
-        let poor = game
-            .flash
-            .last_miss_at
-            .filter(|at| (0.0..POOR_MS).contains(&(now_ms - at)))
-            .and_then(|_| layer(BgaLayer::Poor));
-        if let Some(poor) = poor {
-            imageops::overlay(&mut frame, &poor, 0, 0);
-            return frame;
+        let poor = ext.poor_mode != 2
+            && game
+                .flash
+                .last_miss_at
+                .is_some_and(|at| (0.0..POOR_MS).contains(&(now_ms - at)))
+            && self.layer(game, BgaLayer::Poor, now_ms).is_some();
+        let layers = if poor && ext.poor_mode == 0 {
+            vec![BgaLayer::Poor]
+        } else {
+            let mut layers = vec![BgaLayer::Base, BgaLayer::Overlay, BgaLayer::Overlay2];
+            if poor {
+                layers.push(BgaLayer::Poor);
+            }
+            layers
+        };
+        for layer in layers {
+            let Some(image) = self.layer(game, layer, now_ms) else {
+                continue;
+            };
+            let mut alpha = 255;
+            let mut key = (layer != BgaLayer::Base
+                && (layer != BgaLayer::Poor || ext.poor_mode == 1))
+                .then_some(ColorKey::Rgb([0, 0, 0]));
+            for event in ext.events.iter().take_while(|e| e.time_ms <= now_ms) {
+                match event.effect {
+                    Effect::Opacity(target, value) if target == layer => alpha = value,
+                    Effect::Color(target, id) if target == layer => {
+                        if let Some(&[a, r, g, b]) = ext.argb.get(&id) {
+                            alpha = a;
+                            key = Some(ColorKey::Rgb([r, g, b]));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            composite(&mut frame, &image, alpha, key);
         }
-        if let Some(base) = layer(BgaLayer::Base) {
-            imageops::overlay(&mut frame, &base, 0, 0);
-        }
-        if let Some(mut overlay) = layer(BgaLayer::Overlay) {
-            overlay
-                .pixels_mut()
-                .filter(|p| p.0[..3] == [0, 0, 0])
-                .for_each(|p| p.0[3] = 0);
-            imageops::overlay(&mut frame, &overlay, 0, 0);
+        if let Some((id, _, start)) = game.bga_switch.active {
+            if let Some(switch) = ext.switches.get(&id) {
+                let elapsed = now_ms - start;
+                let visible = elapsed >= 0.0
+                    && if switch.duration_ms == 0 {
+                        game.bga_switch.held
+                    } else {
+                        elapsed < switch.duration_ms as f64
+                    };
+                if visible && !switch.pattern.is_empty() {
+                    let index = (elapsed / switch.frame_ms as f64) as usize;
+                    let index = if switch.looping {
+                        index % switch.pattern.len()
+                    } else {
+                        index.min(switch.pattern.len() - 1)
+                    };
+                    if let Some(image) = self.0.get(&switch.pattern[index]) {
+                        let [a, r, g, b] = switch.argb;
+                        composite(&mut frame, image, 255, Some(ColorKey::Rgba([r, g, b, a])));
+                    }
+                }
+            }
         }
         frame
     }
@@ -172,3 +249,22 @@ pub fn draw(
 
 #[cfg(test)]
 mod tests;
+
+enum ColorKey {
+    Rgb([u8; 3]),
+    Rgba([u8; 4]),
+}
+
+fn composite(frame: &mut RgbaImage, image: &RgbaImage, alpha: u8, key: Option<ColorKey>) {
+    let mut image = image.clone();
+    image.pixels_mut().for_each(|pixel| {
+        if key.as_ref().is_some_and(|key| match key {
+            ColorKey::Rgb(rgb) => pixel.0[..3] == rgb[..],
+            ColorKey::Rgba(rgba) => pixel.0 == *rgba,
+        }) {
+            pixel[3] = 0;
+        }
+        pixel[3] = (u16::from(pixel[3]) * u16::from(alpha) / 255) as u8;
+    });
+    imageops::overlay(frame, &image, 0, 0);
+}

@@ -2,7 +2,7 @@ use crate::chart::{BgaEvent, BgaLayer};
 
 #[derive(Default)]
 pub(super) struct Timeline {
-    layers: [Vec<(f64, usize)>; 3],
+    layers: [Vec<(f64, usize)>; 4],
     #[cfg(test)]
     comparisons: std::cell::Cell<usize>,
 }
@@ -35,6 +35,7 @@ pub(super) fn slot(layer: BgaLayer) -> usize {
         BgaLayer::Base => 0,
         BgaLayer::Overlay => 1,
         BgaLayer::Poor => 2,
+        BgaLayer::Overlay2 => 3,
     }
 }
 
@@ -52,6 +53,8 @@ mod tests {
             (100.0, BgaLayer::Base),
             (200.0, BgaLayer::Poor),
             (200.0, BgaLayer::Overlay),
+            (50.0, BgaLayer::Overlay2),
+            (200.0, BgaLayer::Overlay2),
         ]
         .map(|(time_ms, layer)| BgaEvent {
             time_ms,
@@ -63,6 +66,7 @@ mod tests {
             (BgaLayer::Base, 3, 4),
             (BgaLayer::Overlay, 2, 6),
             (BgaLayer::Poor, 1, 5),
+            (BgaLayer::Overlay2, 7, 8),
         ] {
             assert_eq!(timeline.latest(layer, -1.0), None);
             assert_eq!(timeline.latest(layer, 200.0), Some(last));
@@ -85,7 +89,7 @@ mod tests {
                 })
                 .collect();
             let timeline = Timeline::new(&events);
-            for layer in [BgaLayer::Overlay, BgaLayer::Poor] {
+            for layer in [BgaLayer::Overlay, BgaLayer::Poor, BgaLayer::Overlay2] {
                 assert_eq!(timeline.latest(layer, 0.0), None);
                 assert_eq!(timeline.comparisons.get(), 0);
             }

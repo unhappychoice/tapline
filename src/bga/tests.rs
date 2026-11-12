@@ -67,6 +67,17 @@ fn switches_layers_and_keys_out_black() {
 }
 
 #[test]
+fn overlay_keys_out_semitransparent_black_and_blends_other_colors() {
+    let mut game = game();
+    let overlay = game.bga.0.get_mut(&3).unwrap();
+    overlay.put_pixel(0, 0, Rgba([0, 0, 0, 128]));
+    overlay.put_pixel(1, 0, Rgba([255, 0, 0, 128]));
+    let frame = game.bga.frame(&game, 100.0);
+    assert_eq!(frame.get_pixel(0, 0).0, [0, 255, 0, 255]);
+    assert_eq!(frame.get_pixel(1, 0).0, [128, 127, 0, 254]);
+}
+
+#[test]
 fn poor_expires_even_when_followed_by_a_hit() {
     let mut game = game();
     game.check_misses(361.0);
@@ -167,6 +178,161 @@ fn bmson_images_are_loaded_and_rendered_through_game() {
 }
 
 #[test]
+fn extended_layers_opacity_and_poor_modes() {
+    let mut game = game();
+    game.chart.bga.push(BgaEvent {
+        time_ms: 0.0,
+        layer: BgaLayer::Overlay2,
+        bmp_id: 4,
+    });
+    game.bga.3 = timeline::Timeline::new(&game.chart.bga);
+    game.chart.bga_extensions.events.push(EffectEvent {
+        time_ms: 50.0,
+        effect: Effect::Opacity(BgaLayer::Overlay2, 128),
+    });
+    assert_eq!(
+        game.bga.frame(&game, 0.0).get_pixel(1, 1).0,
+        [0, 0, 255, 255]
+    );
+    let pixel = game.bga.frame(&game, 50.0).get_pixel(1, 1).0;
+    assert_eq!(pixel[..3], [127, 0, 128]);
+    game.flash.last_miss_at = Some(50.0);
+    assert_eq!(
+        game.bga.frame(&game, 50.0).get_pixel(1, 1).0,
+        [0, 0, 255, 255]
+    );
+    game.chart.bga_extensions.poor_mode = 2;
+    assert_eq!(game.bga.frame(&game, 50.0).get_pixel(1, 1).0, pixel);
+    game.chart.bga_extensions.poor_mode = 1;
+    game.bga
+        .0
+        .insert(4, RgbaImage::from_pixel(SIZE, SIZE, Rgba([0, 0, 0, 255])));
+    assert_eq!(
+        game.bga.frame(&game, 50.0).get_pixel(1, 1).0,
+        [255, 0, 0, 255]
+    );
+}
+
+#[test]
+fn ten_key_double_play_renders_p2_key_bound_animations() {
+    let dir = std::env::temp_dir().join(format!("tapline-bga-dp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let color = [20, 40, 60, 255];
+    RgbaImage::from_pixel(256, 256, Rgba(color))
+        .save(dir.join("image.png"))
+        .unwrap();
+    let path = dir.join("chart.bms");
+    for key in 1..=5 {
+        std::fs::write(
+            &path,
+            format!("#BPM 120\n#PLAYER 3\n#BMP01 image.png\n#00015:01\n#00025:01\n#SWBGA01 100:300:2{key}:0:255,255,255,255 01\n#000A5:01\n"),
+        )
+        .unwrap();
+        let chart = crate::bms::load(&path, 0.0).unwrap();
+        assert_eq!(chart.lane_count, 10);
+        let mut game = Game::new(chart);
+        game.hit(key - 1, 0.0);
+        assert!(game.bga_switch.active.is_none());
+        assert_ne!(game.bga.frame(&game, 0.0).get_pixel(0, 0).0, color);
+        game.hit(key + 4, 0.0);
+        assert_eq!(game.bga_switch.active, Some((1, key + 4, 0.0)));
+        assert_eq!(game.bga.frame(&game, 0.0).get_pixel(0, 0).0, color);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn parses_extensions_and_renders_key_bound_animation() {
+    let dir = std::env::temp_dir().join(format!("tapline-bga-ext-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    RgbaImage::from_pixel(256, 256, Rgba([20, 40, 60, 255]))
+        .save(dir.join("image.png"))
+        .unwrap();
+    let path = dir.join("chart.bms");
+    std::fs::write(&path, "#BPM 120\n#DEFEXRANK 50\n#EXRANK01 200\n#001A0:01\n#BMP00 image.png\n#BMP01 image.png\n#BGA02 01 0 0 128 128 128 128\n#ARGB01 255,20,40,60\n#SWBGA01 100:300:11:0:255,255,255,255 0002\n#POORBGA 1\n#00004:01\n#0000A:02\n#0000B:80\n#0000C:40\n#0000D:20\n#0000E:10\n#001A1:01\n#000A5:01\n").unwrap();
+    let chart = crate::bms::load(&path, 500.0).unwrap();
+    assert_eq!(chart.judgment_scale(500.0), 0.5);
+    assert_eq!(chart.judgment_scale(2500.0), 2.0);
+    assert_eq!(chart.bga_extensions.events.len(), 6);
+    assert_eq!(chart.bga_extensions.poor_mode, 1);
+    assert_eq!(chart.bga_extensions.argb[&1], [255, 20, 40, 60]);
+    assert!(chart
+        .bga
+        .iter()
+        .any(|e| e.layer == BgaLayer::Overlay2 && e.time_ms == 500.0));
+    let mut game = Game::new(chart);
+    assert_eq!(game.bga.0[&2].get_pixel(0, 0).0, [0, 0, 0, 0]);
+    assert_eq!(game.bga.0[&2].get_pixel(63, 63).0, [20, 40, 60, 255]);
+    game.hit(0, 499.0);
+    assert!(game.bga_switch.active.is_none());
+    game.hit(0, 500.0);
+    assert_eq!(
+        game.bga.frame(&game, 500.0).get_pixel(0, 0).0,
+        [20, 40, 60, 255]
+    );
+    assert_ne!(
+        game.bga.frame(&game, 600.0).get_pixel(0, 0).0,
+        [20, 40, 60, 255]
+    );
+    assert_eq!(game.bga.frame(&game, 700.0), game.bga.frame(&game, 799.0));
+    game.chart
+        .bga_extensions
+        .switches
+        .get_mut(&1)
+        .unwrap()
+        .duration_ms = 0;
+    game.chart
+        .bga_extensions
+        .switches
+        .get_mut(&1)
+        .unwrap()
+        .looping = true;
+    assert_eq!(
+        game.bga.frame(&game, 700.0).get_pixel(0, 0).0,
+        [20, 40, 60, 255]
+    );
+    game.release(0, 701.0);
+    assert_ne!(
+        game.bga.frame(&game, 701.0).get_pixel(0, 0).0,
+        [20, 40, 60, 255]
+    );
+    assert_eq!(
+        game.bga.frame(&game, 2500.0).get_pixel(0, 0).0,
+        [0, 0, 0, 255]
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn argb_and_opacity_update_the_same_layer_state() {
+    let mut game = game();
+    game.chart.bga_extensions.argb.insert(1, [128, 0, 0, 255]);
+    game.chart.bga_extensions.events = vec![
+        EffectEvent {
+            time_ms: 0.0,
+            effect: Effect::Color(BgaLayer::Base, 1),
+        },
+        EffectEvent {
+            time_ms: 50.0,
+            effect: Effect::Opacity(BgaLayer::Base, 255),
+        },
+    ];
+    assert_eq!(
+        game.bga.frame(&game, 0.0).get_pixel(1, 1).0[..3],
+        [128, 0, 0]
+    );
+    assert_eq!(
+        game.bga.frame(&game, 50.0).get_pixel(1, 1).0,
+        [255, 0, 0, 255]
+    );
+    game.chart.bga_extensions.argb.insert(1, [255, 255, 0, 0]);
+    assert_eq!(
+        game.bga.frame(&game, 50.0).get_pixel(1, 1).0,
+        [0, 0, 0, 255]
+    );
+}
+
+#[test]
 fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -241,7 +407,12 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
         wait_for(1500.0, 1);
         wait_for(1999.0, 1);
         wait_for(2000.0, 0);
-        for layer in [BgaLayer::Base, BgaLayer::Poor] {
+        for layer in [
+            BgaLayer::Base,
+            BgaLayer::Poor,
+            BgaLayer::Overlay,
+            BgaLayer::Overlay2,
+        ] {
             let mut delayed = Game::new(crate::bms::load(&chart, 1000.0).unwrap());
             delayed.chart.bga.truncate(1);
             delayed.chart.bga[0].layer = layer;
@@ -271,6 +442,22 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
                 }
                 assert!(Instant::now() < deadline, "Delayed video did not catch up");
                 std::thread::sleep(Duration::from_millis(5));
+            }
+            delayed.chart.bga_extensions.events.push(EffectEvent {
+                time_ms: 1750.0,
+                effect: Effect::Opacity(layer, 128),
+            });
+            let pixel = delayed.bga.frame(&delayed, 1750.0).get_pixel(32, 32).0;
+            assert!((120..=128).contains(&pixel[1]));
+            delayed.chart.bga_extensions.events.clear();
+            if layer == BgaLayer::Poor {
+                delayed.chart.bga_extensions.poor_mode = 1;
+                assert!(delayed.bga.frame(&delayed, 1750.0).get_pixel(32, 32)[1] > 240);
+                delayed.chart.bga_extensions.poor_mode = 2;
+                assert_eq!(
+                    delayed.bga.frame(&delayed, 1750.0).get_pixel(32, 32).0,
+                    [0, 0, 0, 255]
+                );
             }
             if layer == BgaLayer::Base {
                 let mut hidden = Vec::new();

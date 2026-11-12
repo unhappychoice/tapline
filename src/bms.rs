@@ -1,3 +1,4 @@
+mod bga_extensions;
 use crate::assets::AssetIndex;
 use crate::chart::{
     keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, ExRankEvent, InvisibleNote, LnMode, Mine, Note,
@@ -152,7 +153,7 @@ fn pms_channel_to_lane(ch: &str, left: &str, right: &str) -> Option<usize> {
 }
 
 fn build_chart(
-    pass: HeaderPass,
+    mut pass: HeaderPass,
     raw: Vec<(u32, String, String)>,
     dir: PathBuf,
     path: &Path,
@@ -175,6 +176,17 @@ fn build_chart(
     let lane_count = mode.playable_lane_count(&acc, &p2_acc);
     let p1_lane_count = mode.side_lane_count(&acc);
     let p2_lane_count = mode.side_lane_count(&p2_acc);
+    pass.bga_extensions
+        .switches
+        .values_mut()
+        .for_each(|switch| {
+            switch.lane = bga_switch_lane(
+                &switch.channel,
+                p1_lane_count,
+                mode.double_play.then_some(p2_lane_count),
+                is_pms(path),
+            );
+        });
     let scroll = collect_scroll_events(&raw, &timeline, "SC", &pass.scroll_defs, pass.base);
     let speed = collect_scroll_events(&raw, &timeline, "SP", &pass.speed_defs, pass.base);
     let mut notes = acc.notes;
@@ -254,6 +266,7 @@ fn build_chart(
         p2_invisible_notes,
         bgm,
         bga,
+        bga_extensions: bga_extensions::collect(pass.bga_extensions, &raw, &timeline, pass.base),
         text_events,
         bmp_paths,
         scroll,
@@ -687,6 +700,26 @@ fn materialize_mines_with(
     }
 }
 
+fn bga_switch_lane(
+    channel: &str,
+    p1_lanes: usize,
+    p2_lanes: Option<usize>,
+    pms: bool,
+) -> Option<usize> {
+    if pms {
+        return (PMS_LANES.normal)(channel);
+    }
+    let (lane, side_lanes, offset) = channel_to_lane(channel)
+        .map(|lane| (lane, p1_lanes, 0))
+        .or_else(|| Some((p2_channel_to_lane(channel)?, p2_lanes?, p1_lanes)))?;
+    let scratch = matches!(side_lanes, 6 | 8);
+    match lane {
+        7 if scratch => Some(offset + side_lanes - 1),
+        lane if lane < side_lanes - usize::from(scratch) => Some(offset + lane),
+        _ => None,
+    }
+}
+
 fn positive_percent(value: &str) -> Option<f64> {
     value
         .trim()
@@ -724,6 +757,7 @@ fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
         "04" => Some(BgaLayer::Base),
         "06" => Some(BgaLayer::Poor),
         "07" => Some(BgaLayer::Overlay),
+        "0A" => Some(BgaLayer::Overlay2),
         _ => None,
     }
 }
@@ -1181,6 +1215,7 @@ struct HeaderPass {
     text_defs: HashMap<u32, String>,
     lnobj: Option<u32>,
     lntype: u8,
+    bga_extensions: crate::bga::Extensions,
     ln_mode: LnMode,
 }
 
@@ -1219,6 +1254,7 @@ impl Default for HeaderPass {
             text_defs: HashMap::new(),
             lnobj: None,
             lntype: 1,
+            bga_extensions: Default::default(),
             ln_mode: LnMode::default(),
         }
     }
@@ -1260,6 +1296,9 @@ impl HeaderPass {
     fn absorb(&mut self, line: &str) -> Result<()> {
         let (cmd, val) = split_cmd_value(line);
         let up = cmd.to_ascii_uppercase();
+        if bga_extensions::absorb(&mut self.bga_extensions, cmd, val, self.base) {
+            return Ok(());
+        }
         match up.as_str() {
             "PLAYER" => {
                 if let Ok(value @ 1..=3) = val.trim().parse::<u8>() {
@@ -1815,6 +1854,31 @@ mod tests {
         let times: Vec<_> = chart.text_events.iter().map(|e| e.time_ms).collect();
         assert_eq!(times, vec![2875.0, 3250.0, 3750.0]);
         assert!(chart.duration_ms > times[2]);
+    }
+
+    #[test]
+    fn song_text_and_bga_extensions_share_the_timeline() {
+        let dir = tempdir();
+        let path = dir.join("text_and_bga.bms");
+        std::fs::write(
+            &path,
+            "#BPM 120\n#TEXT01 Chorus\n#POORBGA 2\n#ARGB01 255,1,2,3\n#00199:01\n#0010A:01\n#0010B:80\n#001A1:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 500.0).unwrap();
+        assert_eq!(chart.text_events[0].text, "Chorus");
+        assert_eq!(chart.text_events[0].time_ms, 2500.0);
+        assert_eq!(chart.bga[0].layer, BgaLayer::Overlay2);
+        assert_eq!(chart.bga[0].time_ms, chart.text_events[0].time_ms);
+        assert_eq!(chart.bga_extensions.poor_mode, 2);
+        assert_eq!(chart.bga_extensions.argb[&1], [255, 1, 2, 3]);
+        assert_eq!(chart.bga_extensions.events.len(), 2);
+        assert!(chart
+            .bga_extensions
+            .events
+            .iter()
+            .all(|event| event.time_ms == 2500.0));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -2708,6 +2772,71 @@ mod tests {
     }
 
     #[test]
+    fn bga_switches_follow_materialized_lanes() {
+        let dir = tempdir();
+        for (extension, header, channels) in [
+            ("bms", "", "11"),
+            ("bms", "", "15"),
+            ("bms", "", "16"),
+            ("bme", "", "19"),
+            ("bme", "", "16"),
+            ("bms", "", "11 25"),
+            ("bms", "", "11 29"),
+            ("bms", "", "19 21"),
+            ("bms", "#PLAYER 3", "15 25"),
+            ("bms", "#PLAYER 3", "15 29"),
+            ("bms", "#PLAYER 3", "19 25"),
+            ("bms", "#PLAYER 3", "16 25"),
+            ("bms", "#PLAYER 3", "15 26"),
+            ("bms", "#PLAYER 3", "16 29"),
+            ("bms", "#PLAYER 3", "19 26"),
+            ("bms", "#PLAYER 3", "16 26"),
+            ("bme", "#PLAYER 3", "19 29"),
+            ("bme", "#PLAYER 3", "16 26"),
+            ("pms", "", "11 25"),
+        ] {
+            let path = dir.join(format!("switch.{extension}"));
+            let notes = channels
+                .split_whitespace()
+                .map(|channel| format!("#001{channel}:01\n"))
+                .collect::<String>();
+            for channel in [
+                "11", "15", "16", "17", "18", "19", "21", "25", "26", "27", "28", "29",
+            ] {
+                let text = format!(
+                    "#BPM 120\n{header}\n{notes}#SWBGA01 100:0:{channel}:1:255,0,0,0 01\n#000A5:01\n"
+                );
+                std::fs::write(&path, text).unwrap();
+                let chart = load(&path, 0.0).unwrap();
+                let expected = match channel {
+                    "17" | "27" => None,
+                    _ if channels.split_whitespace().any(|ch| ch == channel) => {
+                        let index = channels
+                            .split_whitespace()
+                            .position(|ch| ch == channel)
+                            .unwrap();
+                        Some(chart.notes[index].lane)
+                    }
+                    _ => continue,
+                };
+                assert_eq!(
+                    chart.bga_extensions.switches[&1].lane, expected,
+                    "{extension} {header} {channels}: {channel}"
+                );
+                let mut playback = crate::bga::SwitchPlayback::default();
+                for lane in 0..chart.lane_count {
+                    playback.active = None;
+                    playback.press(&chart, lane, 0.0);
+                    assert_eq!(
+                        playback.active.map(|(_, lane, _)| lane),
+                        expected.filter(|expected| *expected == lane)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn double_play_merges_both_sides_and_matches_metadata() {
         let dir = tempdir();
         let path = dir.join("song.bms");
@@ -2734,6 +2863,23 @@ mod tests {
                 assert!(chart.notes.iter().any(|n| n.lane == left + right - 1));
             }
         }
+    }
+
+    #[test]
+    fn double_play_preserves_bga_extensions_and_ln_mode() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "#BPM 120\n#PLAYER 3\n#LNMODE 1\n#POORBGA 1\n#ARGB01 255,20,40,60\n#00115:01\n#00125:01\n#0010A:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.lane_count, 10);
+        assert_eq!(chart.ln_mode, LnMode::Ln);
+        assert_eq!(chart.bga_extensions.poor_mode, 1);
+        assert_eq!(chart.bga_extensions.argb[&1], [255, 20, 40, 60]);
+        assert_eq!(chart.bga[0].layer, BgaLayer::Overlay2);
     }
 
     #[test]
