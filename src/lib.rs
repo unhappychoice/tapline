@@ -10,3 +10,5 @@ pub mod runtime;
 pub mod select;
 
 mod terminal_text;
+
+mod artwork;

@@ -550,6 +550,20 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn draw_stagefile(
+    out: &mut impl Write,
+    chart: &crate::chart::Chart,
+    cols: u16,
+    rows: u16,
+) -> std::io::Result<()> {
+    crate::artwork::draw(
+        out,
+        &chart.asset_dir,
+        &chart.stagefile,
+        (0, 0, cols, (rows / 2).saturating_sub(4)),
+    )
+}
+
 pub fn draw_intro(
     out: &mut Stdout,
     game: &Game,
@@ -569,12 +583,13 @@ pub fn draw_intro_full(
 ) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
     queue!(out, terminal::BeginSynchronizedUpdate)?;
+    draw_stagefile(out, &game.chart, cols, rows)?;
     let title = format_title_line(&game.chart.title, &game.chart.subtitle);
     queue!(
         out,
         cursor::MoveTo(
             cols.saturating_sub(title.chars().count() as u16) / 2,
-            rows / 2 - 3
+            (rows / 2).saturating_sub(3)
         ),
         SetForegroundColor(Color::Magenta),
         style::SetAttribute(style::Attribute::Bold),
@@ -587,7 +602,7 @@ pub fn draw_intro_full(
             out,
             cursor::MoveTo(
                 cols.saturating_sub(art.chars().count() as u16) / 2,
-                rows / 2 - 2
+                (rows / 2).saturating_sub(2)
             ),
             SetForegroundColor(Color::DarkGrey),
             Print(&art),
@@ -600,7 +615,7 @@ pub fn draw_intro_full(
             out,
             cursor::MoveTo(
                 cols.saturating_sub(badge.chars().count() as u16) / 2,
-                rows / 2 - 1
+                (rows / 2).saturating_sub(1)
             ),
             SetForegroundColor(Color::Cyan),
             Print(&badge),
@@ -633,7 +648,7 @@ pub fn draw_intro_full(
         out,
         cursor::MoveTo(
             cols.saturating_sub(badge.chars().count() as u16) / 2,
-            rows - 2
+            rows.saturating_sub(2)
         ),
         SetForegroundColor(if decode_failures > 0 {
             Color::Yellow
@@ -815,6 +830,31 @@ mod tests {
         let rendered = String::from_utf8(out).unwrap();
         assert!(rendered.contains("\x1b[2K"));
         assert!(rendered.ends_with("Hello"));
+    }
+
+    #[test]
+    fn intro_draws_stagefile_relative_to_chart_directory() {
+        crossterm::style::force_color_output(true);
+        let dir = std::env::current_dir()
+            .unwrap()
+            .join("target/intro-artwork-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        image::RgbImage::from_pixel(4, 4, image::Rgb([0, 255, 0]))
+            .save(dir.join("stage.png"))
+            .unwrap();
+        let chart = crate::chart::Chart {
+            asset_dir: dir,
+            stagefile: "stage.png".into(),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        draw_stagefile(&mut out, &chart, 80, 24).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains('▀'));
+        assert!(output.contains("38;2;0;255;0"));
+        let mut tiny = Vec::new();
+        draw_stagefile(&mut tiny, &chart, 10, 8).unwrap();
+        assert!(tiny.is_empty());
     }
 
     #[test]
