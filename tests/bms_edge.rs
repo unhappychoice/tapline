@@ -429,15 +429,15 @@ fn duplicate_long_note_endpoints_merge_before_pairing_on_both_sides() {
 }
 
 #[test]
-fn duplicate_landmines_use_the_last_hex_damage_on_both_sides() {
+fn duplicate_landmines_use_the_last_base36_damage_on_both_sides() {
     for channel in ["D1", "E1"] {
-        let path = write_text(&format!("#BPM 60\n#001{channel}:0A\n#001{channel}:FF00\n"));
+        let path = write_text(&format!("#BPM 60\n#001{channel}:0A\n#001{channel}:ZZ00\n"));
         let chart = bms::load(&path, 0.0).unwrap();
         assert!(chart.p2_mines.is_empty());
         let mines = &chart.mines;
         assert_eq!(mines[0].lane, if channel == "D1" { 0 } else { 5 });
         assert_eq!(mines.len(), 1);
-        assert_eq!(mines[0].damage, 255);
+        assert_eq!(mines[0].damage, 1295);
         assert_eq!(mines[0].time_ms, 4000.0);
     }
 }
@@ -504,4 +504,63 @@ fn volume_events_follow_millisecond_stops() {
         .map(|event| event.time_ms)
         .collect();
     assert_eq!(times, vec![2100.0, 3850.0, 3850.0, 4350.0]);
+}
+
+#[test]
+fn mines_are_base36_even_with_base62_and_ignore_empty_or_invalid_slots() {
+    for base in [36, 62] {
+        for channel in ["D1", "E1"] {
+            let path = write_text(&format!(
+                "#BASE {base}\n#BPM 60\n#001{channel}:000A0a10ZZzz??\n"
+            ));
+            let chart = bms::load(&path, 0.0).unwrap();
+            assert_eq!(
+                chart.mines.iter().map(|m| m.damage).collect::<Vec<_>>(),
+                vec![10, 10, 36, 1295, 1295]
+            );
+        }
+    }
+}
+
+#[test]
+fn loaded_mines_scale_damage_break_combo_and_allow_recovery_after_zz() {
+    let path = write_text("#BPM 60\n#TOTAL 80\n#00011:0101\n#001D1:010A10ZZ\n#00211:01\n");
+    let mut game = tapline::game::Game::new(bms::load(&path, 0.0).unwrap());
+    game.hit(0, 0.0);
+    game.hit(0, 2000.0);
+    let score = game.score;
+    let accuracy = game.accuracy();
+    let start = game.gauge.value();
+    for (time, loss) in [(3960.0, 0.5), (5000.0, 5.5), (6040.0, 23.5)] {
+        game.hit(0, time);
+        assert!((game.gauge.value() - (start - loss)).abs() < 1e-9);
+        let value = game.gauge.value();
+        game.hit(0, time);
+        assert_eq!(game.gauge.value(), value);
+    }
+    assert_eq!(game.combo, 0);
+    assert_eq!(game.max_combo, 2);
+    assert_eq!(game.score, score);
+    assert_eq!(game.accuracy(), accuracy);
+    assert_eq!(game.miss, 0);
+    game.hit(0, 7000.0);
+    assert_eq!(game.gauge.value(), 0.0);
+    assert!(!game.completed);
+    game.hit(0, 8000.0);
+    assert!(game.gauge.value() > 0.0);
+}
+
+#[test]
+fn simultaneous_mines_each_apply_damage_while_a_normal_note_still_scores() {
+    let path = write_text("#BPM 60\n#TOTAL 10\n#00011:01\n#00111:01\n#001D1:0A\n#001D1:0001\n");
+    let mut game = tapline::game::Game::new(bms::load(&path, 0.0).unwrap());
+    game.hit(0, 0.0);
+    // Two distinct timestamps within the same press window both detonate.
+    game.chart.mines[1].time_ms = 4040.0;
+    game.hit(0, 4000.0);
+    assert_eq!(game.gauge.value(), 24.5);
+    assert_eq!(game.perfect, 2);
+    assert_eq!(game.miss, 0);
+    assert_eq!(game.combo, 1);
+    assert!(game.chart.mines.iter().all(|mine| mine.exploded));
 }

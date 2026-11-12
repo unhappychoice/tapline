@@ -182,12 +182,12 @@ the rank-dependent MISS delay. A long note whose start was never hit instead
 becomes a MISS after its start plus the same delay.
 
 Pressing a landmine's lane within ±40 ms of its timestamp detonates it once,
-adds a MISS, and resets the combo. Each matching mine is judged independently.
-The parsed `damage` value does not scale the penalty or subtract score.
-
-### Not yet supported (v1)
-
-- Landmine penalties proportional to the parsed `damage` value
+subtracts `damage / 2` percentage points from the gauge and resets the combo.
+Damage is case-insensitive base 36 (`01`–`ZZ`), regardless of `#BASE`; `00`
+means no mine. For example, `0A` subtracts 5 points and `10` subtracts 18.
+Each matching mine detonates independently and only once. Mines do not add
+MISS judgments or change score, accuracy, or judgment/BGA flashes. `ZZ` (1295)
+empties the gauge; it does not end play early, and later notes can recover it.
 
 ## bmson support
 
@@ -246,12 +246,12 @@ including rank-dependent misses and held long-note endings. Displayed percentage
 are truncated to one decimal place so values below 80% never display as 80.0%.
 
 PERFECT and GREAT recover `#TOTAL / note count` percentage points; GOOD
-recovers half that amount. Each MISS (including a mine detonation) subtracts
+recovers half that amount. Each MISS subtracts
 6 percentage points. Missing, non-finite, or non-positive `#TOTAL` defaults
 to 260. Long-note starts and ends each count as one note because both are
 judged separately; mines and background sounds do not count toward recovery.
-An empty chart has no recovery. Mine damage scaling and other gauge types
-are not implemented yet.
+An empty chart has no recovery. Mines subtract half their base-36 damage
+value in percentage points. Other gauge types are not implemented yet.
 
 ## Keys
 

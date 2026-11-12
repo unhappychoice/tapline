@@ -469,7 +469,7 @@ fn merge_note_lines(
     let mut merged = raw.to_vec();
     for (measure, ch, data) in merged.iter_mut().rev() {
         let slots = if (lanes.mine)(ch).is_some() {
-            parse_slots_hex(data)
+            parse_slots(data, 36)
         } else if (lanes.normal)(ch).is_some()
             || (lanes.long)(ch).is_some()
             || (lanes.invisible)(ch).is_some()
@@ -652,7 +652,7 @@ fn materialize_mines_with(
         let Some(lane) = lane_of(ch) else {
             continue;
         };
-        let slots = parse_slots_hex(data);
+        let slots = parse_slots(data, 36);
         let n = slots.len();
         if n == 0 {
             continue;
@@ -1921,7 +1921,7 @@ mod tests {
                 assert_eq!(chart.bgm.len(), 1);
                 let mut lanes = if channels.starts_with('D') {
                     assert!(chart.notes.is_empty());
-                    assert!(chart.mines.iter().all(|mine| mine.damage == 100));
+                    assert!(chart.mines.iter().all(|mine| mine.damage == 220));
                     chart.mines.iter().map(|mine| mine.lane).collect::<Vec<_>>()
                 } else {
                     assert!(chart.notes.iter().all(|note| note.keysound == Some(1)));
@@ -1942,7 +1942,7 @@ mod tests {
                     }
                 });
                 if channels.starts_with('D') {
-                    assert_eq!(game.miss, 9);
+                    assert_eq!(game.miss, 0);
                     assert!(game.chart.mines.iter().all(|mine| mine.exploded));
                 } else {
                     assert_eq!(game.perfect, if long { 18 } else { 9 });
@@ -2360,7 +2360,7 @@ mod tests {
         assert!(chart.p2_notes.is_empty());
         assert!(chart.p2_mines.is_empty());
         assert_eq!(chart.mines[0].lane, 4);
-        assert_eq!(chart.mines[0].damage, 100);
+        assert_eq!(chart.mines[0].damage, 220);
     }
 
     #[test]
@@ -2960,7 +2960,7 @@ Always
     fn load_extracts_mines_from_channel_d1() {
         let dir = tempdir();
         let path = dir.join("song.bms");
-        // BPM 60 → 4000ms/measure. Slot 0 (00 = no mine), slot 1 (0x64 = 100
+        // BPM 60 → 4000ms/measure. Slot 0 (00 = no mine), slot 1 (base-36 64 = 220
         // damage). Also a regular note in channel 11 so lane 0 counts.
         std::fs::write(
             &path,
@@ -2975,7 +2975,7 @@ Always
         let chart = load(&path, 0.0).unwrap();
         assert_eq!(chart.mines.len(), 1);
         assert_eq!(chart.mines[0].lane, 0);
-        assert_eq!(chart.mines[0].damage, 100);
+        assert_eq!(chart.mines[0].damage, 220);
         assert!((chart.mines[0].time_ms - 6000.0).abs() < 1e-6);
     }
 

@@ -30,7 +30,7 @@ pub struct BgmEvent {
 pub struct Mine {
     pub time_ms: f64,
     pub lane: usize,
-    /// Damage value from the BMS chart (0–255).
+    /// Base-36 damage value from the BMS chart (1–1295), in half percentage points.
     pub damage: u32,
     /// Set once the player triggers the mine so it isn't punished twice.
     pub exploded: bool,
