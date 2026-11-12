@@ -388,3 +388,15 @@ fn lntype_two_endpoints_include_millisecond_stops() {
     assert_eq!(chart.notes[0].end_ms, Some(8000.0));
     assert_eq!(chart.notes[0].keysound, Some(1));
 }
+
+#[test]
+fn volume_events_follow_millisecond_stops() {
+    let path = write_text("#BPM 120\n#STP 001.500 750\n#00197:400080FF\n#00198:0080\n");
+    let chart = bms::load(&path, 100.0).unwrap();
+    let times: Vec<_> = chart
+        .volume_events
+        .iter()
+        .map(|event| event.time_ms)
+        .collect();
+    assert_eq!(times, vec![2100.0, 3850.0, 3850.0, 4350.0]);
+}
