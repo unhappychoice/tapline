@@ -254,6 +254,7 @@ fn build_chart(
         lane_count,
         keys: keys_for(lane_count),
         wav_paths,
+        sample_settings: pass.sample_settings,
         sample_slices: HashMap::new(),
         sound_layers: HashMap::new(),
     })
@@ -1109,6 +1110,7 @@ struct HeaderPass {
     exrank_defs: HashMap<u32, f64>,
     total: Option<f64>,
     vol_wav: Option<u8>,
+    sample_settings: HashMap<u32, crate::sample_settings::SampleSettings>,
     wav_defs: HashMap<u32, String>,
     bpm_defs: HashMap<u32, f64>,
     stop_defs: HashMap<u32, f64>,
@@ -1142,6 +1144,7 @@ impl Default for HeaderPass {
             exrank_defs: HashMap::new(),
             total: None,
             vol_wav: None,
+            sample_settings: HashMap::new(),
             wav_defs: HashMap::new(),
             bpm_defs: HashMap::new(),
             stop_defs: HashMap::new(),
@@ -1154,6 +1157,21 @@ impl Default for HeaderPass {
 }
 
 impl HeaderPass {
+    fn absorb_wavcmd(&mut self, value: &str) {
+        let parts: Vec<_> = value.split_whitespace().collect();
+        if let [command, id, value] = parts.as_slice() {
+            if let (Some(id), Ok(value)) = (parse_id(id, self.base), value.parse::<u32>()) {
+                let settings = self.sample_settings.entry(id).or_default();
+                match *command {
+                    "00" if value <= 127 => settings.pitch = Some(value as u8),
+                    "01" => settings.volume = Some(value),
+                    "02" => settings.length = Some(value),
+                    _ => {}
+                }
+            }
+        }
+    }
+
     fn for_text(text: &str) -> Self {
         let base = header_lines(text)
             .filter_map(|line| {
@@ -1231,6 +1249,7 @@ impl HeaderPass {
                     }
                 }
             }
+            "WAVCMD" => self.absorb_wavcmd(val),
             "LNOBJ" => {
                 if let Some(id) = parse_id(val.trim(), self.base) {
                     if id > 0 {
@@ -1246,7 +1265,18 @@ impl HeaderPass {
                 }
             }
             _ => {
-                if let Some(rest) = up.strip_prefix("EXRANK").and_then(|_| cmd.get(6..)) {
+                if let Some(rest) = up.strip_prefix("EXWAV").and_then(|_| cmd.get(5..)) {
+                    if let (Some(id), Some((settings, path))) = (
+                        parse_id(rest, self.base),
+                        crate::sample_settings::SampleSettings::parse_exwav(val),
+                    ) {
+                        let current = self.sample_settings.entry(id).or_default();
+                        current.pan = settings.pan;
+                        current.attenuation = settings.attenuation;
+                        current.frequency = settings.frequency;
+                        self.wav_defs.insert(id, path.to_string());
+                    }
+                } else if let Some(rest) = up.strip_prefix("EXRANK").and_then(|_| cmd.get(6..)) {
                     if rest.len() == 2 {
                         if let (Some(id), Some(v)) =
                             (parse_id(rest, self.base), positive_percent(val))
@@ -1259,6 +1289,11 @@ impl HeaderPass {
                 } else if let Some(rest) = up.strip_prefix("WAV").and_then(|_| cmd.get(3..)) {
                     if let Some(id) = parse_id(rest, self.base) {
                         self.wav_defs.insert(id, val.trim().to_string());
+                        if let Some(settings) = self.sample_settings.get_mut(&id) {
+                            settings.pan = 0;
+                            settings.attenuation = 0;
+                            settings.frequency = None;
+                        }
                     }
                 } else if let Some(rest) = up
                     .strip_prefix("BPM")
@@ -1719,6 +1754,58 @@ mod tests {
                 std::fs::write(&path, text).unwrap();
                 assert!(read_meta(&path).unwrap().preview.is_none());
             });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn extended_wav_parses_flags_in_order_and_keeps_filename_spaces() {
+        let mut pass = HeaderPass::default();
+        pass.absorb("exwav0E vFp -2000 22050 -10000 sound file.wav")
+            .unwrap();
+        pass.absorb("WAVCMD 00 0E 72").unwrap();
+        pass.absorb("WAVCMD 01 0E 50").unwrap();
+        pass.absorb("WAVCMD 02 0E 200").unwrap();
+        let settings = pass.sample_settings[&14].clone();
+        assert_eq!(pass.wav_defs[&14], "sound file.wav");
+        assert_eq!(settings.pan, -10000);
+        assert_eq!(settings.attenuation, -2000);
+        assert_eq!(settings.frequency, Some(22050));
+        assert_eq!(settings.pitch, Some(72));
+        assert_eq!(settings.volume, Some(50));
+        assert_eq!(settings.length, Some(200));
+        pass.absorb("EXWAV0E p 10001 invalid.wav").unwrap();
+        pass.absorb("WAVCMD 00 0E 128").unwrap();
+        assert_eq!(pass.sample_settings[&14], settings);
+    }
+
+    #[test]
+    fn load_extended_wav_combines_base62_settings_volume_and_exrank_events() {
+        let dir = tempdir();
+        let path = dir.join("extended-base62.bms");
+        ["upper.wav", "lower.wav"].iter().for_each(|name| {
+            std::fs::write(dir.join(name), b"").unwrap();
+        });
+        std::fs::write(
+            &path,
+            "#BPM 120\n#DEFEXRANK 75\n#EXRANK0a 50\n#000A0:0a\n#EXWAV0A p -10000 upper.wav\n#exwav0a v -2000 lower.wav\n#WAVCMD 00 0A 72\n#WAVCMD 01 0a 50\n#WAVCMD 02 0a 200\n#00011:0A0a\n#00097:80\n#00098:40\n#BASE 62\n",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.wav_paths[&10], dir.join("upper.wav"));
+        assert_eq!(chart.wav_paths[&36], dir.join("lower.wav"));
+        assert_eq!(chart.sample_settings[&10].pan, -10000);
+        assert_eq!(chart.sample_settings[&10].pitch, Some(72));
+        assert_eq!(chart.sample_settings[&10].volume, None);
+        assert_eq!(chart.sample_settings[&36].attenuation, -2000);
+        assert_eq!(chart.sample_settings[&36].pitch, None);
+        assert_eq!(chart.sample_settings[&36].volume, Some(50));
+        assert_eq!(chart.sample_settings[&36].length, Some(200));
+        assert_eq!(chart.notes[0].keysound, Some(10));
+        assert_eq!(chart.notes[1].keysound, Some(36));
+        assert_eq!(chart.volume_events.len(), 2);
+        assert_eq!(chart.exrank_defs[&36], 50.0);
+        assert_eq!(chart.judgment_scale(0.0), 0.5);
+
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -32,7 +32,7 @@ pub fn play_chart(out: &mut Stdout, args: &Args, mut chart: chart::Chart) -> Res
     let bank = if args.no_audio {
         audio::SampleBank::silent()
     } else {
-        audio::SampleBank::new(&chart.wav_paths)
+        audio::SampleBank::with_settings(&chart.wav_paths, &chart.sample_settings)
             .with_slices(&chart.sample_slices)
             .with_layers(&chart.sound_layers)
     };

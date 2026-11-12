@@ -5,7 +5,8 @@ use crossterm::{
 use image::{DynamicImage, ImageReader};
 use std::{
     cell::RefCell,
-    io::Write,
+    fs::OpenOptions,
+    io::{BufReader, Write},
     path::{Path, PathBuf},
 };
 
@@ -28,10 +29,7 @@ pub(crate) fn draw(
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.as_ref().map(|entry| &entry.0) != Some(&path) {
-            let image = ImageReader::open(&path)
-                .ok()
-                .and_then(|reader| reader.with_guessed_format().ok())
-                .and_then(|reader| reader.decode().ok());
+            let image = load_image(&path);
             *cache = Some((path, image));
         }
         match cache.as_ref().and_then(|entry| entry.1.as_ref()) {
@@ -39,6 +37,29 @@ pub(crate) fn draw(
             None => Ok(()),
         }
     })
+}
+
+fn load_image(path: &Path) -> Option<DynamicImage> {
+    if !path.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    // Avoid blocking if a regular file is replaced with a FIFO before opening.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    ImageReader::new(BufReader::new(file))
+        .with_guessed_format()
+        .ok()?
+        .decode()
+        .ok()
 }
 
 fn draw_pixels(
@@ -110,5 +131,48 @@ mod tests {
         draw(&mut out, Path::new("."), "missing.png", (0, 0, 10, 10)).unwrap();
         draw(&mut out, Path::new("."), "Cargo.toml", (0, 0, 0, 0)).unwrap();
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn renders_regular_image_file() {
+        let path = std::env::temp_dir().join(format!("tapline-artwork-{}.png", std::process::id()));
+        DynamicImage::new_rgb8(2, 2).save(&path).unwrap();
+        let mut out = Vec::new();
+        draw(
+            &mut out,
+            path.parent().unwrap(),
+            path.file_name().unwrap().to_str().unwrap(),
+            (0, 0, 2, 1),
+        )
+        .unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(String::from_utf8(out).unwrap().contains('▀'));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_and_symlink_artwork_return_without_a_writer() {
+        use std::{os::unix::fs::symlink, sync::mpsc, time::Duration};
+
+        let dir = std::env::temp_dir().join(format!("tapline-artwork-fifo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("banner.png");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        symlink(&fifo, dir.join("stage.png")).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let artwork_dir = dir.clone();
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            ["banner.png", "stage.png", "."].iter().for_each(|name| {
+                draw(&mut out, &artwork_dir, name, (0, 0, 10, 10)).unwrap();
+            });
+            sender.send(out).unwrap();
+        });
+        let result = receiver.recv_timeout(Duration::from_secs(2));
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(result
+            .expect("special-file artwork must not block")
+            .is_empty());
     }
 }
