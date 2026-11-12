@@ -23,10 +23,12 @@ pub struct FlashState {
     pub last_judgment: Option<Judgment>,
     pub last_lane_hit: Vec<f64>,
     pub last_judgment_at: f64,
+    pub last_miss_at: Option<f64>,
 }
 
 pub struct Game {
     pub chart: Chart,
+    pub bga: crate::bga::ImageBank,
     pub score: u32,
     pub combo: u32,
     pub max_combo: u32,
@@ -88,6 +90,7 @@ impl JudgmentWindows {
 impl Game {
     pub fn new(chart: Chart) -> Self {
         let lane_count = chart.lane_count;
+        let bga = crate::bga::ImageBank::load(&chart.bmp_paths);
         let mut events = chart.notes.clone();
         events.extend(chart.invisible_notes.iter().map(|note| Note {
             time_ms: note.time_ms,
@@ -106,6 +109,7 @@ impl Game {
             lane_keysounds,
             keysound_events: events.into_iter().peekable(),
             chart,
+            bga,
             score: 0,
             combo: 0,
             max_combo: 0,
@@ -117,6 +121,7 @@ impl Game {
                 last_judgment: None,
                 last_lane_hit: vec![-9999.0; lane_count],
                 last_judgment_at: -9999.0,
+                last_miss_at: None,
             },
         }
     }
@@ -252,6 +257,7 @@ impl Game {
         }
         if j == Judgment::Miss {
             self.combo = 0;
+            self.flash.last_miss_at = Some(now_ms);
         } else {
             self.combo += 1;
             self.max_combo = self.max_combo.max(self.combo);
@@ -699,6 +705,7 @@ mod tests {
         g.hit(0, 1000.0);
         assert_eq!(g.miss, 1, "mine detonation is scored as a Miss");
         assert!(g.chart.mines[0].exploded);
+        assert_eq!(g.flash.last_miss_at, Some(1000.0));
         assert_eq!(g.combo, 0);
     }
 
@@ -769,6 +776,7 @@ mod tests {
         g.hit(0, 1000.0);
         // Release ~500ms early, well outside WINDOW_GOOD.
         g.release(0, 1500.0);
+        assert_eq!(g.flash.last_miss_at, Some(1500.0));
         assert_eq!(g.miss, 1);
         assert_eq!(g.combo, 0);
     }
