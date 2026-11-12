@@ -1,6 +1,6 @@
 use crate::chart::{
     keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, ExRankEvent, InvisibleNote, Mine, Note,
-    VolumeEvent, VolumeTarget,
+    ScrollEvent, VolumeEvent, VolumeTarget,
 };
 use anyhow::{ensure, Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -167,6 +167,8 @@ fn build_chart(
     let lane_count = mode.playable_lane_count(&acc, &p2_acc);
     let p1_lane_count = mode.side_lane_count(&acc);
     let p2_lane_count = mode.side_lane_count(&p2_acc);
+    let scroll = collect_scroll_events(&raw, &timeline, "SC", &pass.scroll_defs, pass.base);
+    let speed = collect_scroll_events(&raw, &timeline, "SP", &pass.speed_defs, pass.base);
     let mut notes = acc.notes;
     let mut invisible_notes = acc.invisible_notes;
     let mut mines = acc.mines;
@@ -244,6 +246,8 @@ fn build_chart(
         bgm,
         bga,
         bmp_paths,
+        scroll,
+        speed,
         duration_ms,
         lane_count,
         keys: keys_for(lane_count),
@@ -714,6 +718,34 @@ fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
     }
 }
 
+fn collect_scroll_events(
+    raw: &[(u32, String, String)],
+    timeline: &Timeline,
+    channel: &str,
+    definitions: &HashMap<u32, f64>,
+    base: u32,
+) -> Vec<ScrollEvent> {
+    let mut events: Vec<_> = raw
+        .iter()
+        .filter(|(_, ch, _)| ch == channel)
+        .flat_map(|(measure, _, data)| {
+            let slots = parse_slots(data, base);
+            let count = slots.len();
+            slots.into_iter().enumerate().filter_map(move |(i, id)| {
+                definitions
+                    .get(&id)
+                    .filter(|_| id != 0)
+                    .map(|&multiplier| ScrollEvent {
+                        time_ms: timeline.time_at(*measure, i as f64 / count as f64),
+                        multiplier,
+                    })
+            })
+        })
+        .collect();
+    events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
+    events
+}
+
 fn collect_volume_events(raw: &[(u32, String, String)], timeline: &Timeline) -> Vec<VolumeEvent> {
     let mut events = Vec::new();
     for (measure, channel, data) in raw {
@@ -1107,6 +1139,8 @@ struct HeaderPass {
     wav_defs: HashMap<u32, String>,
     bpm_defs: HashMap<u32, f64>,
     stop_defs: HashMap<u32, f64>,
+    scroll_defs: HashMap<u32, f64>,
+    speed_defs: HashMap<u32, f64>,
     stp_events: Vec<TimingEvent>,
     bmp_defs: HashMap<u32, String>,
     lnobj: Option<u32>,
@@ -1140,6 +1174,8 @@ impl Default for HeaderPass {
             wav_defs: HashMap::new(),
             bpm_defs: HashMap::new(),
             stop_defs: HashMap::new(),
+            scroll_defs: HashMap::new(),
+            speed_defs: HashMap::new(),
             stp_events: Vec::new(),
             bmp_defs: HashMap::new(),
             lnobj: None,
@@ -1256,7 +1292,26 @@ impl HeaderPass {
                 }
             }
             _ => {
-                if let Some(rest) = up.strip_prefix("EXWAV").and_then(|_| cmd.get(5..)) {
+                if let Some((rest, definitions)) = up
+                    .strip_prefix("SCROLL")
+                    .and_then(|_| cmd.get(6..))
+                    .map(|rest| (rest, &mut self.scroll_defs))
+                    .or_else(|| {
+                        up.strip_prefix("SPEED")
+                            .and_then(|_| cmd.get(5..))
+                            .map(|rest| (rest, &mut self.speed_defs))
+                    })
+                {
+                    if rest.len() == 2 {
+                        if let (Some(id), Ok(value)) =
+                            (parse_id(rest, self.base), val.trim().parse::<f64>())
+                        {
+                            if id != 0 && value.is_finite() {
+                                definitions.insert(id, value);
+                            }
+                        }
+                    }
+                } else if let Some(rest) = up.strip_prefix("EXWAV").and_then(|_| cmd.get(5..)) {
                     if let (Some(id), Some((settings, path))) = (
                         parse_id(rest, self.base),
                         crate::sample_settings::SampleSettings::parse_exwav(val),
@@ -1699,6 +1754,101 @@ mod tests {
     }
 
     #[test]
+    fn scroll_and_speed_preserve_judgment_and_audio_timing_with_stops() {
+        let dir = tempdir();
+        let path = dir.join("scroll.bms");
+        let source =
+            "#BPM 120\n#DEFEXRANK 75\n#EXRANK01 50\n#001A0:01\n#STP 000.500 250\n#STOP01 48\n#00109:01\n#00111:0101\n#00251:0101\n#00101:01\n#001D2:01\n";
+        std::fs::write(&path, source).unwrap();
+        let original = load(&path, 300.0).unwrap();
+        std::fs::write(
+            &path,
+            format!("{source}#SCROLLzz 0.5\n#SPEED01 2\n#001SC:zz\n#002SP:01\n"),
+        )
+        .unwrap();
+        let chart = load(&path, 300.0).unwrap();
+        assert_eq!(chart.def_exrank, Some(75.0));
+        assert_eq!(chart.exrank_events.len(), 1);
+        assert_eq!(chart.judgment_scale(chart.notes[0].time_ms), 0.5);
+        assert_eq!(chart.scroll.len(), 1);
+        assert_eq!(chart.scroll[0].time_ms, 3050.0);
+        assert_eq!(chart.scroll[0].multiplier, 0.5);
+        assert_eq!(chart.speed[0].multiplier, 2.0);
+        assert_eq!(chart.duration_ms, original.duration_ms);
+        assert_eq!(chart.bgm[0].time_ms, original.bgm[0].time_ms);
+        assert_eq!(chart.mines[0].time_ms, original.mines[0].time_ms);
+        for (note, expected) in chart.notes.iter().zip(&original.notes) {
+            assert_eq!(note.time_ms, expected.time_ms);
+            assert_eq!(note.end_ms, expected.end_ms);
+        }
+        let time = chart.notes[0].time_ms;
+        let mut game = crate::game::Game::new(chart);
+        game.hit(0, time);
+        assert_eq!(game.perfect, 1);
+    }
+
+    #[test]
+    fn scroll_and_speed_preserve_sparse_bme_double_play_layout() {
+        let dir = tempdir();
+        let path = dir.join("scroll.bme");
+        std::fs::write(
+            &path,
+            "#PLAYER 3\n#BPM 120\n#SCROLL01 0.5\n#SPEED01 2\n#000SC:01\n#000SP:01\n#00011:01\n#00021:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 300.0).unwrap();
+        assert_eq!(chart.lane_count, 14);
+        assert_eq!(
+            chart.notes.iter().map(|note| note.lane).collect::<Vec<_>>(),
+            vec![0, 7]
+        );
+        assert_eq!(chart.scroll[0].multiplier, 0.5);
+        assert_eq!(chart.speed[0].multiplier, 2.0);
+    }
+
+    #[test]
+    fn scroll_and_speed_preserve_base62_ids_in_pms_charts() {
+        let dir = tempdir();
+        let path = dir.join("scroll.pms");
+        std::fs::write(
+            &path,
+            "#BASE 62\n#BPM 120\n#scroll0A 0.5\n#SCROLL0a -1\n#speed0A 2\n#SPEED0a 0\n#000SC:0A0a\n#000SP:0A0a\n#00045:0a\n#00011:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 300.0).unwrap();
+        assert_eq!(chart.lane_count, 9);
+        assert_eq!(chart.invisible_notes[0].keysound, 36);
+        assert_eq!(chart.scroll.len(), 2);
+        assert_eq!(chart.speed.len(), 2);
+        assert_eq!(chart.scroll[0].time_ms, 300.0);
+        assert_eq!(chart.scroll[1].time_ms, 1300.0);
+        assert_eq!(chart.scroll[0].multiplier, 0.5);
+        assert_eq!(chart.scroll[1].multiplier, -1.0);
+        assert_eq!(chart.speed[0].multiplier, 2.0);
+        assert_eq!(chart.speed[1].multiplier, 0.0);
+    }
+
+    #[test]
+    fn scroll_definitions_allow_zero_and_reverse_but_reject_nonfinite_values() {
+        let mut pass = HeaderPass::default();
+        [
+            "SCROLL01 0",
+            "SCROLL02 -1",
+            "SCROLL03 NaN",
+            "SPEED01 inf",
+            "SPEED02 0.5",
+            "SCROLL00 2",
+            "SCROLL001 3",
+        ]
+        .iter()
+        .for_each(|line| pass.absorb(line).unwrap());
+        assert_eq!(pass.scroll_defs.len(), 2);
+        assert_eq!(pass.scroll_defs[&1], 0.0);
+        assert_eq!(pass.scroll_defs[&2], -1.0);
+        assert_eq!(pass.speed_defs.len(), 1);
+    }
+
+    #[test]
     fn extended_wav_parses_flags_in_order_and_keeps_filename_spaces() {
         let mut pass = HeaderPass::default();
         pass.absorb("exwav0E vFp -2000 22050 -10000 sound file.wav")
@@ -1728,10 +1878,12 @@ mod tests {
         });
         std::fs::write(
             &path,
-            "#BPM 120\n#DEFEXRANK 75\n#EXRANK0a 50\n#000A0:0a\n#EXWAV0A p -10000 upper.wav\n#exwav0a v -2000 lower.wav\n#WAVCMD 00 0A 72\n#WAVCMD 01 0a 50\n#WAVCMD 02 0a 200\n#00011:0A0a\n#00097:80\n#00098:40\n#BASE 62\n",
+            "#BPM 120\n#DEFEXRANK 75\n#EXRANK0a 50\n#000A0:0a\n#SCROLL0A 0.5\n#SPEED0a 2\n#000SC:0A\n#000SP:0a\n#EXWAV0A p -10000 upper.wav\n#exwav0a v -2000 lower.wav\n#WAVCMD 00 0A 72\n#WAVCMD 01 0a 50\n#WAVCMD 02 0a 200\n#00011:0A0a\n#00097:80\n#00098:40\n#BASE 62\n",
         )
         .unwrap();
         let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.scroll[0].multiplier, 0.5);
+        assert_eq!(chart.speed[0].multiplier, 2.0);
         assert_eq!(chart.wav_paths[&10], dir.join("upper.wav"));
         assert_eq!(chart.wav_paths[&36], dir.join("lower.wav"));
         assert_eq!(chart.sample_settings[&10].pan, -10000);

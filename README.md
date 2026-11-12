@@ -105,8 +105,8 @@ case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BACKBMP`, `#COMMENT`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#DEFEXRANK`, `#EXRANKxx`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#EXWAVxx`, `#WAVCMD`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
-| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `97`/`98` (BGM/keysound volume), `A0` (judgment-width change), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
+| headers       | `#PLAYER`, `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BACKBMP`, `#COMMENT`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#DEFEXRANK`, `#EXRANKxx`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#EXWAVxx`, `#WAVCMD`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#STP` (millisecond stops), `#SCROLLxx`, `#SPEEDxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
+| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `SC` (scroll factor), `SP` (spacing factor), `97`/`98` (BGM/keysound volume), `A0` (judgment-width change), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`), 9K PMS (`.pms`: `11–15 + 22–25`); 10K, 14K, and asymmetric double-play (`#PLAYER 3` or playable P2 channels); scratch (`16` / `26`) adds a lane on each populated side |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
@@ -155,6 +155,13 @@ Frames are decoded in the background at 30 fps and start at each layer event,
 including repeated events for the same file. Playback holds the last frame at
 the end; video audio is ignored. Missing decoders and unsupported or corrupt
 videos are silently skipped. Sixel and Kitty graphics are not supported.
+
+Charts with `SC` events use accumulated scroll distance for note positions.
+`#SCROLLxx` changes the rate from its event onward (0.5 gives half speed,
+0 freezes scrolling, and negative values reverse it). `#SPEEDxx` / `SP`
+scales the entire visible spacing at the current time. Both default to 1;
+judgment and audio timing are unaffected. Positions outside the terminal
+playfield are clipped, including positions below the judgment line.
 
 Mode detection uses the extension, `#PLAYER`, and materialized note channels.
 `.bme` reserves seven keys per side even when channels `18`/`19` are unused;

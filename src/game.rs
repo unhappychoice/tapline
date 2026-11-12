@@ -324,11 +324,15 @@ impl Game {
 
     /// Charts must keep their notes in ascending time order throughout play.
     /// Include pending starts since the last miss check and older held LNs.
+    /// Scroll effects can bring any future note into view regardless of its timestamp.
     pub fn visible_notes(&self, now_ms: f64, approach_ms: f64) -> impl Iterator<Item = &Note> {
-        let end = self
-            .chart
-            .notes
-            .partition_point(|n| n.time_ms <= now_ms + approach_ms);
+        let end = if self.chart.scroll.is_empty() && self.chart.speed.is_empty() {
+            self.chart
+                .notes
+                .partition_point(|n| n.time_ms <= now_ms + approach_ms)
+        } else {
+            self.chart.notes.len()
+        };
         let start = self.next_miss.min(end);
         self.held_notes
             .iter()
