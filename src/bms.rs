@@ -148,7 +148,12 @@ fn build_chart(
 ) -> Result<Chart> {
     let assets = AssetIndex::new(&dir);
     let wav_paths = resolve_wavs(&assets, &pass.wav_defs);
-    let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
+    let max_measure = raw
+        .iter()
+        .map(|(m, _, _)| *m)
+        .chain(pass.stp_events.iter().map(|event| event.measure))
+        .max()
+        .unwrap_or(0);
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true, pms);
     let mut bga = collect_bga_events(&raw, &timeline, pass.base);
     let bmp_paths = resolve_bmp_paths(&assets, &pass.bmp_defs);
@@ -166,28 +171,30 @@ fn build_chart(
         promote_lnobj(&mut notes, lnobj);
         promote_lnobj(&mut p2_notes, lnobj);
     }
-    notes.retain(|n| n.lane < p1_lane_count);
-    invisible_notes.retain(|n| n.lane < p1_lane_count);
-    p2_invisible_notes.retain(|n| n.lane < p2_lane_count);
-    mines.retain(|n| n.lane < p1_lane_count);
-    p2_notes.retain(|n| n.lane < p2_lane_count);
-    p2_mines.retain(|n| n.lane < p2_lane_count);
-    // Fold canonical 14K double-play into the primary pool: P2 notes/mines
-    // shift into lanes 7..=13 and lane_count expands to 14. Non-canonical DP
-    // (e.g. 5K+5K) is left split — the runtime plays P1 only.
-    if lane_count == 14 {
-        p2_invisible_notes.drain(..).for_each(|mut note| {
-            note.lane += 7;
-            invisible_notes.push(note);
-        });
-        for mut n in p2_notes.drain(..) {
-            n.lane += 7;
-            notes.push(n);
-        }
-        for mut m in p2_mines.drain(..) {
-            m.lane += 7;
-            mines.push(m);
-        }
+    notes.retain(|n| n.lane < p1_lane_count || n.lane == 7);
+    mines.retain(|n| n.lane < p1_lane_count || n.lane == 7);
+    p2_notes.retain(|n| n.lane < p2_lane_count || n.lane == 7);
+    p2_mines.retain(|n| n.lane < p2_lane_count || n.lane == 7);
+    invisible_notes.retain(|n| n.lane < p1_lane_count || n.lane == 7);
+    p2_invisible_notes.retain(|n| n.lane < p2_lane_count || n.lane == 7);
+    compact_invisible_scratch(&mut invisible_notes, p1_lane_count);
+    compact_invisible_scratch(&mut p2_invisible_notes, p2_lane_count);
+    // Scratch is collected as lane 7, then compacted after the five keys in 6K.
+    compact_scratch(&mut notes, &mut mines, p1_lane_count);
+    compact_scratch(&mut p2_notes, &mut p2_mines, p2_lane_count);
+    if lane_count > p1_lane_count {
+        invisible_notes.extend(p2_invisible_notes.drain(..).map(|mut n| {
+            n.lane += p1_lane_count;
+            n
+        }));
+        notes.extend(p2_notes.drain(..).map(|mut n| {
+            n.lane += p1_lane_count;
+            n
+        }));
+        mines.extend(p2_mines.drain(..).map(|mut m| {
+            m.lane += p1_lane_count;
+            m
+        }));
     }
     invisible_notes.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
     p2_invisible_notes.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
@@ -240,9 +247,20 @@ fn collect_chart_sides(
     collect_bgm: bool,
     pms: bool,
 ) -> (Timeline, ChartAcc, ChartAcc) {
-    let max_measure = raw.iter().map(|(m, _, _)| *m).max().unwrap_or(0);
+    let max_measure = raw
+        .iter()
+        .map(|(m, _, _)| *m)
+        .chain(pass.stp_events.iter().map(|event| event.measure))
+        .max()
+        .unwrap_or(0);
     let scales = collect_measure_scales(raw);
-    let events = collect_timing_events(raw, &pass.bpm_defs, &pass.stop_defs, pass.base);
+    let events = collect_timing_events(
+        raw,
+        &pass.bpm_defs,
+        &pass.stop_defs,
+        &pass.stp_events,
+        pass.base,
+    );
     let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure);
     let lanes = if pms { PMS_LANES } else { P1_LANES };
     let acc = accumulate_side(raw, &timeline, lanes, collect_bgm, pass.lntype, pass.base);
@@ -254,11 +272,36 @@ fn collect_chart_sides(
     (timeline, acc, p2_acc)
 }
 
+fn compact_invisible_scratch(notes: &mut [InvisibleNote], lane_count: usize) {
+    if lane_count == 6 {
+        notes
+            .iter_mut()
+            .filter(|n| n.lane == 7)
+            .for_each(|n| n.lane = 5);
+    }
+}
+
+fn compact_scratch(notes: &mut [Note], mines: &mut [Mine], lane_count: usize) {
+    if lane_count == 6 {
+        notes
+            .iter_mut()
+            .filter(|n| n.lane == 7)
+            .for_each(|n| n.lane = 5);
+        mines
+            .iter_mut()
+            .filter(|m| m.lane == 7)
+            .for_each(|m| m.lane = 5);
+    }
+}
+
 fn playable_lane_count(acc: &ChartAcc, p2_acc: &ChartAcc, pms: bool) -> usize {
     if pms {
         9
-    } else if acc.lanes.count() == 7 && p2_acc.lanes.count() == 7 && !p2_acc.notes.is_empty() {
-        14
+    } else if matches!(acc.lanes.count(), 6..=8)
+        && acc.lanes.count() == p2_acc.lanes.count()
+        && !p2_acc.notes.is_empty()
+    {
+        acc.lanes.count() * 2
     } else {
         acc.lanes.count()
     }
@@ -271,6 +314,8 @@ fn p2_channel_to_lane(ch: &str) -> Option<usize> {
         "23" => Some(2),
         "24" => Some(3),
         "25" => Some(4),
+        "26" => Some(7),
+        "27" => None, // Free zone / pedal is not a playable lane.
         "28" => Some(5),
         "29" => Some(6),
         _ => None,
@@ -284,6 +329,8 @@ fn p2_long_channel_to_lane(ch: &str) -> Option<usize> {
         "63" => Some(2),
         "64" => Some(3),
         "65" => Some(4),
+        "66" => Some(7),
+        "67" => None, // Free zone / pedal is not a playable lane.
         "68" => Some(5),
         "69" => Some(6),
         _ => None,
@@ -297,6 +344,8 @@ fn p2_mine_channel_to_lane(ch: &str) -> Option<usize> {
         "E3" => Some(2),
         "E4" => Some(3),
         "E5" => Some(4),
+        "E6" => Some(7),
+        "E7" => None, // Free zone / pedal is not a playable lane.
         "E8" => Some(5),
         "E9" => Some(6),
         _ => None,
@@ -632,6 +681,8 @@ fn mine_channel_to_lane(ch: &str) -> Option<usize> {
         "D3" => Some(2),
         "D4" => Some(3),
         "D5" => Some(4),
+        "D6" => Some(7),
+        "D7" => None, // Free zone / pedal is not a playable lane.
         "D8" => Some(5),
         "D9" => Some(6),
         _ => None,
@@ -645,6 +696,8 @@ fn long_channel_to_lane(ch: &str) -> Option<usize> {
         "53" => Some(2),
         "54" => Some(3),
         "55" => Some(4),
+        "56" => Some(7),
+        "57" => None, // Free zone / pedal is not a playable lane.
         "58" => Some(5),
         "59" => Some(6),
         _ => None,
@@ -704,6 +757,7 @@ fn collect_measure_scales(raw: &[(u32, String, String)]) -> HashMap<u32, f64> {
 enum TimingEventKind {
     Bpm(f64),
     Stop(f64),
+    StopMs(f64),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -717,7 +771,7 @@ impl TimingEvent {
     fn sort_bucket(&self) -> u8 {
         match self.kind {
             TimingEventKind::Bpm(_) => 0,
-            TimingEventKind::Stop(_) => 1,
+            TimingEventKind::Stop(_) | TimingEventKind::StopMs(_) => 1,
         }
     }
 }
@@ -726,10 +780,11 @@ fn collect_timing_events(
     raw: &[(u32, String, String)],
     bpm_defs: &HashMap<u32, f64>,
     stop_defs: &HashMap<u32, f64>,
+    stp_events: &[TimingEvent],
     base: u32,
 ) -> Vec<TimingEvent> {
     type TimingResolver<'a> = Box<dyn Fn(u32) -> Option<TimingEventKind> + 'a>;
-    let mut out: Vec<TimingEvent> = Vec::new();
+    let mut out = stp_events.to_vec();
     for (measure, ch, data) in raw {
         let (slots, resolve): (Vec<u32>, TimingResolver) = match ch.as_str() {
             "03" => (
@@ -778,9 +833,24 @@ fn collect_timing_events(
     out
 }
 
+fn parse_stp(value: &str) -> Option<TimingEvent> {
+    let mut fields = value.split_whitespace();
+    let (measure, position) = fields.next()?.split_once('.')?;
+    let valid_part = |part: &str| part.len() == 3 && part.bytes().all(|b| b.is_ascii_digit());
+    if !valid_part(measure) || !valid_part(position) {
+        return None;
+    }
+    let ms = fields.next()?.parse::<f64>().ok()?;
+    (fields.next().is_none() && ms.is_finite() && ms > 0.0).then_some(TimingEvent {
+        measure: measure.parse().ok()?,
+        frac: position.parse::<u32>().ok()? as f64 / 1000.0,
+        kind: TimingEventKind::StopMs(ms),
+    })
+}
+
 fn kind_is_positive(kind: &TimingEventKind) -> bool {
     match *kind {
-        TimingEventKind::Bpm(v) | TimingEventKind::Stop(v) => v > 0.0,
+        TimingEventKind::Bpm(v) | TimingEventKind::Stop(v) | TimingEventKind::StopMs(v) => v > 0.0,
     }
 }
 
@@ -860,8 +930,12 @@ impl Timeline {
                         }
                         current_bpm = new_bpm;
                     }
-                    TimingEventKind::Stop(ticks) => {
-                        let pause_ms = ticks / 48.0 * 60_000.0 / last.bpm;
+                    TimingEventKind::Stop(_) | TimingEventKind::StopMs(_) => {
+                        let pause_ms = match ev.kind {
+                            TimingEventKind::Stop(ticks) => ticks / 48.0 * 60_000.0 / last.bpm,
+                            TimingEventKind::StopMs(ms) => ms,
+                            TimingEventKind::Bpm(_) => unreachable!(),
+                        };
                         segments.push(Segment {
                             frac_start: frac,
                             ms_at_start: ms_here + pause_ms,
@@ -923,6 +997,7 @@ struct HeaderPass {
     wav_defs: HashMap<u32, String>,
     bpm_defs: HashMap<u32, f64>,
     stop_defs: HashMap<u32, f64>,
+    stp_events: Vec<TimingEvent>,
     bmp_defs: HashMap<u32, String>,
     lnobj: Option<u32>,
     lntype: u8,
@@ -950,6 +1025,7 @@ impl Default for HeaderPass {
             wav_defs: HashMap::new(),
             bpm_defs: HashMap::new(),
             stop_defs: HashMap::new(),
+            stp_events: Vec::new(),
             bmp_defs: HashMap::new(),
             lnobj: None,
             lntype: 1,
@@ -980,6 +1056,7 @@ impl HeaderPass {
         let (cmd, val) = split_cmd_value(line);
         let up = cmd.to_ascii_uppercase();
         match up.as_str() {
+            "STP" => self.stp_events.extend(parse_stp(val)),
             "TITLE" => self.title = val.to_string(),
             "SUBTITLE" => self.subtitle = val.to_string(),
             "ARTIST" => self.artist = val.to_string(),
@@ -1093,7 +1170,17 @@ impl LaneSet {
         self.0.insert(lane);
     }
     fn count(&self) -> usize {
-        let max = self.0.iter().copied().max().unwrap_or(3);
+        let scratch = self.0.contains(&7);
+        let max = self
+            .0
+            .iter()
+            .copied()
+            .filter(|lane| *lane != 7)
+            .max()
+            .unwrap_or(3);
+        if scratch {
+            return if max >= 5 { 8 } else { 6 };
+        }
         if max >= 5 {
             7
         } else if max >= 3 {
@@ -1358,6 +1445,8 @@ fn channel_to_lane(ch: &str) -> Option<usize> {
         "13" => Some(2),
         "14" => Some(3),
         "15" => Some(4),
+        "16" => Some(7),
+        "17" => None, // Free zone / pedal is not a playable lane.
         "18" => Some(5),
         "19" => Some(6),
         _ => None,
@@ -1535,7 +1624,13 @@ mod tests {
             (0, "08".into(), "0A0a".into()),
             (0, "09".into(), "0A0a".into()),
         ];
-        let events = collect_timing_events(&raw, &pass.bpm_defs, &pass.stop_defs, pass.base);
+        let events = collect_timing_events(
+            &raw,
+            &pass.bpm_defs,
+            &pass.stop_defs,
+            &pass.stp_events,
+            pass.base,
+        );
         assert!(matches!(events[0].kind, TimingEventKind::Bpm(120.0)));
         assert!(matches!(events[2].kind, TimingEventKind::Bpm(240.0)));
         assert!(matches!(events[1].kind, TimingEventKind::Stop(48.0)));
@@ -1544,6 +1639,7 @@ mod tests {
             &[(0, "03".into(), "0a".into())],
             &pass.bpm_defs,
             &pass.stop_defs,
+            &pass.stp_events,
             pass.base,
         );
         assert!(matches!(hex[0].kind, TimingEventKind::Bpm(10.0)));
@@ -1648,6 +1744,10 @@ mod tests {
             ("#00119:01", 7, 1, 0),
             ("#00119:01\n#00129:01", 14, 2, 0),
             ("#00115:01\n#00125:01", 5, 1, 1),
+            ("#00116:01", 6, 1, 0),
+            ("#00119:01\n#00116:01", 8, 2, 0),
+            ("#00116:01\n#00126:01", 12, 2, 0),
+            ("#00119:01\n#00129:01\n#00116:01\n#00126:01", 16, 4, 0),
         ];
         for extension in ["bms", "bme"] {
             for (channels, count, notes, p2) in cases {
@@ -1661,9 +1761,18 @@ mod tests {
             }
         }
         let path = dir.join("sparse.pms");
-        std::fs::write(&path, "#BPM 120\n#00111:01\n").unwrap();
-        assert_eq!(load(&path, 0.0).unwrap().lane_count, 9);
-        assert_eq!(read_meta(&path).unwrap().lane_count, 9);
+        ["11", "24", "25"].iter().for_each(|channel| {
+            std::fs::write(&path, format!("#BPM 120\n#001{channel}:01\n")).unwrap();
+            let chart = load(&path, 0.0).unwrap();
+            assert_eq!(chart.lane_count, 9);
+            assert_eq!(read_meta(&path).unwrap().lane_count, 9);
+            let expected_lane = match *channel {
+                "24" => 7,
+                "25" => 8,
+                _ => 0,
+            };
+            assert_eq!(chart.notes[0].lane, expected_lane);
+        });
     }
 
     #[test]
@@ -1726,7 +1835,7 @@ mod tests {
     #[test]
     fn channel_to_lane_ignores_bgm_and_unknown_channels() {
         assert_eq!(channel_to_lane("01"), None);
-        assert_eq!(channel_to_lane("16"), None);
+        assert_eq!(channel_to_lane("16"), Some(7));
         assert_eq!(channel_to_lane("21"), None);
         assert_eq!(channel_to_lane("D1"), None);
     }
@@ -1955,7 +2064,7 @@ mod tests {
         ];
         let bpm_defs: HashMap<u32, f64> = [(1u32, 175.5)].into();
         let stop_defs: HashMap<u32, f64> = [(1u32, 96.0)].into();
-        let evs = collect_timing_events(&raw, &bpm_defs, &stop_defs, 36);
+        let evs = collect_timing_events(&raw, &bpm_defs, &stop_defs, &[], 36);
         assert_eq!(evs.len(), 3);
         assert!(matches!(evs[0].kind, TimingEventKind::Bpm(v) if (v - 120.0).abs() < 1e-6));
         assert!(matches!(evs[1].kind, TimingEventKind::Bpm(v) if (v - 175.5).abs() < 1e-6));
@@ -1969,7 +2078,7 @@ mod tests {
             (2u32, "09".to_string(), "0099".to_string()),
         ];
         let empty: HashMap<u32, f64> = HashMap::new();
-        assert!(collect_timing_events(&raw, &empty, &empty, 36).is_empty());
+        assert!(collect_timing_events(&raw, &empty, &empty, &[], 36).is_empty());
     }
 
     #[test]
@@ -1989,7 +2098,7 @@ mod tests {
         assert_eq!(p2_channel_to_lane("25"), Some(4));
         assert_eq!(p2_channel_to_lane("28"), Some(5));
         assert_eq!(p2_channel_to_lane("29"), Some(6));
-        assert_eq!(p2_channel_to_lane("26"), None);
+        assert_eq!(p2_channel_to_lane("26"), Some(7));
         assert_eq!(p2_channel_to_lane("11"), None);
     }
 
@@ -2563,7 +2672,7 @@ Always
         assert_eq!(mine_channel_to_lane("D5"), Some(4));
         assert_eq!(mine_channel_to_lane("D8"), Some(5));
         assert_eq!(mine_channel_to_lane("D9"), Some(6));
-        assert_eq!(mine_channel_to_lane("D6"), None);
+        assert_eq!(mine_channel_to_lane("D6"), Some(7));
         assert_eq!(mine_channel_to_lane("11"), None);
     }
 
@@ -2617,7 +2726,7 @@ Always
         assert_eq!(long_channel_to_lane("55"), Some(4));
         assert_eq!(long_channel_to_lane("58"), Some(5));
         assert_eq!(long_channel_to_lane("59"), Some(6));
-        assert_eq!(long_channel_to_lane("56"), None);
+        assert_eq!(long_channel_to_lane("56"), Some(7));
         assert_eq!(long_channel_to_lane("11"), None);
     }
 
@@ -2702,6 +2811,106 @@ Always
         assert_eq!(chart.notes.len(), 1);
         // No stop would put the note at 4000ms; with a 1000ms stop it lands at 5000ms.
         assert!((chart.notes[0].time_ms - 5000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn load_applies_stp_at_mid_measure() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "#BPM 120\n#STP 002.500 1000\n#00211:01010101\n#00311:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 250.0).unwrap();
+        let times: Vec<_> = chart.notes.iter().map(|note| note.time_ms).collect();
+        assert_eq!(times, vec![4250.0, 4750.0, 6250.0, 6750.0, 7250.0]);
+    }
+
+    #[test]
+    fn load_pms_combines_stp_with_extended_bpm() {
+        let dir = tempdir();
+        let path = dir.join("song.pms");
+        std::fs::write(
+            &path,
+            "#BPM 120\n#EXBPM01 240\n#STP 002.500 1000\n#00208:0001\n#00222:0101\n#00325:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 250.0).unwrap();
+        assert_eq!(chart.lane_count, 9);
+        assert!(chart.p2_notes.is_empty());
+        let notes: Vec<_> = chart
+            .notes
+            .iter()
+            .map(|note| (note.lane, note.time_ms))
+            .collect();
+        assert_eq!(notes, vec![(5, 4250.0), (5, 6250.0), (8, 6750.0)]);
+        assert_eq!(chart.duration_ms, 10250.0);
+    }
+
+    #[test]
+    fn stp_combines_with_bpm_changes_and_tick_stops() {
+        let mut pass = HeaderPass::default();
+        pass.absorb("BPM 120");
+        pass.absorb("STOP01 48");
+        pass.absorb("stp 002.500 1000");
+        pass.absorb("STP 002.500 250");
+        let raw = vec![
+            (2, "03".into(), "00F0".into()),
+            (2, "09".into(), "0001".into()),
+        ];
+        let (timeline, _, _) = collect_chart_sides(&raw, &pass, 0.0, false, false);
+        assert_eq!(timeline.time_at(2, 0.25), 4500.0);
+        assert_eq!(timeline.time_at(2, 0.5), 6500.0);
+        assert_eq!(timeline.time_at(3, 0.0), 7000.0);
+    }
+
+    #[test]
+    fn stp_combines_with_case_sensitive_base62_timing_references() {
+        let text =
+            "#BASE 62\n#BPM 120\n#BPM0A 60\n#BPM0a 240\n#STOP0A 192\n#STOP0a 48\n#STP 002.500 1000";
+        let mut pass = HeaderPass::for_text(text);
+        header_lines(text).for_each(|line| pass.absorb(line));
+        let raw = vec![
+            (2, "08".into(), "000a".into()),
+            (2, "09".into(), "000a".into()),
+        ];
+        let (timeline, _, _) = collect_chart_sides(&raw, &pass, 0.0, false, false);
+        assert_eq!(timeline.time_at(2, 0.25), 4500.0);
+        assert_eq!(timeline.time_at(2, 0.5), 6250.0);
+        assert_eq!(timeline.time_at(3, 0.0), 6750.0);
+    }
+
+    #[test]
+    fn load_includes_stp_after_last_note_in_duration() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(&path, "#BPM 120\n#00011:01\n#STP 002.500 1000\n").unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(chart.duration_ms, 9500.0);
+    }
+
+    #[test]
+    fn stp_ignores_invalid_positions_and_durations() {
+        [
+            "",
+            "002.500",
+            "002.500 0",
+            "002.500 -1000",
+            "002.500 NaN",
+            "002.500 inf",
+            "002.500 1000 extra",
+            "002.1000 1000",
+            "002.abc 1000",
+            "-02.500 1000",
+            "002500 1000",
+        ]
+        .iter()
+        .for_each(|value| assert!(parse_stp(value).is_none(), "{value}"));
+        let event = parse_stp("002.000 12.5").unwrap();
+        assert_eq!(event.measure, 2);
+        assert_eq!(event.frac, 0.0);
+        assert!(matches!(event.kind, TimingEventKind::StopMs(12.5)));
     }
 
     #[test]
@@ -2894,7 +3103,7 @@ Always
         // Lane 3 pushes us out of pure 4K into the 5K keymap.
         assert_eq!(s.count(), 5);
         s.observe_lane(6);
-        // Lane 6 is the 7K scratch column.
+        // Lane 6 is the seventh key column.
         assert_eq!(s.count(), 7);
     }
 
