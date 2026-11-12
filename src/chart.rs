@@ -156,6 +156,20 @@ pub fn difficulty_label(d: Option<u8>) -> &'static str {
 }
 
 pub fn keys_for(lane_count: usize) -> Vec<Vec<char>> {
+    if matches!(lane_count, 6 | 8 | 12 | 16) {
+        let side = if lane_count >= 12 {
+            lane_count / 2
+        } else {
+            lane_count
+        };
+        let mut keys = keys_for(side - 1);
+        keys.push(vec!['A']);
+        if lane_count >= 12 {
+            let p2 = if side == 6 { "ZXCVB/" } else { "ZXCVBNM/" };
+            keys.extend(p2.chars().map(|key| vec![key]));
+        }
+        return keys;
+    }
     let raw: &[&[char]] = match lane_count {
         5 => &[&['S'], &['D'], &['F', 'J'], &['K'], &['L']],
         7 => &[&['S'], &['D'], &['F'], &[' '], &['J'], &['K'], &['L']],
@@ -343,7 +357,6 @@ mod tests {
     fn keys_for_unknown_lane_count_falls_back_to_4k() {
         assert_eq!(keys_for(0), keys_for(4));
         assert_eq!(keys_for(3), keys_for(4));
-        assert_eq!(keys_for(6), keys_for(4));
         assert_eq!(keys_for(99), keys_for(4));
     }
 
