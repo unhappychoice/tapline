@@ -348,23 +348,26 @@ mod tests {
                 cwd: std::env::current_dir().unwrap(),
             }
         }
-        fn restore(self) {
-            match self.songs_dir {
+    }
+
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            match &self.songs_dir {
                 Some(v) => std::env::set_var("TAPLINE_SONGS_DIR", v),
                 None => std::env::remove_var("TAPLINE_SONGS_DIR"),
             }
-            match self.home {
+            match &self.home {
                 Some(v) => std::env::set_var("HOME", v),
                 None => std::env::remove_var("HOME"),
             }
-            let _ = std::env::set_current_dir(self.cwd);
+            let _ = std::env::set_current_dir(&self.cwd);
         }
     }
 
     #[test]
     fn default_songs_dir_env_var_wins_when_it_points_at_a_real_directory() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let snap = EnvSnapshot::capture();
+        let _snapshot = EnvSnapshot::capture();
         let dir = tempdir();
         std::env::set_var("TAPLINE_SONGS_DIR", &dir);
         // Make sure `./songs` / `./tests/fixtures` aren't visible either.
@@ -372,13 +375,12 @@ mod tests {
         std::env::set_current_dir(&isolated).unwrap();
         let out = default_songs_dir();
         assert_eq!(out.as_deref(), Some(dir.as_path()));
-        snap.restore();
     }
 
     #[test]
     fn default_songs_dir_env_var_is_ignored_when_missing_from_disk() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let snap = EnvSnapshot::capture();
+        let _snapshot = EnvSnapshot::capture();
         std::env::set_var(
             "TAPLINE_SONGS_DIR",
             "/nonexistent-tapline-cli-env-branch-xyz",
@@ -390,13 +392,12 @@ mod tests {
             default_songs_dir().is_none(),
             "env var pointing at a missing dir should not survive"
         );
-        snap.restore();
     }
 
     #[test]
     fn default_songs_dir_falls_back_to_local_songs_when_env_is_empty() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let snap = EnvSnapshot::capture();
+        let _snapshot = EnvSnapshot::capture();
         std::env::remove_var("TAPLINE_SONGS_DIR");
         std::env::remove_var("HOME");
         let workspace = tempdir();
@@ -404,13 +405,12 @@ mod tests {
         std::env::set_current_dir(&workspace).unwrap();
         let out = default_songs_dir();
         assert_eq!(out, Some(PathBuf::from("songs")));
-        snap.restore();
     }
 
     #[test]
     fn default_songs_dir_falls_back_to_home_tapline_songs_when_no_local_dir() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let snap = EnvSnapshot::capture();
+        let _snapshot = EnvSnapshot::capture();
         std::env::remove_var("TAPLINE_SONGS_DIR");
         let isolated = tempdir();
         std::env::set_current_dir(&isolated).unwrap();
@@ -420,18 +420,65 @@ mod tests {
         std::env::set_var("HOME", &home);
         let out = default_songs_dir();
         assert_eq!(out.as_deref(), Some(songs.as_path()));
-        snap.restore();
     }
 
     #[test]
     fn default_songs_dir_gives_up_when_nothing_matches() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let snap = EnvSnapshot::capture();
+        let _snapshot = EnvSnapshot::capture();
         std::env::remove_var("TAPLINE_SONGS_DIR");
         std::env::remove_var("HOME");
         let isolated = tempdir();
         std::env::set_current_dir(&isolated).unwrap();
         assert!(default_songs_dir().is_none());
-        snap.restore();
+    }
+
+    #[test]
+    fn environment_snapshot_restores_state_after_panic() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _snapshot = EnvSnapshot::capture();
+        let original_cwd = std::env::current_dir().unwrap();
+        let isolated = tempdir();
+        [None, Some(isolated.as_os_str())]
+            .into_iter()
+            .for_each(|value| {
+                ["TAPLINE_SONGS_DIR", "HOME"]
+                    .into_iter()
+                    .for_each(|key| match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    });
+                let result = std::panic::catch_unwind(|| {
+                    let _snapshot = EnvSnapshot::capture();
+                    std::env::set_current_dir(&isolated).unwrap();
+                    std::env::set_var("TAPLINE_SONGS_DIR", "changed");
+                    std::env::remove_var("HOME");
+                    panic!("exercise environment restoration during unwinding");
+                });
+                assert!(result.is_err());
+                assert_eq!(std::env::current_dir().unwrap(), original_cwd);
+                assert_eq!(std::env::var_os("TAPLINE_SONGS_DIR").as_deref(), value);
+                assert_eq!(std::env::var_os("HOME").as_deref(), value);
+            });
+    }
+
+    #[test]
+    fn audio_tests_load_fixtures_from_an_unrelated_working_directory() {
+        let isolated = tempdir();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "audio::tests::bmson_fixture_decodes_shared_audio_for_all_slices",
+                "audio::tests::layers_resolve_all_available_slices_even_if_one_is_missing",
+                "--test-threads=2",
+            ])
+            .current_dir(&isolated)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
