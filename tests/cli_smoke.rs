@@ -107,25 +107,34 @@ fn test_tone_flag_exits_cleanly_on_ci_without_audio_backend() {
 
 /// Ensure invalid numbers exit with diagnostics before any terminal output.
 #[test]
-fn invalid_chart_timing_is_rejected_before_terminal_setup() {
+fn invalid_timing_is_rejected_before_terminal_setup() {
     [
-        ("--bpm", "BPM must be finite and greater than zero", true),
+        (
+            "--bpm",
+            "BPM must be finite and greater than zero",
+            true,
+            true,
+        ),
         (
             "--countdown-ms",
             "countdown must be finite and non-negative",
             false,
+            true,
         ),
+        ("--audio-lead-ms", "audio lead must be finite", false, false),
     ]
     .iter()
-    .for_each(|(flag, message, reject_zero)| {
+    .for_each(|(flag, message, reject_zero, reject_negative)| {
         [
             "NaN", "inf", "+inf", "-inf", "infinity", "-1", "-0.5", "abc", "0", "-0",
         ]
         .iter()
         .filter(|value| *reject_zero || !["0", "-0"].contains(value))
+        .filter(|value| *reject_negative || !["-1", "-0.5"].contains(value))
         .for_each(|value| {
             let argument = format!("{flag}={value}");
-            let (code, stdout, stderr) = run_with(&["--built-in", "--no-audio", &argument]);
+            let (code, stdout, stderr) =
+                run_with(&["--built-in", "--auto-ks", "--no-audio", &argument]);
             assert_eq!(code, 2, "expected CLI error for {argument}: {stderr}");
             assert!(
                 stdout.is_empty(),

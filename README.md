@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/unhappychoice/tapline/branch/main/graph/badge.svg)](https://codecov.io/gh/unhappychoice/tapline)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A simple rhythm game in your terminal. Plays a built-in chart, or loads BMS
+A simple rhythm game in your terminal. Plays a built-in chart, or loads BMS / bmson
 files with keysound + BGM playback via `rodio`.
 
 Notes fall down the lanes. Tap the letters as they cross the judgment line.
@@ -43,7 +43,7 @@ cargo install --path .
 ```sh
 tapline                                # open the chart selector (see "Song discovery")
 tapline --dir ~/bms                    # open selector on a specific directory
-tapline --file song.bms                # skip selector, play one chart (auto 4/5/7-lane)
+tapline --file song.bms                # skip selector, play one chart (auto 4/5/7/9/14-lane)
 tapline --file song.bms --no-audio     # play a chart, silent
 tapline --built-in --bpm 160           # play the built-in practice chart
 ```
@@ -76,7 +76,7 @@ Without `--file` or `--built-in`, tapline scans the first directory it finds:
 4. `~/.tapline/songs`
 
 If nothing is found, the built-in practice chart plays. Scanning is recursive
-(up to 5 levels deep) and picks up `.bms`, `.bml`, `.bme`, `.pms`.
+(up to 5 levels deep) and picks up `.bms`, `.bml`, `.bme`, `.pms`, `.bmson`.
 
 ## Bundled sample charts
 
@@ -98,18 +98,46 @@ All charts play with the synth fallback — no WAV assets required.
 
 ## BMS support
 
-Encoding is auto-detected (UTF-8 → fallback Shift-JIS).
+Encoding is auto-detected (UTF-8 → fallback Shift-JIS). Object IDs default to
+case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 
 ### Supported
 
 | category      | items                                                       |
 | ------------- | ----------------------------------------------------------- |
-| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx`, `#STOPxx`, `#SCROLLxx`, `#SPEEDxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
-| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `SC` (scroll factor), `SP` (spacing factor), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
-| lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, plus 14K double-play when both sides fill 7 lanes each |
+| headers       | `#TITLE`, `#SUBTITLE`, `#ARTIST`, `#SUBARTIST`, `#GENRE`, `#MAKER`, `#STAGEFILE`, `#BANNER`, `#BPM`, `#PLAYLEVEL`, `#DIFFICULTY`, `#RANK`, `#TOTAL`, `#VOLWAV`, `#WAVxx`, `#BPMxx` / `#EXBPMxx`, `#STOPxx`, `#SCROLLxx`, `#SPEEDxx`, `#BMPxx`, `#LNOBJ`, `#LNTYPE` |
+| channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `09` (STOP), `SC` (scroll factor), `SP` (spacing factor), `97`/`98` (BGM/keysound volume), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
+| lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`) SP, 9K PMS (`.pms`: `11–15 + 22–25`), plus 14K double-play when both sides fill 7 lanes each |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
 | polyphony     | multiple `#00101` lines mix concurrently                    |
-| control flow  | `#RANDOM`, `#SETRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF` (nesting supported) |
+| control flow  | `#RANDOM`, `#SETRANDOM`, `#ENDRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF`, `#SWITCH`, `#SETSWITCH`, `#CASE`, `#SKIP`, `#DEF`, `#ENDSW` (nesting and switch fallthrough supported) |
+
+PMS mode is selected by the `.pms` extension (case-insensitive) and always uses
+nine lanes. Long notes (`51–55 + 62–65`) and landmines (`D1–D5 + E2–E5`)
+follow the same button order as visible notes.
+
+`#RANDOM` branches are drawn afresh for each play. The selector and chart loader
+share the same draw so displayed metadata matches gameplay. Set
+`TAPLINE_RANDOM_SEED` to an unsigned 64-bit integer for reproducible branches.
+
+`#VOLWAV` scales sample and synth playback by a percentage (default 100).
+Channels `97` (BGM) and `98` (keysounds) set independent volume multipliers
+for sounds triggered at or after each event: hexadecimal `01`–`FF`, with
+`FF` at full volume and `00` leaving the volume unchanged. These multipliers
+combine with `#VOLWAV`; already playing sounds retain their starting gain.
+
+Invisible notes update the lane keysound for empty presses without being drawn,
+judged, counted as notes, or played automatically.
+
+### BGA
+
+BMP, PNG, JPEG, and GIF still images are loaded before playback and drawn with
+true-color half-block characters to the left of the lanes when space permits.
+Channel `04` selects the base; `07` overlays it with pure black treated as
+transparent. Channel `06` replaces both for 500 ms after each MISS. Missing or
+undecodable images are skipped. Narrow terminals hide BGA without moving the
+lanes. Animated images use their first frame; video, Sixel, and Kitty graphics
+are not supported.
 
 Charts with `SC` events use accumulated scroll distance for note positions.
 `#SCROLLxx` changes the rate from its event onward (0.5 gives half speed,
@@ -122,13 +150,13 @@ playfield are clipped, including positions below the judgment line.
 
 Long-note starts are judged like regular notes. On terminals that report key
 release events, releasing a held long note is judged separately against its end:
-PERFECT within ±45 ms, GREAT within ±90 ms, GOOD within ±140 ms, and MISS
-outside ±140 ms. A release MISS resets the combo.
+the rank-dependent windows below apply. A release outside the GOOD window
+is a MISS and resets the combo.
 
 If no release event arrives and the note remains held in the game, it
-automatically completes as PERFECT once the current time is more than 160 ms
-past its end. A long note whose start was never hit instead becomes a MISS
-more than 160 ms after its start.
+automatically completes as PERFECT once the current time passes its end plus
+the rank-dependent MISS delay. A long note whose start was never hit instead
+becomes a MISS after its start plus the same delay.
 
 Pressing a landmine's lane within ±40 ms of its timestamp detonates it once,
 adds a MISS, and resets the combo. Each matching mine is judged independently.
@@ -137,18 +165,45 @@ The parsed `damage` value does not scale the penalty or subtract score.
 ### Not yet supported (v1)
 
 - Landmine penalties proportional to the parsed `damage` value
-- `#SWITCH` / `#CASE` (the `#IF`-style variants are supported)
-- BGA rendering (channels `04` / `06` / `07` and `#BMPxx` are parsed and stored on `Chart.bga` / `Chart.bmp_paths`, but the terminal renderer does not draw them yet)
 - Non-canonical double-play like 5K DP or asymmetric side counts (only 7K + 7K is folded into the 14-lane playable pool; other DP shapes are still parsed into `Chart.p2_notes` but not merged)
+
+## bmson support
+
+bmson 1.0.0 (UTF-8 JSON) charts can be selected or loaded with
+`tapline --file chart.bmson`. BPM changes, stops, long notes (`l`),
+background audio, and keysound slicing (`c`) are supported. Sound slices
+use elapsed chart time, including BPM changes and stops, and share decoded
+audio buffers. Notes at the same lane and pulse are judged once and play all
+layered keysounds. Shared slices have a polyphony of one, and background notes
+sharing a playable slice are discarded. Layered notes with unequal lengths are
+rejected. Missing audio extensions fall back to WAV / OGG / MP3.
+
+Supported layouts are `beat-5k`, `beat-7k`, `beat-14k`, `popn-5k`, and
+`generic-4keys` / `generic-5keys` / `generic-7keys` / `generic-14keys`.
+Turntable notes play automatically as background audio. Other layouts and
+legacy bmson versions are rejected. BGA base, overlay, and poor events are
+rendered using the same half-block image support as BMS charts.
+
+The format follows the [bmson specification](https://bmson-spec.readthedocs.io/en/master/doc/index.html).
+A playable example is available at `tests/fixtures/minimal.bmson`.
 
 ## Judgment windows
 
-| tier    | window   | base points |
-| ------- | -------- | ----------- |
-| PERFECT | ±45 ms   | 300         |
-| GREAT   | ±90 ms   | 200         |
-| GOOD    | ±140 ms  | 100         |
-| MISS    | > 160 ms | 0           |
+`#RANK` selects tap and long-note start/release windows. Missing or invalid
+ranks use NORMAL, preserving the original behavior. These are tapline's windows,
+scaled from NORMAL by 0.5 / 0.75 / 1 / 1.25 / 1.5 respectively.
+
+| #RANK | difficulty | PERFECT | GREAT | GOOD | MISS delay |
+| ----- | ---------- | ------- | ----- | ---- | ---------- |
+| 0 | VERY HARD | ±22.5 ms | ±45 ms | ±70 ms | > 80 ms |
+| 1 | HARD | ±33.75 ms | ±67.5 ms | ±105 ms | > 120 ms |
+| 2 (default) | NORMAL | ±45 ms | ±90 ms | ±140 ms | > 160 ms |
+| 3 | EASY | ±56.25 ms | ±112.5 ms | ±175 ms | > 200 ms |
+| 4 | VERY EASY | ±67.5 ms | ±135 ms | ±210 ms | > 240 ms |
+
+Window boundaries are inclusive. Presses outside GOOD are ignored; unhit notes
+become MISS strictly after the MISS delay. Landmine timing remains ±40 ms.
+Base points are PERFECT: 300, GREAT: 200, GOOD: 100, MISS: 0.
 
 Combo (up to +50) is added on top of every non-miss hit.
 
@@ -162,6 +217,7 @@ whichever finger is closer.
 | 4     | `S D       K L`               | outer 2+2, index fingers rest     |
 | 5     | `S D  F/J  K L`               | center lane bound to both F and J |
 | 7     | `S D  F SPACE J  K L`         | spacebar is the center            |
+| 9     | `A S D F SPACE J K L ;`        | PMS buttons 1–9; spacebar is the center |
 | 14    | `S D F SPACE J K L / Z X C V B N M` | 7K SP layout on the home row for P1, ZXCVBNM below for P2 |
 
 ## License
