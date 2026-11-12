@@ -19,6 +19,7 @@ pub struct Switch {
     pub frame_ms: u32,
     pub duration_ms: u32,
     pub channel: String,
+    pub lane: Option<usize>,
     pub looping: bool,
     pub argb: [u8; 4],
     pub pattern: Vec<u32>,
@@ -58,8 +59,7 @@ impl SwitchPlayback {
         let Some(switch) = chart.bga_extensions.switches.get(&id) else {
             return;
         };
-        let channel = crate::bms::bga_switch_lane(&switch.channel, chart.lane_count);
-        if channel == Some(lane) {
+        if switch.lane == Some(lane) {
             self.active = Some((id, lane, now));
             self.held = true;
         }

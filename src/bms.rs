@@ -142,7 +142,7 @@ fn pms_channel_to_lane(ch: &str, left: &str, right: &str) -> Option<usize> {
 }
 
 fn build_chart(
-    pass: HeaderPass,
+    mut pass: HeaderPass,
     raw: Vec<(u32, String, String)>,
     dir: PathBuf,
     path: &Path,
@@ -163,6 +163,17 @@ fn build_chart(
     let lane_count = mode.playable_lane_count(&acc, &p2_acc);
     let p1_lane_count = mode.side_lane_count(&acc);
     let p2_lane_count = mode.side_lane_count(&p2_acc);
+    pass.bga_extensions
+        .switches
+        .values_mut()
+        .for_each(|switch| {
+            switch.lane = bga_switch_lane(
+                &switch.channel,
+                p1_lane_count,
+                mode.double_play.then_some(p2_lane_count),
+                is_pms(path),
+            );
+        });
     let mut notes = acc.notes;
     let mut invisible_notes = acc.invisible_notes;
     let mut mines = acc.mines;
@@ -662,19 +673,18 @@ fn materialize_mines_with(
     }
 }
 
-pub(crate) fn bga_switch_lane(channel: &str, lanes: usize) -> Option<usize> {
-    if lanes == 9 {
+fn bga_switch_lane(
+    channel: &str,
+    p1_lanes: usize,
+    p2_lanes: Option<usize>,
+    pms: bool,
+) -> Option<usize> {
+    if pms {
         return (PMS_LANES.normal)(channel);
     }
-    let side_lanes = match lanes {
-        10 | 12 | 14 | 16 => lanes / 2,
-        _ => lanes,
-    };
-    let (lane, offset) = channel_to_lane(channel).map(|lane| (lane, 0)).or_else(|| {
-        (side_lanes != lanes)
-            .then(|| p2_channel_to_lane(channel).map(|lane| (lane, side_lanes)))
-            .flatten()
-    })?;
+    let (lane, side_lanes, offset) = channel_to_lane(channel)
+        .map(|lane| (lane, p1_lanes, 0))
+        .or_else(|| Some((p2_channel_to_lane(channel)?, p2_lanes?, p1_lanes)))?;
     let scratch = matches!(side_lanes, 6 | 8);
     match lane {
         7 if scratch => Some(offset + side_lanes - 1),
@@ -2271,6 +2281,71 @@ mod tests {
             .any(|n| n.lane == 7 && n.end_ms.is_some()));
         assert_eq!(chart.mines[0].lane, 13);
         assert!(chart.p2_mines.is_empty());
+    }
+
+    #[test]
+    fn bga_switches_follow_materialized_lanes() {
+        let dir = tempdir();
+        for (extension, header, channels) in [
+            ("bms", "", "11"),
+            ("bms", "", "15"),
+            ("bms", "", "16"),
+            ("bme", "", "19"),
+            ("bme", "", "16"),
+            ("bms", "", "11 25"),
+            ("bms", "", "11 29"),
+            ("bms", "", "19 21"),
+            ("bms", "#PLAYER 3", "15 25"),
+            ("bms", "#PLAYER 3", "15 29"),
+            ("bms", "#PLAYER 3", "19 25"),
+            ("bms", "#PLAYER 3", "16 25"),
+            ("bms", "#PLAYER 3", "15 26"),
+            ("bms", "#PLAYER 3", "16 29"),
+            ("bms", "#PLAYER 3", "19 26"),
+            ("bms", "#PLAYER 3", "16 26"),
+            ("bme", "#PLAYER 3", "19 29"),
+            ("bme", "#PLAYER 3", "16 26"),
+            ("pms", "", "11 25"),
+        ] {
+            let path = dir.join(format!("switch.{extension}"));
+            let notes = channels
+                .split_whitespace()
+                .map(|channel| format!("#001{channel}:01\n"))
+                .collect::<String>();
+            for channel in [
+                "11", "15", "16", "17", "18", "19", "21", "25", "26", "27", "28", "29",
+            ] {
+                let text = format!(
+                    "#BPM 120\n{header}\n{notes}#SWBGA01 100:0:{channel}:1:255,0,0,0 01\n#000A5:01\n"
+                );
+                std::fs::write(&path, text).unwrap();
+                let chart = load(&path, 0.0).unwrap();
+                let expected = match channel {
+                    "17" | "27" => None,
+                    _ if channels.split_whitespace().any(|ch| ch == channel) => {
+                        let index = channels
+                            .split_whitespace()
+                            .position(|ch| ch == channel)
+                            .unwrap();
+                        Some(chart.notes[index].lane)
+                    }
+                    _ => continue,
+                };
+                assert_eq!(
+                    chart.bga_extensions.switches[&1].lane, expected,
+                    "{extension} {header} {channels}: {channel}"
+                );
+                let mut playback = crate::bga::SwitchPlayback::default();
+                for lane in 0..chart.lane_count {
+                    playback.active = None;
+                    playback.press(&chart, lane, 0.0);
+                    assert_eq!(
+                        playback.active.map(|(_, lane, _)| lane),
+                        expected.filter(|expected| *expected == lane)
+                    );
+                }
+            }
+        }
     }
 
     #[test]

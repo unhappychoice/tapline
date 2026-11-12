@@ -84,6 +84,7 @@ fn switch(val: &str, base: u32) -> Option<Switch> {
         frame_ms,
         duration_ms: parts[1].parse().ok()?,
         channel,
+        lane: None,
         looping,
         argb: color(parts[4])?,
         pattern,
@@ -173,10 +174,17 @@ mod tests {
         assert_eq!(ext.argb[&10], [255, 1, 2, 3]);
     }
 }
-
 #[cfg(test)]
 mod lane_tests {
     use super::super::bga_switch_lane;
+
+    fn switch_lane(channel: &str, lanes: usize) -> Option<usize> {
+        let (p1, p2) = match lanes {
+            10 | 12 | 14 | 16 => (lanes / 2, Some(lanes / 2)),
+            _ => (lanes, None),
+        };
+        bga_switch_lane(channel, p1, p2, lanes == 9)
+    }
 
     #[test]
     fn switch_channels_follow_playable_layouts() {
@@ -186,26 +194,26 @@ mod lane_tests {
             (12, 5, Some(11)),
             (16, 7, Some(15)),
         ] {
-            assert_eq!(bga_switch_lane("16", lanes), Some(p1));
-            assert_eq!(bga_switch_lane("26", lanes), p2);
-            assert_eq!(bga_switch_lane("17", lanes), None);
-            assert_eq!(bga_switch_lane("27", lanes), None);
+            assert_eq!(switch_lane("16", lanes), Some(p1));
+            assert_eq!(switch_lane("26", lanes), p2);
+            assert_eq!(switch_lane("17", lanes), None);
+            assert_eq!(switch_lane("27", lanes), None);
         }
         for lanes in [5, 7, 10, 14] {
-            assert_eq!(bga_switch_lane("16", lanes), None);
-            assert_eq!(bga_switch_lane("26", lanes), None);
+            assert_eq!(switch_lane("16", lanes), None);
+            assert_eq!(switch_lane("26", lanes), None);
         }
-        assert_eq!(bga_switch_lane("18", 6), None);
-        assert_eq!(bga_switch_lane("28", 12), None);
-        assert_eq!(bga_switch_lane("29", 16), Some(14));
-        assert_eq!(bga_switch_lane("29", 14), Some(13));
-        assert_eq!(bga_switch_lane("25", 9), Some(8));
+        assert_eq!(switch_lane("18", 6), None);
+        assert_eq!(switch_lane("28", 12), None);
+        assert_eq!(switch_lane("29", 16), Some(14));
+        assert_eq!(switch_lane("29", 14), Some(13));
+        assert_eq!(switch_lane("25", 9), Some(8));
         for key in 1..=5 {
-            assert_eq!(bga_switch_lane(&format!("1{key}"), 10), Some(key - 1));
-            assert_eq!(bga_switch_lane(&format!("2{key}"), 10), Some(key + 4));
+            assert_eq!(switch_lane(&format!("1{key}"), 10), Some(key - 1));
+            assert_eq!(switch_lane(&format!("2{key}"), 10), Some(key + 4));
         }
         for channel in ["17", "18", "19", "27", "28", "29"] {
-            assert_eq!(bga_switch_lane(channel, 10), None);
+            assert_eq!(switch_lane(channel, 10), None);
         }
     }
 }
