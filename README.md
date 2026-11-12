@@ -123,7 +123,7 @@ share the same draw so displayed metadata matches gameplay. Set
 Scratch channels `16/26`, `56/66` (long notes), and `D6/E6` (landmines)
 are playable. Free-zone / pedal channels `17/27` and their long-note /
 landmine counterparts are ignored. Scratch is the last lane on each side.
-Lane modes are inferred from populated channels; empty channels do not count.
+Channel-based inference uses populated channels; empty channels do not count.
 Asymmetric DP uses the layout for its total lane count, including the scratch
 layouts in the Keys section for totals of 8, 12, or 16 and the PMS layout for 9 lanes.
 
@@ -149,6 +149,19 @@ Frames are decoded in the background at 30 fps and start at each layer event,
 including repeated events for the same file. Playback holds the last frame at
 the end; video audio is ignored. Missing decoders and unsupported or corrupt
 videos are silently skipped. Sixel and Kitty graphics are not supported.
+
+Mode detection uses the extension, `#PLAYER`, and materialized note channels.
+`.bme` reserves seven keys per side even when channels `18`/`19` are unused;
+`.bms` and `.bml` infer seven keys from extended key channels, otherwise five.
+`#PLAYER 2` (Couple) and `#PLAYER 3` (DP) declare two sides. Populated playable P2 channels also select two-sided playback.
+For `.bms` and `.bml`, each side infers its own width, allowing asymmetric DP.
+`.pms` identifies nine keys without scratch; BMS scratch usage is detected from
+channel `16`/`26` and their long-note/landmine equivalents.
+
+PMS uses the full 9K playback layout. 10K makes all five keys on each side playable,
+and sparse undeclared `.bms`/`.bml`
+charts retain the legacy 4K fallback. `.bme` DP charts reserve all seven P1
+lanes and place P2 notes in lanes 7–13, including sparse DP charts.
 
 ### Long notes and landmines
 
