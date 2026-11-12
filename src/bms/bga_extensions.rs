@@ -173,3 +173,32 @@ mod tests {
         assert_eq!(ext.argb[&10], [255, 1, 2, 3]);
     }
 }
+
+#[cfg(test)]
+mod lane_tests {
+    use super::super::bga_switch_lane;
+
+    #[test]
+    fn switch_channels_follow_playable_layouts() {
+        for (lanes, p1, p2) in [
+            (6, 5, None),
+            (8, 7, None),
+            (12, 5, Some(11)),
+            (16, 7, Some(15)),
+        ] {
+            assert_eq!(bga_switch_lane("16", lanes), Some(p1));
+            assert_eq!(bga_switch_lane("26", lanes), p2);
+            assert_eq!(bga_switch_lane("17", lanes), None);
+            assert_eq!(bga_switch_lane("27", lanes), None);
+        }
+        for lanes in [5, 7, 14] {
+            assert_eq!(bga_switch_lane("16", lanes), None);
+            assert_eq!(bga_switch_lane("26", lanes), None);
+        }
+        assert_eq!(bga_switch_lane("18", 6), None);
+        assert_eq!(bga_switch_lane("28", 12), None);
+        assert_eq!(bga_switch_lane("29", 16), Some(14));
+        assert_eq!(bga_switch_lane("29", 14), Some(13));
+        assert_eq!(bga_switch_lane("25", 9), Some(8));
+    }
+}

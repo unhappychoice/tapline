@@ -1,19 +1,31 @@
 mod extensions;
 pub use extensions::*;
 
-use crate::{chart::BgaLayer, game::Game, render::active_bga_id};
+use crate::{chart::BgaLayer, game::Game};
 use crossterm::{
     cursor, queue,
     style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
 };
 use image::{imageops, Rgba, RgbaImage};
-use std::{collections::HashMap, io::Write, path::PathBuf};
+use std::{cell::RefCell, collections::HashMap, io::Write, path::PathBuf};
+
+mod video;
+
+#[derive(Default)]
+struct Playback {
+    event: Option<usize>,
+    video: Option<video::Video>,
+}
 
 const SIZE: u32 = 64;
 const POOR_MS: f64 = 500.0;
 
 #[derive(Default)]
-pub struct ImageBank(HashMap<u32, RgbaImage>);
+pub struct ImageBank(
+    HashMap<u32, RgbaImage>,
+    HashMap<u32, PathBuf>,
+    RefCell<[Playback; 4]>,
+);
 
 impl ImageBank {
     pub fn load(paths: &HashMap<u32, PathBuf>) -> Self {
@@ -40,6 +52,12 @@ impl ImageBank {
                     Some((*id, canvas))
                 })
                 .collect(),
+            paths
+                .iter()
+                .filter(|(_, path)| is_video(path))
+                .map(|(id, path)| (*id, path.clone()))
+                .collect(),
+            RefCell::default(),
         )
     }
 
@@ -76,6 +94,36 @@ impl ImageBank {
         self.0.extend(crops);
     }
 
+    fn layer(&self, game: &Game, layer: BgaLayer, now_ms: f64) -> Option<RgbaImage> {
+        let event = game
+            .chart
+            .bga
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, event)| event.layer == layer && event.time_ms <= now_ms);
+        let slot = match layer {
+            BgaLayer::Base => 0,
+            BgaLayer::Overlay => 1,
+            BgaLayer::Poor => 2,
+            BgaLayer::Overlay2 => 3,
+        };
+        let mut states = self.2.borrow_mut();
+        let state = &mut states[slot];
+        let index = event.map(|(index, _)| index);
+        if state.event != index {
+            state.event = index;
+            state.video = event
+                .and_then(|(_, event)| self.1.get(&event.bmp_id))
+                .and_then(|path| video::Video::open(path));
+        }
+        let (_, event) = event?;
+        self.0
+            .get(&event.bmp_id)
+            .cloned()
+            .or_else(|| state.video.as_mut()?.frame(now_ms - event.time_ms))
+    }
+
     fn frame(&self, game: &Game, now_ms: f64) -> RgbaImage {
         let ext = &game.chart.bga_extensions;
         let mut frame = RgbaImage::from_pixel(SIZE, SIZE, Rgba([0, 0, 0, 255]));
@@ -84,8 +132,7 @@ impl ImageBank {
                 .flash
                 .last_miss_at
                 .is_some_and(|at| (0.0..POOR_MS).contains(&(now_ms - at)))
-            && active_bga_id(&game.chart.bga, BgaLayer::Poor, now_ms)
-                .is_some_and(|id| self.0.contains_key(&id));
+            && self.layer(game, BgaLayer::Poor, now_ms).is_some();
         let layers = if poor && ext.poor_mode == 0 {
             vec![BgaLayer::Poor]
         } else {
@@ -96,9 +143,7 @@ impl ImageBank {
             layers
         };
         for layer in layers {
-            let Some(image) =
-                active_bga_id(&game.chart.bga, layer, now_ms).and_then(|id| self.0.get(&id))
-            else {
+            let Some(image) = self.layer(game, layer, now_ms) else {
                 continue;
             };
             let mut alpha = 255;
@@ -117,7 +162,7 @@ impl ImageBank {
                     _ => {}
                 }
             }
-            composite(&mut frame, image, alpha, key);
+            composite(&mut frame, &image, alpha, key);
         }
         if let Some((id, _, start)) = game.bga_switch.active {
             if let Some(switch) = ext.switches.get(&id) {
@@ -146,6 +191,17 @@ impl ImageBank {
     }
 }
 
+fn is_video(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "mp4" | "webm" | "mpg" | "mpeg" | "avi" | "mkv" | "mov" | "m4v"
+            )
+        })
+}
+
 fn panel_width(left_margin: u16, height: u16) -> Option<u16> {
     let width = left_margin
         .saturating_sub(2)
@@ -162,7 +218,9 @@ pub fn draw(
     top: u16,
     height: u16,
 ) -> anyhow::Result<()> {
-    let Some(width) = panel_width(left_margin, height).filter(|_| !game.bga.0.is_empty()) else {
+    let Some(width) = panel_width(left_margin, height)
+        .filter(|_| !game.bga.0.is_empty() || !game.bga.1.is_empty())
+    else {
         return Ok(());
     };
     let frame = imageops::resize(
