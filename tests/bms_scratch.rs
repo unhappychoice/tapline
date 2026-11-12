@@ -147,3 +147,21 @@ fn invisible_scratch_sounds_follow_compacted_and_double_play_lanes() {
         });
     });
 }
+
+#[test]
+fn asymmetric_scratch_dp_compacts_each_side_before_merging() {
+    [
+        ("#00116:02\n#00129:03", 13, vec![5, 12]),
+        ("#00119:02\n#00126:03", 13, vec![6, 12]),
+        ("#00116:02\n#00125:03", 11, vec![5, 10]),
+    ]
+    .iter()
+    .for_each(|(channels, count, lanes)| {
+        let chart = load(channels, *count);
+        assert!(chart.p2_notes.is_empty());
+        assert_eq!(
+            chart.notes.iter().map(|note| note.lane).collect::<Vec<_>>(),
+            *lanes
+        );
+    });
+}
