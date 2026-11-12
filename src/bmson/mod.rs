@@ -15,7 +15,7 @@ pub fn is_bmson(path: &Path) -> bool {
 }
 
 pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
-    let data: Bmson = serde_json::from_slice(&std::fs::read(path)?)
+    let data: Bmson = serde_json::from_slice(&crate::chart_file::read(path)?)
         .with_context(|| format!("Invalid bmson: {}", path.display()))?;
     ensure!(
         data.version == "1.0.0",

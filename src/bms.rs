@@ -1682,7 +1682,7 @@ fn split_first_word(s: &str) -> (&str, &str) {
 }
 
 fn read_text(path: &Path) -> Result<String> {
-    let bytes = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let bytes = crate::chart_file::read(path)?;
     Ok(decode_text(&bytes))
 }
 
