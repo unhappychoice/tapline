@@ -11,6 +11,7 @@ use std::{cell::RefCell, collections::HashMap, io::Write, path::PathBuf};
 
 mod crops;
 mod effect_timeline;
+mod image_file;
 mod timeline;
 mod video;
 
@@ -42,13 +43,7 @@ impl ImageBank {
             paths
                 .iter()
                 .filter_map(|(id, path)| {
-                    let reader = image::ImageReader::open(path)
-                        .ok()?
-                        .with_guessed_format()
-                        .ok()?;
-                    let image = reader
-                        .decode()
-                        .ok()?
+                    let image = image_file::load(path)?
                         .resize(SIZE, SIZE, imageops::FilterType::Nearest)
                         .to_rgba8();
                     let mut canvas = RgbaImage::new(SIZE, SIZE);
@@ -74,7 +69,7 @@ impl ImageBank {
 
     pub fn prepare_crops(&mut self, chart: &crate::chart::Chart) {
         self.0.extend(crops::prepare(chart, |path| {
-            image::open(path).ok().map(|image| image.to_rgba8())
+            image_file::load(path).map(|image| image.to_rgba8())
         }));
     }
 
