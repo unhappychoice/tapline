@@ -1841,13 +1841,27 @@ mod tests {
     }
 
     #[test]
-    fn preview_prefers_exact_case_and_original_extension() {
+    fn preview_prefers_exact_case_when_names_collide() {
         let dir = tempdir();
-        ["Preview.wav", "preview.wav", "preview.ogg"]
-            .iter()
-            .for_each(|name| {
-                std::fs::write(dir.join(name), b"audio").unwrap();
-            });
+        std::fs::write(dir.join("Preview.wav"), b"audio").unwrap();
+        if !dir.join("preview.wav").exists() {
+            std::fs::write(dir.join("preview.wav"), b"audio").unwrap();
+            let path = dir.join("song.bms");
+            std::fs::write(&path, "#PREVIEW preview.wav\n").unwrap();
+            assert_eq!(
+                read_meta(&path).unwrap().preview,
+                Some(dir.join("preview.wav"))
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn preview_prefers_original_extension() {
+        let dir = tempdir();
+        ["preview.wav", "preview.ogg"].iter().for_each(|name| {
+            std::fs::write(dir.join(name), b"audio").unwrap();
+        });
         let path = dir.join("song.bms");
         std::fs::write(&path, "#PREVIEW preview.wav\n").unwrap();
         assert_eq!(
