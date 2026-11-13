@@ -74,6 +74,20 @@ pub(crate) struct JudgmentWindows {
 }
 
 impl JudgmentWindows {
+    pub(crate) fn valid_percent(percent: f64) -> bool {
+        let windows = Self::for_scale(percent / 100.0);
+        percent.is_finite()
+            && percent > 0.0
+            && [
+                windows.perfect,
+                windows.great,
+                windows.good,
+                windows.miss_after,
+            ]
+            .into_iter()
+            .all(f64::is_finite)
+    }
+
     pub(crate) fn for_scale(scale: f64) -> Self {
         Self {
             perfect: WINDOW_PERFECT * scale,

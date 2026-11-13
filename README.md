@@ -266,8 +266,9 @@ Base points are PERFECT: 300, GREAT: 200, GOOD: 100, MISS: 0.
 
 `#DEFEXRANK` overrides `#RANK` with a percentage of NORMAL (50 halves the
 windows). `#EXRANKxx` defines percentages selected by channel `A0`, effective
-from the event timestamp. Undefined objects and non-positive or non-finite
-percentages are ignored. Tap and long-note start windows use the note timestamp;
+from the event timestamp. Undefined objects, non-positive or non-finite
+percentages, and percentages that overflow judgment windows are ignored.
+Tap and long-note start windows use the note timestamp;
 release windows use the long-note end timestamp. Automatic MISS and held-note
 completion deadlines scale too; landmine windows remain fixed.
 

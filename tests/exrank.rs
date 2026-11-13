@@ -81,6 +81,46 @@ fn invalid_percentages_and_undefined_a0_objects_are_ignored() {
 }
 
 #[test]
+fn large_percentages_are_accepted_only_when_all_windows_remain_finite() {
+    for (percent, valid) in [
+        ("1e308", true),
+        ("1.1e308", true),
+        ("1.2e308", false),
+        ("1.7e308", false),
+        ("1.7976931348623157e308", false),
+    ] {
+        let c = chart(
+            &format!("#DEFEXRANK {percent}\n#EXRANK01 {percent}"),
+            "#000A0:01",
+        );
+        assert_eq!(c.def_exrank.is_some(), valid, "{percent}");
+        assert_eq!(c.exrank_defs.contains_key(&1), valid, "{percent}");
+        assert_eq!(!c.exrank_events.is_empty(), valid, "{percent}");
+    }
+}
+
+#[test]
+fn overflowing_percentages_preserve_fallback_windows_and_allow_completion() {
+    for headers in [
+        "#RANK 4\n#DEFEXRANK 1.7e308",
+        "#RANK 4\n#EXRANK01 1.7e308",
+        "#DEFEXRANK 150\n#DEFEXRANK 1.7e308",
+        "#EXRANK01 150\n#EXRANK01 1.7e308",
+    ] {
+        let c = chart(headers, "#001A0:01\n#00111:01");
+        let note_time = c.notes[0].time_ms;
+        assert_eq!(c.judgment_scale(note_time), 1.5, "{headers}");
+        let mut game = Game::new(c);
+        game.check_misses(note_time + 240.0);
+        assert_eq!(game.miss, 0);
+        game.check_misses(note_time + 240.1);
+        assert_eq!(game.miss, 1);
+        assert!(game.chart.notes[0].hit);
+        assert!(game.advance_completion(game.chart.duration_ms + 1.0));
+    }
+}
+
+#[test]
 fn a0_uses_bpm_stop_measure_length_and_lead_in_timing() {
     let c = chart(
         "#EXRANK01 50\n#BPM01 240\n#STOP01 48",
