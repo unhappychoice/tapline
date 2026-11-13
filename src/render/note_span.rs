@@ -7,11 +7,11 @@ use std::io::Write;
 
 const EIGHTHS: u8 = 8;
 const LOWER_BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-pub(super) const NOTE_WIDTH: usize = 4;
 
 /// A vertical bar covering rows `[top, bottom)` (fractional screen rows).
 pub(super) struct Bar {
     pub(super) x: u16,
+    pub(super) width: u16,
     pub(super) span: (f64, f64),
     pub(super) color: Color,
 }
@@ -31,7 +31,9 @@ fn merged_cells(bars: &[Bar]) -> BTreeMap<(u16, u16), Painted> {
         .flat_map(|bar| {
             span_cells(bar.span.0, bar.span.1)
                 .into_iter()
-                .map(move |(row, cell)| ((bar.x, row), (cell, bar.color)))
+                .flat_map(move |(row, cell)| {
+                    (bar.x..bar.x + bar.width).map(move |x| ((x, row), (cell, bar.color)))
+                })
         })
         .fold(BTreeMap::new(), |mut cells, (pos, painted)| {
             cells
@@ -96,12 +98,16 @@ fn draw_cell(
     color: Color,
 ) -> anyhow::Result<()> {
     let (glyph, reverse) = cell_glyph(cell);
-    let text: String = std::iter::repeat_n(glyph, NOTE_WIDTH).collect();
     queue!(out, cursor::MoveTo(x, row), SetForegroundColor(color))?;
     if reverse {
         queue!(out, SetAttribute(Attribute::Reverse))?;
     }
-    queue!(out, Print(text), SetAttribute(Attribute::Reset), ResetColor)?;
+    queue!(
+        out,
+        Print(glyph),
+        SetAttribute(Attribute::Reset),
+        ResetColor
+    )?;
     Ok(())
 }
 
