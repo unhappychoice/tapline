@@ -48,6 +48,9 @@ pub struct Game {
     next_deadline: usize,
     max_good: f64,
     lane_notes: Vec<Vec<usize>>,
+    lane_mines: Vec<Vec<usize>>,
+    #[cfg(test)]
+    mine_visits: usize,
     held_notes: Vec<usize>,
     #[cfg(test)]
     miss_visits: usize,
@@ -113,7 +116,8 @@ impl JudgmentWindows {
 
 impl Game {
     /// Notes and scroll/speed events must be time-sorted. Note timestamps, lanes,
-    /// order, and scroll events stay fixed during play.
+    /// order, and scroll events stay fixed during play. Mine timestamps, lanes, and
+    /// order must also stay fixed; mines need not arrive time-sorted.
     pub fn new(chart: Chart) -> Self {
         let lane_count = chart.lane_count;
         let mut lane_notes = vec![Vec::new(); lane_count];
@@ -121,6 +125,15 @@ impl Game {
             if let Some(lane) = lane_notes.get_mut(note.lane) {
                 lane.push(i);
             }
+        });
+        let mut lane_mines = vec![Vec::new(); lane_count];
+        chart.mines.iter().enumerate().for_each(|(i, mine)| {
+            if let Some(lane) = lane_mines.get_mut(mine.lane) {
+                lane.push(i);
+            }
+        });
+        lane_mines.iter_mut().for_each(|ids| {
+            ids.sort_by(|&a, &b| chart.mines[a].time_ms.total_cmp(&chart.mines[b].time_ms));
         });
         let mut miss_order: Vec<usize> = (0..chart.notes.len()).collect();
         let deadline = |i: usize| {
@@ -160,6 +173,9 @@ impl Game {
             next_deadline: 0,
             max_good,
             lane_notes,
+            lane_mines,
+            #[cfg(test)]
+            mine_visits: 0,
             held_notes: Vec::new(),
             #[cfg(test)]
             miss_visits: 0,
@@ -248,20 +264,20 @@ impl Game {
 
     /// Detonate each nearby untriggered mine in the pressed lane once.
     fn trigger_mines(&mut self, lane: usize, now_ms: f64) {
-        let ids: Vec<usize> = self
-            .chart
-            .mines
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| {
-                !m.exploded && m.lane == lane && (m.time_ms - now_ms).abs() <= MINE_WINDOW
-            })
-            .map(|(i, _)| i)
-            .collect();
-        for i in ids {
-            self.chart.mines[i].exploded = true;
-            self.gauge.apply_mine(self.chart.mines[i].damage);
-            self.combo = 0;
+        let ids = &self.lane_mines[lane];
+        let start = ids.partition_point(|&i| self.chart.mines[i].time_ms < now_ms - MINE_WINDOW);
+        let end = ids.partition_point(|&i| self.chart.mines[i].time_ms <= now_ms + MINE_WINDOW);
+        for &i in &ids[start..end] {
+            #[cfg(test)]
+            {
+                self.mine_visits += 1;
+            }
+            let mine = &mut self.chart.mines[i];
+            if !mine.exploded && (mine.time_ms - now_ms).abs() <= MINE_WINDOW {
+                mine.exploded = true;
+                self.gauge.apply_mine(mine.damage);
+                self.combo = 0;
+            }
         }
     }
 
@@ -972,6 +988,82 @@ mod tests {
             keys: keys_for(lane_count),
             ..Chart::default()
         }
+    }
+
+    fn mine(time_ms: f64, lane: usize) -> Mine {
+        Mine {
+            time_ms,
+            lane,
+            damage: 2,
+            exploded: false,
+        }
+    }
+
+    #[test]
+    fn mine_window_includes_both_boundaries_and_excludes_just_outside() {
+        let mut g = Game::new(chart_with_mines(
+            vec![
+                mine(1040.001, 0),
+                mine(1040.0, 0),
+                mine(960.0, 0),
+                mine(959.999, 0),
+            ],
+            4,
+        ));
+        g.hit(0, 1000.0);
+        assert_eq!(
+            g.chart.mines.iter().map(|m| m.exploded).collect::<Vec<_>>(),
+            vec![false, true, true, false]
+        );
+        assert_eq!(g.mine_visits, 2);
+        assert_eq!(g.gauge.value(), 18.0);
+    }
+
+    #[test]
+    fn simultaneous_mines_apply_each_damage_once_and_preserve_judgments() {
+        let mut chart = chart_with_mines(vec![mine(1000.0, 0); 3], 4);
+        chart.notes = vec![note(1000.0, 0)];
+        chart.total = Some(1.0);
+        let mut g = Game::new(chart);
+        g.combo = 5;
+        g.hit(0, 1000.0);
+        assert!(g.chart.mines.iter().all(|m| m.exploded));
+        assert_eq!(g.gauge.value(), 18.0);
+        assert_eq!(g.combo, 1, "mines reset combo before the note judgment");
+        assert_eq!(g.score, 301);
+        assert_eq!((g.perfect, g.great, g.good, g.miss), (1, 0, 0, 0));
+        assert_eq!(g.accuracy(), 100.0);
+        assert_eq!(g.flash.last_judgment, Some(Judgment::Perfect));
+        assert_eq!(g.flash.last_miss_at, None);
+        g.hit(0, 1010.0);
+        assert_eq!(g.gauge.value(), 18.0);
+        assert_eq!(g.combo, 1, "exploded mines must not reset combo again");
+        assert_eq!(g.score, 301);
+    }
+
+    #[test]
+    fn mine_candidate_visits_do_not_grow_with_distant_or_other_lane_mines() {
+        [0, 10_000].into_iter().for_each(|extra| {
+            let mut mines = vec![mine(1000.0, 0), mine(1000.0, 0)];
+            mines.extend((0..extra).flat_map(|i| {
+                [
+                    mine(-1000.0 - i as f64, 0),
+                    mine(3000.0 + i as f64, 0),
+                    mine(1000.0, 1),
+                ]
+            }));
+            let mut g = Game::new(chart_with_mines(mines, 4));
+            g.hit(0, 1000.0);
+            assert_eq!(g.mine_visits, 2);
+            g.hit(0, 1010.0);
+            assert_eq!(g.mine_visits, 4);
+            g.hit(0, 2000.0);
+            assert_eq!(g.mine_visits, 4, "empty windows visit no candidates");
+            g.hit(4, 1000.0);
+            assert_eq!(g.mine_visits, 4, "invalid lanes visit no candidates");
+            assert_eq!(g.gauge.value(), 18.0);
+            assert_eq!(g.chart.mines.iter().filter(|m| m.exploded).count(), 2);
+        });
     }
 
     #[test]
