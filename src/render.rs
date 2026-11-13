@@ -12,9 +12,7 @@ mod note_span;
 pub const APPROACH_MS: f64 = 1000.0;
 pub const LANE_WIDTH: u16 = 7;
 
-/// Look up the lane's anchor-key color scheme: S / K / Space are painted blue,
-/// every other key stays white. Applied to both key labels and the notes
-/// falling in that lane so the two are always in sync.
+/// Look up the anchor-key color for labels and ordinary notes.
 fn lane_key_color(game: &Game, lane: usize) -> Color {
     let keys = game
         .chart
@@ -23,6 +21,25 @@ fn lane_key_color(game: &Game, lane: usize) -> Color {
         .map(|v| v.as_slice())
         .unwrap_or(&[]);
     key_label_color(keys)
+}
+
+fn is_scratch_lane(lane_count: usize, lane: usize) -> bool {
+    match lane_count {
+        6 | 8 => lane == lane_count - 1,
+        12 | 16 => lane == lane_count / 2 - 1 || lane == lane_count - 1,
+        _ => false,
+    }
+}
+
+fn note_style(game: &Game, lane: usize, held: bool) -> (u16, u16, Color) {
+    let scratch = is_scratch_lane(game.chart.lane_count, lane);
+    let (offset, width) = if scratch { (1, 6) } else { (2, 4) };
+    let color = match (held, scratch) {
+        (true, _) => Color::Yellow,
+        (_, true) => Color::Red,
+        _ => lane_key_color(game, lane),
+    };
+    (offset, width, color)
 }
 
 /// Highlight `D`, `K`, and Space in blue (they're the anchor keys the player
@@ -544,8 +561,8 @@ pub fn draw(out: &mut impl Write, game: &Game, now_ms: f64) -> anyhow::Result<()
         if note.hit {
             continue;
         }
-        let lx = x0 + 1 + note.lane as u16 * LANE_WIDTH + 2;
-        let base = lane_key_color(game, note.lane);
+        let (offset, width, color) = note_style(game, note.lane, note.held_since.is_some());
+        let lx = x0 + 1 + note.lane as u16 * LANE_WIDTH + offset;
         match note.end_ms {
             None => {
                 let Some(y) = note_screen_pos(scroll.distance(note.time_ms), &layout) else {
@@ -553,20 +570,16 @@ pub fn draw(out: &mut impl Write, game: &Game, now_ms: f64) -> anyhow::Result<()
                 };
                 bars.push(note_span::Bar {
                     x: lx,
+                    width,
                     span: note_bar((y, y)),
-                    color: base,
+                    color,
                 });
             }
             Some(end_ms) => {
-                // Held LNs flash yellow so the player sees the hold registering.
-                let color = if note.held_since.is_some() {
-                    Color::Yellow
-                } else {
-                    base
-                };
                 if let Some(span) = long_note_scroll_span(&scroll, note.time_ms, end_ms, &layout) {
                     bars.push(note_span::Bar {
                         x: lx,
+                        width,
                         span: note_bar(span),
                         color,
                     });
@@ -803,6 +816,54 @@ mod tests {
             keys: keys_for(lane_count),
             ..Chart::default()
         }
+    }
+
+    #[test]
+    fn scratch_styles_follow_layout_and_fit_lane_interiors() {
+        for (count, scratches) in [
+            (6, vec![5]),
+            (8, vec![7]),
+            (12, vec![5, 11]),
+            (16, vec![7, 15]),
+        ] {
+            let game = Game::new(base_chart(count));
+            for lane in 0..count {
+                let scratch = scratches.contains(&lane);
+                assert_eq!(is_scratch_lane(count, lane), scratch);
+                let (offset, width, color) = note_style(&game, lane, false);
+                assert_eq!((offset, width), if scratch { (1, 6) } else { (2, 4) });
+                assert!(offset > 0 && offset + width <= LANE_WIDTH);
+                assert_eq!(
+                    color,
+                    if scratch {
+                        Color::Red
+                    } else {
+                        lane_key_color(&game, lane)
+                    }
+                );
+                assert_eq!(
+                    note_style(&game, lane, true),
+                    (offset, width, Color::Yellow)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_layouts_keep_key_colors_and_four_column_notes() {
+        for count in [4, 5, 7, 9, 10, 11, 13, 14, 15] {
+            let game = Game::new(base_chart(count));
+            for lane in 0..count {
+                assert!(!is_scratch_lane(count, lane));
+                assert_eq!(
+                    note_style(&game, lane, false),
+                    (2, 4, lane_key_color(&game, lane))
+                );
+            }
+        }
+        let game = Game::new(base_chart(9));
+        assert_eq!(game.chart.keys[0], vec!['A']);
+        assert_eq!(note_style(&game, 0, false), (2, 4, Color::White));
     }
 
     #[test]

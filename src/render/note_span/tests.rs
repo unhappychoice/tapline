@@ -58,18 +58,20 @@ fn upper_cells_are_written_in_reverse_video() {
     let mut out = Vec::new();
     let bar = Bar {
         x: 4,
+        width: 4,
         span: (10.5, 11.5),
         color: Color::Blue,
     };
     draw_bars(&mut out, &[bar]).unwrap();
     let text = String::from_utf8(out).unwrap();
-    assert!(text.contains("▄▄▄▄"));
+    assert_eq!(text.matches("▄").count(), 8);
     assert!(text.contains("\x1b[7m"));
 }
 
 fn bar(top: f64) -> Bar {
     Bar {
         x: 2,
+        width: 4,
         span: (top, top + 1.0),
         color: Color::Blue,
     }
@@ -89,4 +91,49 @@ fn overlapping_partials_keep_the_larger_fill_regardless_of_order() {
     let b = (Cell::Lower(6), Color::Red);
     assert_eq!(merge(a, b), b);
     assert_eq!(merge(b, a), b);
+}
+
+#[test]
+fn variable_width_fractional_bars_merge_only_overlapping_columns() {
+    let narrow = bar(10.25);
+    let wide = Bar {
+        x: 1,
+        width: 6,
+        span: (11.25, 12.25),
+        color: Color::Red,
+    };
+    let cells = merged_cells(&[narrow, wide]);
+    (1..7).for_each(|x| {
+        assert_eq!(cells[&(x, 12)], (Cell::Upper(2), Color::Red));
+        assert_eq!(
+            cells[&(x, 11)].0,
+            if (2..6).contains(&x) {
+                Cell::Lower(8)
+            } else {
+                Cell::Lower(6)
+            }
+        );
+    });
+    assert!(!cells.keys().any(|(x, _)| *x == 0 || *x == 7));
+}
+
+#[test]
+fn output_uses_each_bars_width_for_full_and_fractional_rows() {
+    for width in [4, 6] {
+        for (span, glyph, rows) in [((10.0, 11.0), "█", 1), ((10.5, 11.5), "▄", 2)] {
+            let mut out = Vec::new();
+            draw_bars(
+                &mut out,
+                &[Bar {
+                    x: 2,
+                    width,
+                    span,
+                    color: Color::Red,
+                }],
+            )
+            .unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert_eq!(text.matches(glyph).count(), width as usize * rows);
+        }
+    }
 }
