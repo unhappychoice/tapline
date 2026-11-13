@@ -157,8 +157,8 @@ fn mixed_judgment_tiers_produce_the_expected_accuracy() {
 
 #[test]
 fn playing_a_shipped_chart_through_hits_the_full_note_count() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("songs/01-first-steps.bms");
-    let chart = bms::load(&path, 0.0).unwrap();
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("songs/01-first-steps.bmson");
+    let chart = tapline::bmson::load(&path, 0.0).unwrap();
     let total_notes = chart.notes.len();
     let notes: Vec<_> = chart.notes.iter().map(|n| (n.time_ms, n.lane)).collect();
     let mut game = Game::new(chart);
