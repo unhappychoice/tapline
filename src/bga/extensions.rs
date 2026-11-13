@@ -40,22 +40,39 @@ pub enum Effect {
 pub struct SwitchPlayback {
     pub active: Option<(u32, usize, f64)>,
     pub held: bool,
+    events: Vec<(f64, u32)>,
+    #[cfg(test)]
+    comparisons: usize,
 }
 
 impl SwitchPlayback {
+    /// Extension events must be time-sorted and stay fixed during playback.
+    pub fn new(ext: &Extensions) -> Self {
+        Self {
+            events: ext
+                .events
+                .iter()
+                .filter_map(|event| match event.effect {
+                    Effect::Switch(id) => Some((event.time_ms, id)),
+                    _ => None,
+                })
+                .collect(),
+            ..Self::default()
+        }
+    }
+
     pub fn press(&mut self, chart: &crate::chart::Chart, lane: usize, now: f64) {
-        let id = chart.bga_extensions.events.iter().rev().find_map(|event| {
-            if event.time_ms > now {
-                return None;
+        let end = self.events.partition_point(|(time, _)| {
+            #[cfg(test)]
+            {
+                self.comparisons += 1;
             }
-            match event.effect {
-                Effect::Switch(id) => Some(id),
-                _ => None,
-            }
+            *time <= now
         });
-        let Some(id) = id else {
+        let Some(index) = end.checked_sub(1) else {
             return;
         };
+        let id = self.events[index].1;
         let Some(switch) = chart.bga_extensions.switches.get(&id) else {
             return;
         };
@@ -65,3 +82,6 @@ impl SwitchPlayback {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

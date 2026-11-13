@@ -2823,7 +2823,7 @@ mod tests {
                     chart.bga_extensions.switches[&1].lane, expected,
                     "{extension} {header} {channels}: {channel}"
                 );
-                let mut playback = crate::bga::SwitchPlayback::default();
+                let mut playback = crate::bga::SwitchPlayback::new(&chart.bga_extensions);
                 for lane in 0..chart.lane_count {
                     playback.active = None;
                     playback.press(&chart, lane, 0.0);
