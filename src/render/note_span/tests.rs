@@ -56,8 +56,37 @@ fn glyphs_use_lower_blocks_and_reverse_video_for_upper_fills() {
 #[test]
 fn upper_cells_are_written_in_reverse_video() {
     let mut out = Vec::new();
-    draw_span(&mut out, (10.5, 11.5), 4, Color::Blue).unwrap();
+    let bar = Bar {
+        x: 4,
+        span: (10.5, 11.5),
+        color: Color::Blue,
+    };
+    draw_bars(&mut out, &[bar]).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("▄▄▄▄"));
     assert!(text.contains("\x1b[7m"));
+}
+
+fn bar(top: f64) -> Bar {
+    Bar {
+        x: 2,
+        span: (top, top + 1.0),
+        color: Color::Blue,
+    }
+}
+
+#[test]
+fn adjacent_notes_sharing_a_cell_fill_it_completely() {
+    let cells = merged_cells(&[bar(10.25), bar(11.25)]);
+    assert_eq!(cells[&(2, 11)].0, Cell::Lower(8));
+    assert_eq!(cells[&(2, 10)].0, Cell::Lower(6));
+    assert_eq!(cells[&(2, 12)].0, Cell::Upper(2));
+}
+
+#[test]
+fn overlapping_partials_keep_the_larger_fill_regardless_of_order() {
+    let a = (Cell::Lower(3), Color::Blue);
+    let b = (Cell::Lower(6), Color::Red);
+    assert_eq!(merge(a, b), b);
+    assert_eq!(merge(b, a), b);
 }

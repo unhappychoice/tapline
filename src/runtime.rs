@@ -200,6 +200,7 @@ fn pump_input(
         let input = event::read()?;
         if matches!(input, Event::Resize(..)) {
             execute!(out, terminal::Clear(terminal::ClearType::All))?;
+            state.screen.invalidate();
         }
         let Event::Key(k) = input else {
             continue;

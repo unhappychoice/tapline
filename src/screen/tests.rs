@@ -162,3 +162,25 @@ fn presented_diffs_reproduce_the_model_on_a_mirror_terminal() {
         assert_eq!(mirror.back, model.back, "frame {i}");
     });
 }
+
+#[test]
+fn clearing_from_a_wide_continuation_also_blanks_its_leading_half() {
+    let mut s = screen(4, 1);
+    queue!(
+        s,
+        Print("日"),
+        cursor::MoveTo(1, 0),
+        terminal::Clear(terminal::ClearType::UntilNewLine)
+    )
+    .unwrap();
+    assert_eq!(row_text(&s, 0), "    ");
+}
+
+#[test]
+fn invalidate_resends_every_cell() {
+    let mut s = screen(3, 1);
+    queue!(s, Print("abc")).unwrap();
+    present(&mut s);
+    s.invalidate();
+    assert!(present(&mut s).contains("abc"));
+}

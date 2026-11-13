@@ -60,6 +60,11 @@ impl Screen {
         self.back = vec![BLANK; len];
     }
 
+    /// Forgets what the terminal shows, e.g. after it was cleared directly.
+    pub fn invalidate(&mut self) {
+        self.front.fill(UNKNOWN);
+    }
+
     /// Writes the cells that differ from the last presented frame.
     pub fn present(&mut self, out: &mut impl Write) -> io::Result<()> {
         let mut buf = String::from("\x1b[?2026h");
@@ -134,6 +139,7 @@ impl Screen {
     }
 
     fn clear_row(&mut self, y: u16, from: u16) {
+        self.detach_wide(from, y);
         (from..self.cols).for_each(|x| self.set(x, y, BLANK));
     }
 

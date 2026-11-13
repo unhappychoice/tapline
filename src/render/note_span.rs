@@ -2,23 +2,62 @@ use crossterm::{
     cursor, queue,
     style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
 };
+use std::collections::BTreeMap;
 use std::io::Write;
 
 const EIGHTHS: u8 = 8;
 const LOWER_BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 pub(super) const NOTE_WIDTH: usize = 4;
 
-/// Draws a vertical bar covering rows `[top, bottom)` (fractional screen rows)
-/// with 1/8-row precision, so notes glide instead of jumping whole cells.
-pub(super) fn draw_span(
-    out: &mut impl Write,
-    (top, bottom): (f64, f64),
-    x: u16,
-    color: Color,
-) -> anyhow::Result<()> {
-    span_cells(top, bottom)
+/// A vertical bar covering rows `[top, bottom)` (fractional screen rows).
+pub(super) struct Bar {
+    pub(super) x: u16,
+    pub(super) span: (f64, f64),
+    pub(super) color: Color,
+}
+
+/// Draws bars with 1/8-row precision, so notes glide instead of jumping whole
+/// cells. Bars sharing a cell are merged so neither part is overwritten.
+pub(super) fn draw_bars(out: &mut impl Write, bars: &[Bar]) -> anyhow::Result<()> {
+    merged_cells(bars)
         .into_iter()
-        .try_for_each(|(row, cell)| draw_cell(out, x, row, cell, color))
+        .try_for_each(|((x, row), (cell, color))| draw_cell(out, x, row, cell, color))
+}
+
+type Painted = (Cell, Color);
+
+fn merged_cells(bars: &[Bar]) -> BTreeMap<(u16, u16), Painted> {
+    bars.iter()
+        .flat_map(|bar| {
+            span_cells(bar.span.0, bar.span.1)
+                .into_iter()
+                .map(move |(row, cell)| ((bar.x, row), (cell, bar.color)))
+        })
+        .fold(BTreeMap::new(), |mut cells, (pos, painted)| {
+            cells
+                .entry(pos)
+                .and_modify(|current| *current = merge(*current, painted))
+                .or_insert(painted);
+            cells
+        })
+}
+
+/// A top part and a bottom part that meet fill the cell; otherwise the cell
+/// can show only one partial fill, so the larger one wins.
+fn merge(a: Painted, b: Painted) -> Painted {
+    match (a.0, b.0) {
+        (Cell::Upper(x), Cell::Lower(y)) | (Cell::Lower(y), Cell::Upper(x)) if x + y >= EIGHTHS => {
+            (Cell::Lower(EIGHTHS), a.1)
+        }
+        _ if filled(b.0) > filled(a.0) => b,
+        _ => a,
+    }
+}
+
+fn filled(cell: Cell) -> u8 {
+    match cell {
+        Cell::Lower(n) | Cell::Upper(n) => n,
+    }
 }
 
 /// The part of one terminal cell a span covers, in eighths of a row.

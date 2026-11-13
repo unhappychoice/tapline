@@ -539,6 +539,7 @@ pub fn draw(out: &mut impl Write, game: &Game, now_ms: f64) -> anyhow::Result<()
         )?;
     }
 
+    let mut bars = Vec::new();
     for note in game.visible_notes(now_ms, APPROACH_MS) {
         if note.hit {
             continue;
@@ -550,7 +551,11 @@ pub fn draw(out: &mut impl Write, game: &Game, now_ms: f64) -> anyhow::Result<()
                 let Some(y) = note_screen_pos(scroll.distance(note.time_ms), &layout) else {
                     continue;
                 };
-                note_span::draw_span(out, note_bar((y, y)), lx, base)?;
+                bars.push(note_span::Bar {
+                    x: lx,
+                    span: note_bar((y, y)),
+                    color: base,
+                });
             }
             Some(end_ms) => {
                 // Held LNs flash yellow so the player sees the hold registering.
@@ -560,11 +565,16 @@ pub fn draw(out: &mut impl Write, game: &Game, now_ms: f64) -> anyhow::Result<()
                     base
                 };
                 if let Some(span) = long_note_scroll_span(&scroll, note.time_ms, end_ms, &layout) {
-                    note_span::draw_span(out, note_bar(span), lx, color)?;
+                    bars.push(note_span::Bar {
+                        x: lx,
+                        span: note_bar(span),
+                        color,
+                    });
                 }
             }
         }
     }
+    note_span::draw_bars(out, &bars)?;
 
     draw_judgment_flash(out, game, cols, layout.judgment_row(), now_ms)?;
 
