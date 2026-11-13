@@ -7,6 +7,8 @@ use crossterm::{
 };
 use std::io::{Stdout, Write};
 
+mod note_span;
+
 pub const APPROACH_MS: f64 = 1000.0;
 pub const LANE_WIDTH: u16 = 7;
 
@@ -75,73 +77,78 @@ impl PlayLayout {
 /// `remain` normal-speed milliseconds. `None` if the note is outside the approach or already
 /// past the miss window.
 fn note_screen_y(remain: f64, layout: &PlayLayout) -> Option<u16> {
+    note_screen_pos(remain, layout).map(|pos| pos as u16)
+}
+
+/// Fractional screen row of a note, used for sub-cell rendering.
+fn note_screen_pos(remain: f64, layout: &PlayLayout) -> Option<f64> {
     if !(-60.0..=APPROACH_MS).contains(&remain) {
         return None;
     }
     let frac = (1.0 - (remain / APPROACH_MS)).clamp(0.0, 1.0);
-    Some(layout.top + (frac * (layout.lane_height - 1) as f64) as u16)
+    Some(layout.top as f64 + frac * (layout.lane_height - 1) as f64)
 }
 
 /// Vertical screen range (top row, bottom row) covered by a long note whose
 /// endpoints have the given `remain` offsets. Returns `None` when the note is
 /// entirely off-screen — either both endpoints past the miss window or both
 /// past the approach horizon.
+#[cfg(test)]
 fn long_note_screen_range(
     start_remain: f64,
     end_remain: f64,
     layout: &PlayLayout,
 ) -> Option<(u16, u16)> {
+    long_note_screen_span(start_remain, end_remain, layout)
+        .map(|(top, bottom)| (top as u16, bottom as u16))
+}
+
+/// Fractional (top, bottom) rows of a long note's head positions.
+fn long_note_screen_span(
+    start_remain: f64,
+    end_remain: f64,
+    layout: &PlayLayout,
+) -> Option<(f64, f64)> {
     if start_remain > APPROACH_MS && end_remain > APPROACH_MS {
         return None;
     }
     if start_remain < -60.0 && end_remain < -60.0 {
         return None;
     }
-    let start_y = note_screen_y(start_remain.clamp(0.0, APPROACH_MS), layout)?;
-    let end_y = note_screen_y(end_remain.clamp(0.0, APPROACH_MS), layout)?;
+    let start_y = note_screen_pos(start_remain.clamp(0.0, APPROACH_MS), layout)?;
+    let end_y = note_screen_pos(end_remain.clamp(0.0, APPROACH_MS), layout)?;
     Some((start_y.min(end_y), start_y.max(end_y)))
 }
 
+#[cfg(test)]
 fn long_note_scroll_range(
     scroll: &crate::scroll::ScrollFrame<'_>,
     start_ms: f64,
     end_ms: f64,
     layout: &PlayLayout,
 ) -> Option<(u16, u16)> {
-    let (min, max) = scroll.range(start_ms, end_ms);
-    long_note_screen_range(min, max, layout)
+    long_note_scroll_span(scroll, start_ms, end_ms, layout)
+        .map(|(top, bottom)| (top as u16, bottom as u16))
 }
 
-fn draw_long_note(
-    out: &mut Stdout,
-    range: Option<(u16, u16)>,
-    lx: u16,
-    color: Color,
-) -> anyhow::Result<()> {
-    let Some((top_y, bot_y)) = range else {
-        return Ok(());
-    };
-    for y in top_y..=bot_y {
-        let glyph = if y == bot_y {
-            "[==]"
-        } else if y == top_y {
-            "[--]"
-        } else {
-            "[||]"
-        };
-        queue!(
-            out,
-            cursor::MoveTo(lx, y),
-            SetForegroundColor(color),
-            Print(glyph),
-            ResetColor
-        )?;
-    }
-    Ok(())
+fn long_note_scroll_span(
+    scroll: &crate::scroll::ScrollFrame<'_>,
+    start_ms: f64,
+    end_ms: f64,
+    layout: &PlayLayout,
+) -> Option<(f64, f64)> {
+    let (min, max) = scroll.range(start_ms, end_ms);
+    long_note_screen_span(min, max, layout)
+}
+
+/// A note is one row tall; its drawn bar spans from its top edge to one row
+/// below its lowest head position.
+fn note_bar(span: (f64, f64)) -> (f64, f64) {
+    (span.0, span.1 + 1.0)
 }
 
 fn draw_judgment_flash(
-    out: &mut Stdout,
+    out: &mut impl Write,
     game: &Game,
     cols: u16,
     judgment_row: u16,
@@ -176,7 +183,7 @@ fn draw_judgment_flash(
 }
 
 fn draw_judgment_counters(
-    out: &mut Stdout,
+    out: &mut impl Write,
     game: &Game,
     cols: u16,
     row: u16,
@@ -395,7 +402,7 @@ fn format_gauge_status(game: &Game, clear: bool) -> String {
 }
 
 /// Draw the play field using notes near the current time and active long notes.
-pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
+pub fn draw(out: &mut impl Write, game: &Game, now_ms: f64) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
     let lanes = game.chart.lane_count as u16;
     let Some(layout) = PlayLayout::compute(cols, rows, game.chart.lane_count) else {
@@ -540,16 +547,10 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
         let base = lane_key_color(game, note.lane);
         match note.end_ms {
             None => {
-                let Some(y) = note_screen_y(scroll.distance(note.time_ms), &layout) else {
+                let Some(y) = note_screen_pos(scroll.distance(note.time_ms), &layout) else {
                     continue;
                 };
-                queue!(
-                    out,
-                    cursor::MoveTo(lx, y),
-                    SetForegroundColor(base),
-                    Print("[==]"),
-                    ResetColor
-                )?;
+                note_span::draw_span(out, note_bar((y, y)), lx, base)?;
             }
             Some(end_ms) => {
                 // Held LNs flash yellow so the player sees the hold registering.
@@ -558,12 +559,9 @@ pub fn draw(out: &mut Stdout, game: &Game, now_ms: f64) -> anyhow::Result<()> {
                 } else {
                     base
                 };
-                draw_long_note(
-                    out,
-                    long_note_scroll_range(&scroll, note.time_ms, end_ms, &layout),
-                    lx,
-                    color,
-                )?;
+                if let Some(span) = long_note_scroll_span(&scroll, note.time_ms, end_ms, &layout) {
+                    note_span::draw_span(out, note_bar(span), lx, color)?;
+                }
             }
         }
     }
@@ -603,7 +601,7 @@ fn draw_stagefile(
 }
 
 pub fn draw_intro(
-    out: &mut Stdout,
+    out: &mut impl Write,
     game: &Game,
     countdown_ms: f64,
     audio_on: bool,
@@ -612,7 +610,7 @@ pub fn draw_intro(
 }
 
 pub fn draw_intro_full(
-    out: &mut Stdout,
+    out: &mut impl Write,
     game: &Game,
     countdown_ms: f64,
     audio_on: bool,
