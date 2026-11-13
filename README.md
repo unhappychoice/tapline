@@ -301,10 +301,10 @@ whichever finger is closer.
 | 4     | `S D       K L`               | outer 2+2, index fingers rest     |
 | 5     | `S D  F/J  K L`               | center lane bound to both F and J |
 | 7     | `S D  F SPACE J  K L`         | spacebar is the center            |
-| 6     | `S D F/J K L A` | 5K plus scratch on A |
-| 8     | `S D F SPACE J K L A` | 7K plus scratch on A |
-| 12    | `S D F/J K L A / Z X C V B /` | 5K+scratch per side; P2 scratch uses slash |
-| 16    | `S D F SPACE J K L A / Z X C V B N M /` | 7K+scratch per side; P2 scratch uses slash |
+| 6     | `S D F/J K L A/;` | 5K plus scratch on either A or ; |
+| 8     | `S D F SPACE J K L A/;` | 7K plus scratch on either A or ; |
+| 12    | `S D F/J K L A / Z X C V B ;` | 5K+scratch per side; P1 scratch uses A, P2 uses ; |
+| 16    | `S D F SPACE J K L A / Z X C V B N M ;` | 7K+scratch per side; P1 scratch uses A, P2 uses ; |
 | 9     | `A S D F SPACE J K L ;`        | PMS buttons 1–9; spacebar is the center |
 | 10    | `S D F K L / Z X C N M` | five keys per side |
 | 11, 13, 15 | first N keys of `S D F SPACE J K L Z X C V B N M , A` | asymmetric DP |
