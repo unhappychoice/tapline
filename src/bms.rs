@@ -8,6 +8,8 @@ use anyhow::{ensure, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+const AUDIO_EXTENSIONS: &[&str] = &["wav", "ogg", "mp3", "flac"];
+
 #[derive(Debug, Clone)]
 pub struct ChartMeta {
     pub path: PathBuf,
@@ -47,11 +49,14 @@ pub fn read_meta_with_seed(path: &Path, seed: u64) -> Result<ChartMeta> {
     let (_, acc, p2_acc) = collect_chart_sides(&raw, &pass, 0.0, false, is_pms(path))?;
     let mode = detect_mode(path, pass.player, &raw, &acc, &p2_acc);
     Ok(ChartMeta {
-        preview: pass.preview.filter(|name| !name.is_empty()).map(|name| {
-            path.parent()
-                .unwrap_or(Path::new("."))
-                .join(name.replace('\\', "/"))
-        }),
+        preview: pass
+            .preview
+            .filter(|name| !name.is_empty())
+            .and_then(|name| {
+                AssetIndex::new(path.parent().unwrap_or(Path::new(".")))
+                    .resolve_path(&name, AUDIO_EXTENSIONS)
+                    .cloned()
+            }),
         path: path.to_path_buf(),
         random_seed: seed,
         title: pass.title,
@@ -1772,7 +1777,7 @@ fn channel_to_lane(ch: &str) -> Option<usize> {
 }
 
 fn resolve_wavs(assets: &AssetIndex, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
-    assets.resolve(defs, &["wav", "ogg", "mp3", "flac"])
+    assets.resolve(defs, AUDIO_EXTENSIONS)
 }
 
 #[cfg(test)]
@@ -1794,6 +1799,8 @@ mod tests {
     fn read_meta_preserves_preview_and_selector_details() {
         let dir = tempdir();
         let path = dir.join("song.bms");
+        std::fs::create_dir(dir.join("audio")).unwrap();
+        std::fs::write(dir.join("audio/preview song.ogg"), b"audio").unwrap();
         std::fs::write(
             &path,
             "#TITLE Song\n#preview audio\\preview song.ogg\n#BANNER banner.png\n#COMMENT Song details\n#TEXT01 Chorus\n#00199:01\n",
@@ -1810,6 +1817,52 @@ mod tests {
     }
 
     #[test]
+    fn previews_and_keysounds_share_audio_resolution() {
+        let dir = tempdir();
+        std::fs::create_dir(dir.join("audio")).unwrap();
+        let audio = dir.join("audio/preview.wav");
+        std::fs::copy("tests/fixtures/tone.wav", &audio).unwrap();
+        let path = dir.join("song.bms");
+        [
+            "AUDIO\\PREVIEW.WAV",
+            "audio\\preview.wav",
+            "AUDIO/PREVIEW.ogg",
+            "audio/preview",
+        ]
+        .iter()
+        .for_each(|name| {
+            std::fs::write(&path, format!("#PREVIEW {name}\n#WAV01 {name}\n")).unwrap();
+            let meta = read_meta(&path).unwrap();
+            let chart = load(&path, 0.0).unwrap();
+            assert_eq!(meta.preview.as_ref(), Some(&audio));
+            assert_eq!(meta.preview.as_ref(), chart.wav_paths.get(&1));
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn preview_prefers_exact_case_and_original_extension() {
+        let dir = tempdir();
+        ["Preview.wav", "preview.wav", "preview.ogg"]
+            .iter()
+            .for_each(|name| {
+                std::fs::write(dir.join(name), b"audio").unwrap();
+            });
+        let path = dir.join("song.bms");
+        std::fs::write(&path, "#PREVIEW preview.wav\n").unwrap();
+        assert_eq!(
+            read_meta(&path).unwrap().preview,
+            Some(dir.join("preview.wav"))
+        );
+        std::fs::write(&path, "#PREVIEW preview.ogg\n").unwrap();
+        assert_eq!(
+            read_meta(&path).unwrap().preview,
+            Some(dir.join("preview.ogg"))
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn preview_and_loaded_chart_use_the_selected_random_branch() {
         let dir = tempdir();
         let path = dir.join("song.bms");
@@ -1818,6 +1871,9 @@ mod tests {
             "#RANDOM 2\n#IF 1\n#TITLE First\n#PREVIEW first.ogg\n#ELSE\n#TITLE Second\n#PREVIEW second.ogg\n#ENDIF\n#ENDRANDOM\n",
         )
         .unwrap();
+        ["first.ogg", "second.ogg"].iter().for_each(|name| {
+            std::fs::write(dir.join(name), b"audio").unwrap();
+        });
         (0..16).for_each(|seed| {
             let meta = read_meta_with_seed(&path, seed).unwrap();
             let chart = load_with_seed(&meta.path, 0.0, meta.random_seed).unwrap();
@@ -1831,15 +1887,21 @@ mod tests {
     }
 
     #[test]
-    fn read_meta_has_no_preview_for_missing_or_empty_header() {
+    fn read_meta_has_no_preview_for_missing_empty_or_non_file_reference() {
         let dir = tempdir();
         let path = dir.join("song.bms");
-        ["#TITLE Song\n", "#TITLE Song\n#PREVIEW \n"]
-            .iter()
-            .for_each(|text| {
-                std::fs::write(&path, text).unwrap();
-                assert!(read_meta(&path).unwrap().preview.is_none());
-            });
+        std::fs::create_dir(dir.join("audio.wav")).unwrap();
+        [
+            "#TITLE Song\n",
+            "#TITLE Song\n#PREVIEW \n",
+            "#PREVIEW missing.wav\n",
+            "#PREVIEW audio.wav\n",
+        ]
+        .iter()
+        .for_each(|text| {
+            std::fs::write(&path, text).unwrap();
+            assert!(read_meta(&path).unwrap().preview.is_none());
+        });
         std::fs::remove_dir_all(dir).unwrap();
     }
 
