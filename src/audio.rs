@@ -2,9 +2,10 @@
 use crate::chart::Chart;
 #[cfg(test)]
 use crate::chart::VolumeTarget;
+use master::MasterBus;
 use rayon::prelude::*;
 use rodio::buffer::SamplesBuffer;
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Source};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::BufReader;
@@ -16,6 +17,8 @@ pub(crate) use volume::PlaybackVolume;
 mod file;
 #[cfg(test)]
 mod loading_tests;
+mod master;
+mod voice;
 mod volume;
 
 pub(crate) fn preview_output(enabled: bool) -> Option<(OutputStream, OutputStreamHandle)> {
@@ -71,10 +74,10 @@ impl Source for SharedSamples {
 
 pub struct SampleBank {
     _stream: Option<OutputStream>,
-    handle: Option<OutputStreamHandle>,
+    bus: Option<MasterBus>,
     samples: HashMap<u32, DecodedSample>,
     layers: HashMap<u32, Vec<u32>>,
-    playing: RefCell<HashMap<u32, Sink>>,
+    playing: RefCell<HashMap<u32, voice::VoiceHandle>>,
     slices: HashMap<u32, crate::chart::SampleSlice>,
     pub enabled: bool,
     /// Number of `wav_paths` entries that failed to decode. Surfaced on the
@@ -84,17 +87,15 @@ pub struct SampleBank {
 
 impl SampleBank {
     pub fn new(wav_paths: &HashMap<u32, PathBuf>) -> Self {
-        let (stream, handle, enabled) = silence_stderr(|| match OutputStream::try_default() {
-            Ok((s, h)) => (Some(s), Some(h), true),
-            Err(_) => (None, None, false),
-        });
+        let (stream, bus) = silence_stderr(open_master_bus).unzip();
+        let enabled = bus.is_some();
         let (samples, failures) = decode_all(wav_paths);
         Self {
             layers: HashMap::new(),
             playing: RefCell::new(HashMap::new()),
             slices: HashMap::new(),
             _stream: stream,
-            handle,
+            bus,
             samples,
             enabled,
             decode_failures: failures,
@@ -130,7 +131,7 @@ impl SampleBank {
             playing: RefCell::new(HashMap::new()),
             slices: HashMap::new(),
             _stream: None,
-            handle: None,
+            bus: None,
             samples: HashMap::new(),
             enabled: false,
             decode_failures: 0,
@@ -238,13 +239,12 @@ impl SampleBank {
     }
 
     fn play_synth_with_gain(&self, freq: f32, duration_ms: u32, gain: f32) {
-        let Some(handle) = &self.handle else {
+        let Some(bus) = &self.bus else {
             return;
         };
         let sr: u32 = 44_100;
         let data = synth_ping(freq, duration_ms, sr);
-        let buf = SamplesBuffer::new(1, sr, data);
-        let _ = handle.play_raw(buf.amplify(gain));
+        bus.add(SamplesBuffer::new(1, sr, data).amplify(gain));
     }
 
     pub fn play_hit(&self, lane: usize, keysound: Option<u32>, synth_mode: bool) {
@@ -275,19 +275,18 @@ impl SampleBank {
     }
 
     fn play_sample(&self, id: u32, gain: f32) {
-        let Some(handle) = &self.handle else {
+        let Some(bus) = &self.bus else {
             return;
         };
-        if let Ok(sink) = Sink::try_new(handle) {
-            self.append_sample(id, gain, sink);
+        if let Some(voice) = self.start_voice(id, gain) {
+            bus.add(voice);
         }
     }
 
-    fn append_sample(&self, id: u32, gain: f32, sink: Sink) {
-        if let Some(source) = self.sample_with_gain(id, gain) {
-            sink.append(source);
-            self.replace_sample(id, sink);
-        }
+    fn start_voice(&self, id: u32, gain: f32) -> Option<impl Source<Item = f32> + Send> {
+        let (source, handle) = voice::voice(self.sample_with_gain(id, gain)?);
+        self.replace_sample(id, handle);
+        Some(source)
     }
 
     fn sample_with_gain(&self, id: u32, gain: f32) -> Option<impl Source<Item = f32> + Send> {
@@ -296,8 +295,8 @@ impl SampleBank {
             .map(|sample| sample_source(sample, self.slices.get(&id)).amplify(gain))
     }
 
-    fn replace_sample(&self, id: u32, sink: Sink) {
-        if let Some(previous) = self.playing.borrow_mut().insert(id, sink) {
+    fn replace_sample(&self, id: u32, handle: voice::VoiceHandle) {
+        if let Some(previous) = self.playing.borrow_mut().insert(id, handle) {
             previous.stop();
         }
     }
@@ -315,6 +314,11 @@ impl SampleBank {
             None => HitSound::Silent,
         }
     }
+}
+
+fn open_master_bus() -> Option<(OutputStream, MasterBus)> {
+    let (stream, handle) = OutputStream::try_default().ok()?;
+    master::master_bus(&handle).map(|bus| (stream, bus))
 }
 
 fn sample_source(s: &DecodedSample, slice: Option<&crate::chart::SampleSlice>) -> SharedSamples {
@@ -1183,21 +1187,18 @@ mod tests {
 
     #[test]
     fn shared_slices_replace_playback_but_other_slices_keep_playing() {
+        let buffer = |v: f32| SamplesBuffer::new(1, 44100, vec![v; 1000]);
         let bank = SampleBank::silent();
-        let (first, mut first_output) = Sink::new_idle();
-        first.append(SamplesBuffer::new(1, 44100, vec![1.0; 1000]));
-        bank.replace_sample(1, first);
-        let (other, _other_output) = Sink::new_idle();
-        other.append(SamplesBuffer::new(1, 44100, vec![1.0; 1000]));
-        bank.replace_sample(2, other);
-        let (replacement, _replacement_output) = Sink::new_idle();
-        replacement.append(SamplesBuffer::new(1, 44100, vec![0.5; 1000]));
-        bank.replace_sample(1, replacement);
-        assert_eq!(first_output.next(), None);
-        let playing = bank.playing.borrow();
-        assert_eq!(playing.len(), 2);
-        assert!(!playing[&1].empty());
-        assert!(!playing[&2].empty());
+        let (mut first, first_handle) = voice::voice(buffer(1.0));
+        bank.replace_sample(1, first_handle);
+        let (mut other, other_handle) = voice::voice(buffer(1.0));
+        bank.replace_sample(2, other_handle);
+        let (mut replacement, replacement_handle) = voice::voice(buffer(0.5));
+        bank.replace_sample(1, replacement_handle);
+        assert_eq!(first.next(), None);
+        assert_eq!(bank.playing.borrow().len(), 2);
+        assert_eq!(other.next(), Some(1.0));
+        assert_eq!(replacement.next(), Some(0.5));
     }
 
     #[test]
@@ -1317,15 +1318,13 @@ mod tests {
         let mut bank = SampleBank::silent();
         let sample = sustained_sample();
         bank.samples.insert(1, sample);
-        let (first, mut first_output) = Sink::new_idle();
-        bank.append_sample(1, 1.0, first);
-        assert_eq!(first_output.next(), Some(0.5));
+        let mut first = bank.start_voice(1, 1.0).unwrap();
+        assert_eq!(first.next(), Some(0.5));
 
-        let (second, mut second_output) = Sink::new_idle();
-        bank.append_sample(1, 0.5, second);
+        let mut second = bank.start_voice(1, 0.5).unwrap();
 
-        assert!(first_output.skip(1000).take(100).all(|s| s == 0.0));
-        assert_eq!(second_output.next(), Some(0.25));
+        assert_eq!(first.next(), None);
+        assert_eq!(second.next(), Some(0.25));
         assert_eq!(bank.playing.borrow().len(), 1);
     }
 
@@ -1335,14 +1334,11 @@ mod tests {
         let sample = sustained_sample();
         bank.samples.insert(1, sample.clone());
         bank.samples.insert(2, sample);
-        let (first, mut first_output) = Sink::new_idle();
-        let (second, mut second_output) = Sink::new_idle();
+        let mut first = bank.start_voice(1, 1.0).unwrap();
+        let mut second = bank.start_voice(2, 1.0).unwrap();
 
-        bank.append_sample(1, 1.0, first);
-        bank.append_sample(2, 1.0, second);
-
-        assert_eq!(first_output.next(), Some(0.5));
-        assert_eq!(second_output.next(), Some(0.5));
+        assert_eq!(first.next(), Some(0.5));
+        assert_eq!(second.next(), Some(0.5));
         assert_eq!(bank.playing.borrow().len(), 2);
     }
 
