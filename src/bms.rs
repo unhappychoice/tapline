@@ -1821,7 +1821,11 @@ mod tests {
         let dir = tempdir();
         std::fs::create_dir(dir.join("audio")).unwrap();
         let audio = dir.join("audio/preview.wav");
-        std::fs::copy("tests/fixtures/tone.wav", &audio).unwrap();
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tone.wav"),
+            &audio,
+        )
+        .unwrap();
         let path = dir.join("song.bms");
         [
             "AUDIO\\PREVIEW.WAV",
