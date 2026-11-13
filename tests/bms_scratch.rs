@@ -23,10 +23,13 @@ fn scratch_input_judges_notes_and_returns_the_keysound() {
     [("#00116:02", 6, 5), ("#00119:01\n#00116:02", 8, 7)]
         .iter()
         .for_each(|(channels, count, scratch)| {
-            let mut game = Game::new(load(channels, *count));
-            assert_eq!(lane_for_key('a', &game.chart.keys), Some(*scratch));
-            assert_eq!(game.hit(*scratch, 4000.0), Some(2));
-            assert_eq!(game.perfect, 1);
+            ['a', 'A', ';'].into_iter().for_each(|key| {
+                let mut game = Game::new(load(channels, *count));
+                let lane = lane_for_key(key, &game.chart.keys).unwrap();
+                assert_eq!(lane, *scratch);
+                assert_eq!(game.hit(lane, 4000.0), Some(2));
+                assert_eq!(game.perfect, 1);
+            });
         });
 }
 
@@ -42,7 +45,7 @@ fn scratch_long_notes_and_mines_are_playable_on_both_sides() {
             assert!(chart.p2_notes.is_empty());
             assert!(chart.p2_mines.is_empty());
             let mut game = Game::new(chart);
-            [(*p1, 'A', 2), (*p2, '/', 3)]
+            [(*p1, 'A', 2), (*p2, ';', 3)]
                 .iter()
                 .for_each(|(lane, key, sound)| {
                     assert_eq!(lane_for_key(*key, &game.chart.keys), Some(*lane));
@@ -104,6 +107,16 @@ fn scratch_layouts_bind_every_lane_without_conflicts() {
     [6, 8, 12, 16].iter().for_each(|count| {
         let keys = keys_for(*count);
         assert_eq!(keys.len(), *count);
+        assert_eq!(lane_for_key('/', &keys), None);
+        assert_eq!(
+            lane_for_key('A', &keys),
+            Some(if *count >= 12 {
+                count / 2 - 1
+            } else {
+                count - 1
+            })
+        );
+        assert_eq!(lane_for_key(';', &keys), Some(count - 1));
         keys.iter().enumerate().for_each(|(lane, bindings)| {
             bindings
                 .iter()

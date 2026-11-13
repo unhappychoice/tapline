@@ -251,9 +251,13 @@ pub fn keys_for(lane_count: usize) -> Vec<Vec<char>> {
             lane_count
         };
         let mut keys = keys_for(side - 1);
-        keys.push(vec!['A']);
+        keys.push(if lane_count >= 12 {
+            vec!['A']
+        } else {
+            vec!['A', ';']
+        });
         if lane_count >= 12 {
-            let p2 = if side == 6 { "ZXCVB/" } else { "ZXCVBNM/" };
+            let p2 = if side == 6 { "ZXCVB;" } else { "ZXCVBNM;" };
             keys.extend(p2.chars().map(|key| vec![key]));
         }
         return keys;

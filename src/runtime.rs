@@ -807,67 +807,119 @@ mod tests {
 
     #[test]
     fn shared_lane_long_note_waits_for_the_last_key_release() {
-        [('f', 'j'), ('j', 'f')]
-            .into_iter()
-            .for_each(|(held, other)| {
-                [4000.0, 5000.0, 5100.0].into_iter().for_each(|release_ms| {
-                    let note = Note {
-                        time_ms: 3000.0,
-                        end_ms: Some(5000.0),
-                        lane: 2,
-                        ..Note::default()
-                    };
-                    let mut game = Game::new(base_chart(5, vec![note]));
-                    let mut state = LoopState::new(Vec::new());
-                    let bank = SampleBank::silent();
-                    let options = opts(false);
-                    let events = [
-                        (held, KeyEventKind::Press, 3000.0),
-                        (other, KeyEventKind::Press, 3500.0),
-                        (other, KeyEventKind::Repeat, 3550.0),
-                        (other.to_ascii_uppercase(), KeyEventKind::Release, 3600.0),
-                        (other, KeyEventKind::Release, 3700.0),
-                        ('s', KeyEventKind::Press, 3800.0),
-                        (held, KeyEventKind::Release, release_ms),
-                        (held, KeyEventKind::Release, release_ms + 10.0),
-                    ];
-                    events
-                        .into_iter()
-                        .enumerate()
-                        .for_each(|(index, (key, kind, now))| {
-                            handle_key(
-                                KeyCode::Char(key),
-                                kind,
-                                &mut game,
-                                &bank,
-                                &options,
-                                &mut state,
-                                now,
+        [
+            (5, 2, 'f', 'j'),
+            (5, 2, 'j', 'f'),
+            (6, 5, 'a', ';'),
+            (6, 5, ';', 'A'),
+            (8, 7, 'a', ';'),
+            (8, 7, ';', 'A'),
+        ]
+        .into_iter()
+        .for_each(|(count, lane, held, other)| {
+            [4000.0, 5000.0, 5100.0].into_iter().for_each(|release_ms| {
+                let note = Note {
+                    time_ms: 3000.0,
+                    end_ms: Some(5000.0),
+                    lane,
+                    ..Note::default()
+                };
+                let mut game = Game::new(base_chart(count, vec![note]));
+                let mut state = LoopState::new(Vec::new());
+                let bank = SampleBank::silent();
+                let options = opts(false);
+                let events = [
+                    (held, KeyEventKind::Press, 3000.0),
+                    (other, KeyEventKind::Press, 3500.0),
+                    (other, KeyEventKind::Repeat, 3550.0),
+                    (other.to_ascii_uppercase(), KeyEventKind::Release, 3600.0),
+                    (other, KeyEventKind::Release, 3700.0),
+                    ('s', KeyEventKind::Press, 3800.0),
+                    (held, KeyEventKind::Release, release_ms),
+                    (held, KeyEventKind::Release, release_ms + 10.0),
+                ];
+                events
+                    .into_iter()
+                    .enumerate()
+                    .for_each(|(index, (key, kind, now))| {
+                        handle_key(
+                            KeyCode::Char(key),
+                            kind,
+                            &mut game,
+                            &bank,
+                            &options,
+                            &mut state,
+                            now,
+                        );
+                        if index < 6 {
+                            assert!(!game.chart.notes[0].hit);
+                            assert_eq!(game.chart.notes[0].held_since, Some(3000.0));
+                            assert_eq!(
+                                (game.perfect, game.great, game.good, game.miss),
+                                (1, 0, 0, 0)
                             );
-                            if index < 6 {
-                                assert!(!game.chart.notes[0].hit);
-                                assert_eq!(game.chart.notes[0].held_since, Some(3000.0));
-                                assert_eq!(
-                                    (game.perfect, game.great, game.good, game.miss),
-                                    (1, 0, 0, 0)
-                                );
-                            } else {
-                                assert!(game.chart.notes[0].hit);
-                                assert_eq!(game.chart.notes[0].held_since, None);
-                                let expected = match release_ms {
-                                    4000.0 => (1, 0, 0, 1),
-                                    5000.0 => (2, 0, 0, 0),
-                                    _ => (1, 0, 1, 0),
-                                };
-                                assert_eq!(
-                                    (game.perfect, game.great, game.good, game.miss),
-                                    expected
-                                );
-                                assert_eq!(game.flash.last_judgment_at, release_ms);
-                            }
-                        });
-                });
+                        } else {
+                            assert!(game.chart.notes[0].hit);
+                            assert_eq!(game.chart.notes[0].held_since, None);
+                            let expected = match release_ms {
+                                4000.0 => (1, 0, 0, 1),
+                                5000.0 => (2, 0, 0, 0),
+                                _ => (1, 0, 1, 0),
+                            };
+                            assert_eq!((game.perfect, game.great, game.good, game.miss), expected);
+                            assert_eq!(game.flash.last_judgment_at, release_ms);
+                        }
+                    });
             });
+        });
+    }
+
+    #[test]
+    fn double_play_scratch_long_notes_release_independently() {
+        [12, 16].into_iter().for_each(|count| {
+            let lanes = [count / 2 - 1, count - 1];
+            let notes = lanes.map(|lane| Note {
+                time_ms: 3000.0,
+                end_ms: Some(5000.0),
+                lane,
+                ..Note::default()
+            });
+            let mut game = Game::new(base_chart(count, notes.to_vec()));
+            let mut state = LoopState::new(Vec::new());
+            let bank = SampleBank::silent();
+            let options = opts(false);
+            [
+                ('A', KeyEventKind::Press, 3000.0),
+                (';', KeyEventKind::Press, 3000.0),
+                ('a', KeyEventKind::Release, 4000.0),
+            ]
+            .into_iter()
+            .for_each(|(key, kind, now)| {
+                handle_key(
+                    KeyCode::Char(key),
+                    kind,
+                    &mut game,
+                    &bank,
+                    &options,
+                    &mut state,
+                    now,
+                );
+            });
+            assert!(game.chart.notes[0].hit);
+            assert_eq!(game.chart.notes[1].held_since, Some(3000.0));
+            assert_eq!((game.perfect, game.miss), (2, 1));
+            handle_key(
+                KeyCode::Char(';'),
+                KeyEventKind::Release,
+                &mut game,
+                &bank,
+                &options,
+                &mut state,
+                5000.0,
+            );
+            assert!(game.chart.notes[1].hit);
+            assert_eq!((game.perfect, game.miss), (3, 1));
+        });
     }
 
     #[test]
