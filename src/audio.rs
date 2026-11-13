@@ -1,4 +1,7 @@
-use crate::chart::{Chart, VolumeTarget};
+#[cfg(test)]
+use crate::chart::Chart;
+#[cfg(test)]
+use crate::chart::VolumeTarget;
 use rayon::prelude::*;
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
@@ -8,25 +11,17 @@ use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+pub(crate) use volume::PlaybackVolume;
 
 mod file;
 #[cfg(test)]
 mod loading_tests;
+mod volume;
 
 pub(crate) fn preview_output(enabled: bool) -> Option<(OutputStream, OutputStreamHandle)> {
     enabled
         .then(|| silence_stderr(OutputStream::try_default))
         .and_then(Result::ok)
-}
-
-pub fn playback_gain(chart: &Chart, target: VolumeTarget, time_ms: f64) -> f32 {
-    let volume = chart
-        .volume_events
-        .iter()
-        .rev()
-        .find(|event| event.target == target && event.time_ms <= time_ms)
-        .map_or(255, |event| event.volume);
-    chart.vol_wav.unwrap_or(100) as f32 / 100.0 * volume as f32 / 255.0
 }
 
 #[derive(Clone)]
@@ -1068,15 +1063,21 @@ mod tests {
     #[test]
     fn playback_gain_defaults_to_unity_and_applies_volwav() {
         let mut chart = Chart::default();
-        assert_eq!(playback_gain(&chart, VolumeTarget::Bgm, 0.0), 1.0);
+        assert_eq!(
+            PlaybackVolume::new(&chart).gain(VolumeTarget::Bgm, 0.0),
+            1.0
+        );
         chart.vol_wav = Some(50);
         [VolumeTarget::Bgm, VolumeTarget::Key]
             .into_iter()
             .for_each(|target| {
-                assert_eq!(playback_gain(&chart, target, 0.0), 0.5);
+                assert_eq!(PlaybackVolume::new(&chart).gain(target, 0.0), 0.5);
             });
         chart.vol_wav = Some(0);
-        assert_eq!(playback_gain(&chart, VolumeTarget::Key, 0.0), 0.0);
+        assert_eq!(
+            PlaybackVolume::new(&chart).gain(VolumeTarget::Key, 0.0),
+            0.0
+        );
     }
 
     #[test]
@@ -1092,21 +1093,33 @@ mod tests {
         [VolumeTarget::Bgm, VolumeTarget::Key]
             .into_iter()
             .for_each(|target| {
-                assert_eq!(playback_gain(&chart, target, 3099.0), 0.5);
+                assert_eq!(PlaybackVolume::new(&chart).gain(target, 3099.0), 0.5);
                 let level = if target == VolumeTarget::Bgm {
                     64.0
                 } else {
                     128.0
                 };
-                assert_eq!(playback_gain(&chart, target, 3100.0), 0.5 * level / 255.0);
-                assert_eq!(playback_gain(&chart, target, 4000.0), 0.5 * level / 255.0);
+                assert_eq!(
+                    PlaybackVolume::new(&chart).gain(target, 3100.0),
+                    0.5 * level / 255.0
+                );
+                assert_eq!(
+                    PlaybackVolume::new(&chart).gain(target, 4000.0),
+                    0.5 * level / 255.0
+                );
             });
-        assert_eq!(playback_gain(&chart, VolumeTarget::Bgm, 4100.0), 0.5);
         assert_eq!(
-            playback_gain(&chart, VolumeTarget::Key, 4100.0),
+            PlaybackVolume::new(&chart).gain(VolumeTarget::Bgm, 4100.0),
+            0.5
+        );
+        assert_eq!(
+            PlaybackVolume::new(&chart).gain(VolumeTarget::Key, 4100.0),
             0.5 * 128.0 / 255.0
         );
-        assert_eq!(playback_gain(&chart, VolumeTarget::Key, 6100.0), 0.5);
+        assert_eq!(
+            PlaybackVolume::new(&chart).gain(VolumeTarget::Key, 6100.0),
+            0.5
+        );
     }
 
     #[test]

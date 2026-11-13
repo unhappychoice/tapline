@@ -149,7 +149,7 @@ fn fire_scheduled_audio(
         && game.chart.bgm[state.bgm_cursor].time_ms <= horizon
     {
         let event = &game.chart.bgm[state.bgm_cursor];
-        let gain = audio::playback_gain(&game.chart, VolumeTarget::Bgm, event.time_ms);
+        let gain = game.volume.gain(VolumeTarget::Bgm, event.time_ms);
         bank.play_with_gain(event.keysound, gain);
         state.bgm_cursor += 1;
     }
@@ -157,7 +157,7 @@ fn fire_scheduled_audio(
         && state.auto_notes[state.note_snd_cursor].0 <= horizon
     {
         let (time_ms, lane, ks) = state.auto_notes[state.note_snd_cursor];
-        let gain = audio::playback_gain(&game.chart, VolumeTarget::Key, time_ms);
+        let gain = game.volume.gain(VolumeTarget::Key, time_ms);
         bank.play_hit_with_gain(lane, ks, opts.synth_mode, gain);
         state.note_snd_cursor += 1;
     }
@@ -223,7 +223,7 @@ fn handle_key(
                     state.pressed_keys.insert(c.to_ascii_uppercase());
                     let ks = game.hit(lane, now);
                     if !opts.auto_ks {
-                        let gain = audio::playback_gain(&game.chart, VolumeTarget::Key, now);
+                        let gain = game.volume.gain(VolumeTarget::Key, now);
                         bank.play_hit_with_gain(lane, ks, opts.synth_mode, gain);
                     }
                 }
@@ -652,6 +652,41 @@ mod tests {
             state.bgm_cursor, 2,
             "should have fired the first two BGM events"
         );
+    }
+
+    #[test]
+    fn preplayed_audio_uses_event_time_for_volume() {
+        for target in [VolumeTarget::Bgm, VolumeTarget::Key] {
+            let mut chart = chart_with_bgm(vec![]);
+            chart.vol_wav = Some(50);
+            chart.volume_events = vec![crate::chart::VolumeEvent {
+                time_ms: 1000.0,
+                target,
+                volume: 128,
+            }];
+            chart.bgm = if target == VolumeTarget::Bgm {
+                vec![BgmEvent {
+                    time_ms: 1050.0,
+                    keysound: 1,
+                }]
+            } else {
+                vec![]
+            };
+            let game = game::Game::new(chart);
+            let auto_notes = if target == VolumeTarget::Key {
+                vec![(1050.0, 0, Some(1))]
+            } else {
+                vec![]
+            };
+            let mut state = LoopState::new(auto_notes);
+            let mut options = opts(true);
+            options.audio_lead_ms = 250.0;
+            fire_scheduled_audio(&SampleBank::silent(), &options, &mut state, &game, 800.0);
+            assert_eq!(
+                game.volume.last_query.get(),
+                Some((target, 1050.0, 0.5 * 128.0 / 255.0))
+            );
+        }
     }
 
     #[test]
