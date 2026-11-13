@@ -440,7 +440,9 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
                 let mut output = Vec::new();
                 draw(&mut output, &delayed, 1750.0, 18, 4, 16).unwrap();
                 let pixel = delayed.bga.frame(&delayed, 1750.0).get_pixel(32, 32).0;
-                assert!(pixel[0] < 20, "Delayed playback displayed an old red frame");
+                if layer == BgaLayer::Base {
+                    assert!(pixel[0] > 240 || pixel[1] > 240, "Video frame disappeared");
+                }
                 if pixel[1] > 240 {
                     break;
                 }

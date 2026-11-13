@@ -83,10 +83,7 @@ impl Video {
             };
             self.current = Some(frame);
         }
-        self.current
-            .as_ref()
-            .filter(|(index, _, eof)| *index == target || *eof)
-            .map(|(_, frame, _)| frame.clone())
+        self.current.as_ref().map(|(_, frame, _)| frame.clone())
     }
 }
 
@@ -110,6 +107,25 @@ mod tests {
     }
 
     #[test]
+    fn delayed_frames_hold_until_a_new_frame_arrives() {
+        let (sender, frames) = sync_channel(2);
+        let mut video = video_with_frames(frames);
+        assert!(video.frame(0.0).is_none());
+        assert!(video.frame(34.0).is_none());
+
+        let first = RgbaImage::new(SIZE, SIZE);
+        sender.send((0, first.clone(), false)).unwrap();
+        assert_eq!(video.frame(0.0), Some(first.clone()));
+        assert_eq!(video.frame(34.0), Some(first.clone()));
+        assert_eq!(video.frame(34.0), Some(first));
+
+        let second = RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
+        sender.send((1, second.clone(), false)).unwrap();
+        assert_eq!(video.frame(34.0), Some(second.clone()));
+        assert_eq!(video.frame(100.0), Some(second));
+    }
+
+    #[test]
     fn frames_follow_elapsed_time_and_hold_at_eof() {
         let (sender, frames) = sync_channel(2);
         sender.send((0, RgbaImage::new(SIZE, SIZE), false)).unwrap();
@@ -121,17 +137,7 @@ mod tests {
             ))
             .unwrap();
         drop(sender);
-        let child = Command::new("rustc")
-            .arg("--version")
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap();
-        let mut video = Video {
-            child,
-            frames,
-            current: None,
-            target: Arc::new(AtomicU64::new(0)),
-        };
+        let mut video = video_with_frames(frames);
         assert_eq!(video.frame(0.0).unwrap().get_pixel(0, 0).0, [0; 4]);
         assert_eq!(video.frame(32.0).unwrap().get_pixel(0, 0).0, [0; 4]);
         assert_eq!(video.frame(34.0).unwrap().get_pixel(0, 0).0, [1, 2, 3, 255]);
@@ -139,5 +145,19 @@ mod tests {
             video.frame(10000.0).unwrap().get_pixel(0, 0).0,
             [1, 2, 3, 255]
         );
+    }
+
+    fn video_with_frames(frames: Receiver<(u64, RgbaImage, bool)>) -> Video {
+        let child = Command::new("rustc")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        Video {
+            child,
+            frames,
+            current: None,
+            target: Arc::new(AtomicU64::new(0)),
+        }
     }
 }
