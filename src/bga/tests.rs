@@ -41,6 +41,7 @@ fn game() -> Game {
         HashMap::new(),
         RefCell::default(),
         timeline::Timeline::new(&game.chart.bga),
+        effect_timeline::Timeline::new(&game.chart.bga_extensions),
     );
     game.bga
         .0
@@ -190,6 +191,7 @@ fn extended_layers_opacity_and_poor_modes() {
         time_ms: 50.0,
         effect: Effect::Opacity(BgaLayer::Overlay2, 128),
     });
+    game.bga.4 = effect_timeline::Timeline::new(&game.chart.bga_extensions);
     assert_eq!(
         game.bga.frame(&game, 0.0).get_pixel(1, 1).0,
         [0, 0, 255, 255]
@@ -317,6 +319,7 @@ fn argb_and_opacity_update_the_same_layer_state() {
             effect: Effect::Opacity(BgaLayer::Base, 255),
         },
     ];
+    game.bga.4 = effect_timeline::Timeline::new(&game.chart.bga_extensions);
     assert_eq!(
         game.bga.frame(&game, 0.0).get_pixel(1, 1).0[..3],
         [128, 0, 0]
@@ -326,6 +329,7 @@ fn argb_and_opacity_update_the_same_layer_state() {
         [255, 0, 0, 255]
     );
     game.chart.bga_extensions.argb.insert(1, [255, 255, 0, 0]);
+    game.bga.4 = effect_timeline::Timeline::new(&game.chart.bga_extensions);
     assert_eq!(
         game.bga.frame(&game, 50.0).get_pixel(1, 1).0,
         [0, 0, 0, 255]
@@ -447,9 +451,11 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
                 time_ms: 1750.0,
                 effect: Effect::Opacity(layer, 128),
             });
+            delayed.bga.4 = effect_timeline::Timeline::new(&delayed.chart.bga_extensions);
             let pixel = delayed.bga.frame(&delayed, 1750.0).get_pixel(32, 32).0;
             assert!((120..=128).contains(&pixel[1]));
             delayed.chart.bga_extensions.events.clear();
+            delayed.bga.4 = effect_timeline::Timeline::new(&delayed.chart.bga_extensions);
             if layer == BgaLayer::Poor {
                 delayed.chart.bga_extensions.poor_mode = 1;
                 assert!(delayed.bga.frame(&delayed, 1750.0).get_pixel(32, 32)[1] > 240);

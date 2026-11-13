@@ -28,6 +28,7 @@ pub struct FlashState {
 }
 
 pub struct Game {
+    pub(crate) volume: crate::audio::PlaybackVolume,
     pub(crate) scroll: crate::scroll::ScrollMap,
     pub chart: Chart,
     pub gauge: Gauge,
@@ -132,7 +133,8 @@ impl Game {
             .iter()
             .map(|note| JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms)).good)
             .fold(0.0, f64::max);
-        let mut bga = crate::bga::ImageBank::load(&chart.bmp_paths, &chart.bga);
+        let mut bga =
+            crate::bga::ImageBank::load(&chart.bmp_paths, &chart.bga, &chart.bga_extensions);
         bga.prepare_crops(&chart);
         let mut events = chart.notes.clone();
         events.extend(chart.invisible_notes.iter().map(|note| Note {
@@ -150,6 +152,7 @@ impl Game {
         });
         Self {
             scroll: crate::scroll::ScrollMap::new(&chart.scroll),
+            volume: crate::audio::PlaybackVolume::new(&chart),
             gauge: Gauge::new(GaugeKind::Normal, &chart),
             completed: false,
             next_miss: 0,

@@ -10,6 +10,7 @@ use image::{imageops, Rgba, RgbaImage};
 use std::{cell::RefCell, collections::HashMap, io::Write, path::PathBuf};
 
 mod crops;
+mod effect_timeline;
 mod timeline;
 mod video;
 
@@ -28,10 +29,15 @@ pub struct ImageBank(
     HashMap<u32, PathBuf>,
     RefCell<[Playback; 4]>,
     timeline::Timeline,
+    effect_timeline::Timeline,
 );
 
 impl ImageBank {
-    pub fn load(paths: &HashMap<u32, PathBuf>, events: &[crate::chart::BgaEvent]) -> Self {
+    pub fn load(
+        paths: &HashMap<u32, PathBuf>,
+        events: &[crate::chart::BgaEvent],
+        extensions: &Extensions,
+    ) -> Self {
         Self(
             paths
                 .iter()
@@ -62,6 +68,7 @@ impl ImageBank {
                 .collect(),
             RefCell::default(),
             timeline::Timeline::new(events),
+            effect_timeline::Timeline::new(extensions),
         )
     }
 
@@ -115,23 +122,12 @@ impl ImageBank {
             let Some(image) = self.layer(game, layer, now_ms) else {
                 continue;
             };
-            let mut alpha = 255;
-            let mut key = (layer != BgaLayer::Base
-                && (layer != BgaLayer::Poor || ext.poor_mode == 1))
-                .then_some(ColorKey::Rgb([0, 0, 0]));
-            for event in ext.events.iter().take_while(|e| e.time_ms <= now_ms) {
-                match event.effect {
-                    Effect::Opacity(target, value) if target == layer => alpha = value,
-                    Effect::Color(target, id) if target == layer => {
-                        if let Some(&[a, r, g, b]) = ext.argb.get(&id) {
-                            alpha = a;
-                            key = Some(ColorKey::Rgb([r, g, b]));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            composite(&mut frame, &image, alpha, key);
+            let state = self.4.state(layer, now_ms);
+            let key = state.key.or_else(|| {
+                (layer != BgaLayer::Base && (layer != BgaLayer::Poor || ext.poor_mode == 1))
+                    .then_some([0, 0, 0])
+            });
+            composite(&mut frame, &image, state.alpha, key.map(ColorKey::Rgb));
         }
         if let Some((id, _, start)) = game.bga_switch.active {
             if let Some(switch) = ext.switches.get(&id) {
