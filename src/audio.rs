@@ -4,11 +4,14 @@ use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+mod file;
+#[cfg(test)]
+mod loading_tests;
 
 pub(crate) fn preview_output(enabled: bool) -> Option<(OutputStream, OutputStreamHandle)> {
     enabled
@@ -338,7 +341,7 @@ enum HitSound {
 }
 
 fn decode_all(wav_paths: &HashMap<u32, PathBuf>) -> (HashMap<u32, DecodedSample>, usize) {
-    decode_all_with(wav_paths, decode)
+    decode_all_with(wav_paths, |path| decode(path))
 }
 
 fn decode_all_with(
@@ -417,8 +420,8 @@ fn synth_ping(freq: f32, duration_ms: u32, sample_rate: u32) -> Vec<f32> {
         .collect()
 }
 
-fn decode(path: &PathBuf) -> anyhow::Result<DecodedSample> {
-    let file = BufReader::new(File::open(path)?);
+fn decode(path: &std::path::Path) -> anyhow::Result<DecodedSample> {
+    let file = BufReader::new(file::open(path)?);
     let decoder = Decoder::new(file)?;
     let channels = decoder.channels();
     let sample_rate = decoder.sample_rate();
