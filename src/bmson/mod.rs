@@ -1,4 +1,5 @@
 mod layers;
+mod metadata;
 mod model;
 mod timing;
 
@@ -15,41 +16,24 @@ pub fn is_bmson(path: &Path) -> bool {
 }
 
 pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
-    let data: Bmson = serde_json::from_slice(&crate::chart_file::read(path)?)
-        .with_context(|| format!("Invalid bmson: {}", path.display()))?;
-    ensure!(
-        data.version == "1.0.0",
-        "Unsupported bmson version: {}",
-        data.version
-    );
+    let data = read(path)?;
     let timeline = Timeline::new(&data, lead_in_ms)?;
+    let meta = metadata::convert(path, &data.info)?;
     let mode = data.info.mode_hint.as_deref().unwrap_or("beat-7k");
-    let lanes = match mode {
-        "beat-7k" | "generic-7keys" => 7,
-        "beat-14k" | "generic-14keys" => 14,
-        "beat-5k" | "popn-5k" | "generic-5keys" => 5,
-        "generic-4keys" => 4,
-        _ => anyhow::bail!("Unsupported bmson mode: {mode}"),
-    };
     let mut chart = Chart {
         asset_dir: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
-        title: data.info.title.clone(),
-        subtitle: data.info.subtitle.clone(),
-        artist: data.info.artist.clone(),
-        subartist: data.info.subartists.join(", "),
-        genre: data.info.genre.clone(),
-        bpm: data.info.init_bpm,
+        title: meta.title,
+        subtitle: meta.subtitle,
+        artist: meta.artist,
+        subartist: meta.subartist,
+        genre: meta.genre,
+        bpm: meta.bpm,
         stagefile: data.info.eyecatch_image.clone().unwrap_or_default(),
-        banner: data.info.banner_image.clone().unwrap_or_default(),
-        playlevel: data.info.level,
-        difficulty: data.info.chart_name.as_deref().and_then(|name| {
-            ["BEGINNER", "NORMAL", "HYPER", "ANOTHER", "INSANE"]
-                .iter()
-                .position(|n| name.eq_ignore_ascii_case(n))
-                .map(|i| i as u8 + 1)
-        }),
-        lane_count: lanes,
-        keys: keys_for(lanes),
+        banner: meta.banner,
+        playlevel: meta.playlevel,
+        difficulty: meta.difficulty,
+        lane_count: meta.lane_count,
+        keys: keys_for(meta.lane_count),
         ..Chart::default()
     };
     let dir = path.parent().unwrap_or(Path::new("."));
@@ -89,23 +73,20 @@ pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
 }
 
 pub fn read_meta(path: &Path) -> Result<ChartMeta> {
-    let c = load(path, 0.0)?;
-    Ok(ChartMeta {
-        path: path.into(),
-        random_seed: 0,
-        preview: None,
-        title: c.title,
-        subtitle: c.subtitle,
-        artist: c.artist,
-        subartist: c.subartist,
-        genre: c.genre,
-        bpm: c.bpm,
-        playlevel: c.playlevel,
-        difficulty: c.difficulty,
-        lane_count: c.lane_count,
-        banner: c.banner,
-        comment: c.comment,
-    })
+    let data = read(path)?;
+    Timeline::new(&data, 0.0)?;
+    metadata::convert(path, &data.info)
+}
+
+fn read(path: &Path) -> Result<Bmson> {
+    let data: Bmson = serde_json::from_slice(&crate::chart_file::read(path)?)
+        .with_context(|| format!("Invalid bmson: {}", path.display()))?;
+    ensure!(
+        data.version == "1.0.0",
+        "Unsupported bmson version: {}",
+        data.version
+    );
+    Ok(data)
 }
 
 fn add_channel(
@@ -115,6 +96,8 @@ fn add_channel(
     dir: &Path,
     mode: &str,
 ) -> Result<()> {
+    #[cfg(test)]
+    tests::CHANNEL_BUILDS.with(|count| count.set(count.get() + 1));
     let direct = asset_path(dir, &channel.name)?;
     let path = std::iter::once(direct.clone())
         .chain(["wav", "ogg", "mp3"].map(|ext| direct.with_extension(ext)))
@@ -173,6 +156,8 @@ fn lane(x: u32, count: usize, mode: &str) -> Option<usize> {
 }
 
 fn asset_path(dir: &Path, name: &str) -> Result<PathBuf> {
+    #[cfg(test)]
+    tests::ASSET_RESOLUTIONS.with(|count| count.set(count.get() + 1));
     let normalized = name.replace('\\', "/");
     let path = Path::new(&normalized);
     ensure!(
@@ -184,3 +169,6 @@ fn asset_path(dir: &Path, name: &str) -> Result<PathBuf> {
     );
     Ok(dir.join(path))
 }
+
+#[cfg(test)]
+mod tests;
