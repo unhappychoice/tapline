@@ -790,6 +790,57 @@ mod tests {
     }
 
     #[test]
+    fn trailing_song_text_is_drawn_before_completion_with_and_without_audio() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "target/tapline-trailing-text-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("song.bms");
+        let wav = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tone.wav");
+        std::fs::copy(wav, dir.join("tone.wav")).unwrap();
+        std::fs::write(
+            &path,
+            "#BPM 120\n#WAV01 tone.wav\n#00001:01\n#TEXT01 Ending\n#00599:01\n",
+        )
+        .unwrap();
+        let chart = crate::bms::load(&path, 0.0).unwrap();
+        let mut bank = crate::audio::SampleBank::new(&chart.wav_paths);
+        assert_eq!(bank.sample_count(), 1);
+        assert_eq!(chart.text_events[0].time_ms, 10000.0);
+        assert!(chart.notes.is_empty());
+        assert!(chart.bga.is_empty());
+        [false, true].into_iter().for_each(|enabled| {
+            bank.enabled = enabled;
+            [false, true].into_iter().for_each(|auto_ks| {
+                let mut loaded = crate::bms::load(&path, 0.0).unwrap();
+                loaded.duration_ms = bank.chart_duration_ms(&loaded, auto_ks, 0.0);
+                assert_eq!(
+                    loaded.duration_ms,
+                    if enabled { 12500.0 } else { chart.duration_ms }
+                );
+                let mut game = Game::new(loaded);
+                let mut saw_ending = false;
+                (0..=game.chart.duration_ms.ceil() as u64 + 16)
+                    .step_by(16)
+                    .try_for_each(|now| {
+                        if game.advance_completion(now as f64) {
+                            return Err(());
+                        }
+                        let mut out = Vec::new();
+                        draw_song_text(&mut out, &game.chart.text_events, now as f64, 80).unwrap();
+                        saw_ending |= String::from_utf8(out).unwrap().contains("Ending");
+                        Ok(())
+                    })
+                    .unwrap_err();
+                assert!(saw_ending);
+                assert!(game.completed);
+            });
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn song_text_switches_at_event_times_and_can_be_cleared() {
         let events = vec![
             TextEvent {
