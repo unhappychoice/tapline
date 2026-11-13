@@ -17,3 +17,4 @@ pub mod sample_settings;
 mod artwork;
 mod assets;
 mod preview;
+mod scroll;

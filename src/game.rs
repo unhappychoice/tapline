@@ -28,6 +28,7 @@ pub struct FlashState {
 }
 
 pub struct Game {
+    pub(crate) scroll: crate::scroll::ScrollMap,
     pub chart: Chart,
     pub gauge: Gauge,
     pub completed: bool,
@@ -96,7 +97,8 @@ impl JudgmentWindows {
 }
 
 impl Game {
-    /// Notes must be sorted by time; their timestamps, lanes, and order stay fixed during play.
+    /// Notes and scroll/speed events must be time-sorted. Note timestamps, lanes,
+    /// order, and scroll events stay fixed during play.
     pub fn new(chart: Chart) -> Self {
         let lane_count = chart.lane_count;
         let mut lane_notes = vec![Vec::new(); lane_count];
@@ -133,6 +135,7 @@ impl Game {
             }
         });
         Self {
+            scroll: crate::scroll::ScrollMap::new(&chart.scroll),
             gauge: Gauge::new(GaugeKind::Normal, &chart),
             completed: false,
             next_miss: 0,
