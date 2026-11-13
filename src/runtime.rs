@@ -1,9 +1,10 @@
 use crate::chart::VolumeTarget;
+use crate::screen::Screen;
 use crate::{audio, chart, cli::Args, game, render};
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
-    execute, terminal,
+    execute, queue, terminal,
 };
 use std::collections::HashSet;
 use std::io::Stdout;
@@ -79,6 +80,7 @@ struct LoopState {
     note_snd_cursor: usize,
     prev_mode: u8,
     auto_notes: Vec<(f64, usize, Option<u32>)>,
+    screen: Screen,
 }
 
 impl LoopState {
@@ -90,6 +92,7 @@ impl LoopState {
             note_snd_cursor: 0,
             prev_mode: 0,
             auto_notes,
+            screen: Screen::new(),
         }
     }
 }
@@ -117,24 +120,38 @@ fn draw_frame(
     now: f64,
 ) -> Result<()> {
     fire_scheduled_audio(bank, opts, state, game, now);
+    let (cols, rows) = terminal::size()?;
+    state.screen.resize(cols, rows);
     let mode: u8 = if now < opts.countdown_ms { 1 } else { 2 };
     if mode != state.prev_mode {
-        execute!(out, terminal::Clear(terminal::ClearType::All))?;
+        queue!(state.screen, terminal::Clear(terminal::ClearType::All))?;
         state.prev_mode = mode;
     }
+    draw_mode(&mut state.screen, game, bank, opts, mode, now)?;
+    state.screen.present(out)?;
+    Ok(())
+}
+
+fn draw_mode(
+    screen: &mut Screen,
+    game: &mut game::Game,
+    bank: &audio::SampleBank,
+    opts: &PlayOptions,
+    mode: u8,
+    now: f64,
+) -> Result<()> {
     if mode == 1 {
-        render::draw_intro_full(
-            out,
+        return render::draw_intro_full(
+            screen,
             game,
             opts.countdown_ms - now,
             bank.enabled,
             bank.sample_count(),
             bank.decode_failures,
-        )?;
-        return Ok(());
+        );
     }
     game.check_misses(now);
-    render::draw(out, game, now)
+    render::draw(screen, game, now)
 }
 
 fn fire_scheduled_audio(

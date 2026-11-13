@@ -8,6 +8,7 @@ pub mod game;
 pub mod gauge;
 pub mod render;
 pub mod runtime;
+pub mod screen;
 pub mod select;
 
 mod terminal_text;
