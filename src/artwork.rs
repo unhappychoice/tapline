@@ -3,7 +3,7 @@ use crossterm::{
     cursor, queue,
     style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
 };
-use image::{DynamicImage, ImageReader};
+use image::{DynamicImage, ImageReader, RgbaImage};
 use std::{
     cell::RefCell,
     fs::OpenOptions,
@@ -12,7 +12,9 @@ use std::{
 };
 
 thread_local! {
-    static CACHE: RefCell<Option<(PathBuf, Option<DynamicImage>)>> = const { RefCell::new(None) };
+    static CACHE: RefCell<Option<ArtworkCache>> = const { RefCell::new(None) };
+    #[cfg(test)]
+    static RESIZE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Draw an image with two vertical pixels per terminal cell, preserving its aspect ratio.
@@ -29,17 +31,45 @@ pub(crate) fn draw(
     let path = dir.join(name.replace('\\', "/"));
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if cache.as_ref().map(|entry| &entry.0) != Some(&path) {
+        if cache.as_ref().map(|entry| &entry.path) != Some(&path) {
             let image = AssetIndex::new(dir)
                 .resolve_path(name, &[])
                 .and_then(|path| load_image(path));
-            *cache = Some((path, image));
+            *cache = Some(ArtworkCache {
+                path,
+                image,
+                resized: None,
+            });
         }
-        match cache.as_ref().and_then(|entry| entry.1.as_ref()) {
+        match cache
+            .as_mut()
+            .and_then(|entry| entry.pixels(area.2, area.3))
+        {
             Some(image) => draw_pixels(out, image, area),
             None => Ok(()),
         }
     })
+}
+
+struct ArtworkCache {
+    path: PathBuf,
+    image: Option<DynamicImage>,
+    resized: Option<((u16, u16), RgbaImage)>,
+}
+
+impl ArtworkCache {
+    fn pixels(&mut self, width: u16, height: u16) -> Option<&RgbaImage> {
+        let image = self.image.as_ref()?;
+        if self.resized.as_ref().map(|entry| entry.0) != Some((width, height)) {
+            let pixels = image
+                .thumbnail(u32::from(width), u32::from(height) * 2)
+                .to_rgba8();
+            #[cfg(test)]
+            RESIZE_COUNT.with(|count| count.set(count.get() + 1));
+            self.resized = Some(((width, height), pixels));
+        }
+        self.resized.as_ref().map(|entry| &entry.1)
+    }
 }
 
 fn load_image(path: &Path) -> Option<DynamicImage> {
@@ -67,12 +97,9 @@ fn load_image(path: &Path) -> Option<DynamicImage> {
 
 fn draw_pixels(
     out: &mut impl Write,
-    image: &DynamicImage,
-    (x, y, width, height): (u16, u16, u16, u16),
+    pixels: &RgbaImage,
+    (x, y, width, _height): (u16, u16, u16, u16),
 ) -> std::io::Result<()> {
-    let pixels = image
-        .thumbnail(u32::from(width), u32::from(height) * 2)
-        .to_rgba8();
     let left = x + (width - pixels.width() as u16) / 2;
     for row in (0..pixels.height()).step_by(2) {
         queue!(out, cursor::MoveTo(left, y + (row / 2) as u16))?;
@@ -108,6 +135,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reuses_resized_pixels_and_refreshes_for_image_and_area_changes() {
+        crossterm::style::force_color_output(true);
+        CACHE.with(|cache| *cache.borrow_mut() = None);
+        RESIZE_COUNT.with(|count| count.set(0));
+        let dir =
+            std::env::temp_dir().join(format!("tapline-artwork-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = DynamicImage::ImageRgba8(RgbaImage::from_fn(120, 90, |_, _| {
+            image::Rgba([200, 100, 50, 128])
+        }));
+        let second = DynamicImage::ImageRgba8(RgbaImage::from_fn(90, 120, |_, _| {
+            image::Rgba([0, 255, 0, 255])
+        }));
+        first.save(dir.join("first.png")).unwrap();
+        second.save(dir.join("second.png")).unwrap();
+        let cases = [
+            ("first.png", &first, (0, 0, 8, 3), 1),
+            ("first.png", &first, (0, 0, 8, 3), 1),
+            ("first.png", &first, (5, 7, 8, 3), 1),
+            ("first.png", &first, (5, 7, 4, 3), 2),
+            ("first.png", &first, (5, 7, 4, 1), 3),
+            ("second.png", &second, (5, 7, 4, 1), 4),
+            ("second.png", &second, (5, 7, 4, 1), 4),
+            ("first.png", &first, (0, 0, 8, 3), 5),
+        ];
+        cases.iter().for_each(|(name, image, area, count)| {
+            let mut actual = Vec::new();
+            draw(&mut actual, &dir, name, *area).unwrap();
+            let pixels = image
+                .thumbnail(u32::from(area.2), u32::from(area.3) * 2)
+                .to_rgba8();
+            let mut expected = Vec::new();
+            draw_pixels(&mut expected, &pixels, *area).unwrap();
+            assert_eq!(actual, expected);
+            RESIZE_COUNT.with(|resizes| assert_eq!(resizes.get(), *count));
+        });
+        let mut missing = Vec::new();
+        draw(&mut missing, &dir, "missing.png", (0, 0, 8, 3)).unwrap();
+        draw(&mut missing, &dir, "missing.png", (0, 0, 4, 1)).unwrap();
+        assert!(missing.is_empty());
+        RESIZE_COUNT.with(|count| assert_eq!(count.get(), 5));
+        let mut restored = Vec::new();
+        draw(&mut restored, &dir, "first.png", (0, 0, 8, 3)).unwrap();
+        assert!(!restored.is_empty());
+        RESIZE_COUNT.with(|count| assert_eq!(count.get(), 6));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn blends_alpha_and_pads_an_odd_pixel_height_with_black() {
+        crossterm::style::force_color_output(true);
+        let pixels = RgbaImage::from_pixel(1, 1, image::Rgba([200, 100, 50, 128]));
+        let mut out = Vec::new();
+        draw_pixels(&mut out, &pixels, (0, 0, 3, 1)).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("\x1b[1;2H"));
+        assert!(output.contains("38;2;100;50;25"));
+        assert!(output.contains("48;5;0m"));
+        assert_eq!(output.matches('▀').count(), 1);
+    }
+
+    #[test]
     fn renders_pixels_as_colored_half_blocks_within_area() {
         crossterm::style::force_color_output(true);
         let image = DynamicImage::ImageRgba8(image::RgbaImage::from_fn(2, 2, |_, y| {
@@ -118,7 +207,7 @@ mod tests {
             }
         }));
         let mut out = Vec::new();
-        draw_pixels(&mut out, &image, (0, 3, 4, 1)).unwrap();
+        draw_pixels(&mut out, &image.to_rgba8(), (0, 3, 4, 1)).unwrap();
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("\x1b[4;2H"));
         assert!(output.contains("38;2;255;0;0"));
