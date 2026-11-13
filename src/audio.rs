@@ -203,13 +203,19 @@ impl SampleBank {
             .iter()
             .map(|note| note.time_ms + 2500.0)
             .fold(0.0, f64::max);
-        let bga_end = chart
+        let visual_end = chart
             .bga
             .iter()
-            .map(|event| event.time_ms + 2500.0)
+            .map(|event| event.time_ms)
+            .chain(chart.text_events.iter().map(|event| event.time_ms))
+            .map(|time_ms| time_ms + 2500.0)
             .fold(0.0, f64::max);
         audio_end
-            .map(|end| end.max(judgment_end + 32.0).max(invisible_end).max(bga_end))
+            .map(|end| {
+                end.max(judgment_end + 32.0)
+                    .max(invisible_end)
+                    .max(visual_end)
+            })
             .unwrap_or(chart.duration_ms)
     }
 
