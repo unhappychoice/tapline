@@ -1109,8 +1109,14 @@ mod tests {
     #[test]
     fn layers_resolve_all_available_slices_even_if_one_is_missing() {
         let (samples, _) = decode_all(&HashMap::from([
-            (1, PathBuf::from("tests/fixtures/tone.wav")),
-            (2, PathBuf::from("tests/fixtures/tone.wav")),
+            (
+                1,
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tone.wav"),
+            ),
+            (
+                2,
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tone.wav"),
+            ),
         ]));
         let bank = SampleBank {
             samples,
@@ -1210,8 +1216,11 @@ mod tests {
 
     #[test]
     fn bmson_fixture_decodes_shared_audio_for_all_slices() {
-        let chart =
-            crate::bmson::load(std::path::Path::new("tests/fixtures/minimal.bmson"), 0.0).unwrap();
+        let chart = crate::bmson::load(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/minimal.bmson"),
+            0.0,
+        )
+        .unwrap();
         let (samples, failures) = decode_all(&chart.wav_paths);
         assert_eq!(failures, 0);
         assert_eq!(samples.len(), 3);
