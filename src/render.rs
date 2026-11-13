@@ -337,11 +337,15 @@ fn format_difficulty_badge(game: &Game) -> String {
 }
 
 fn song_text_at(events: &[TextEvent], now_ms: f64) -> Option<String> {
-    events
-        .iter()
-        .rev()
-        .find(|event| event.time_ms <= now_ms)
-        .map(|event| crate::terminal_text::sanitize(&event.text))
+    #[cfg(test)]
+    tests::SONG_TEXT_COMPARISONS.set(0);
+    let end = events.partition_point(|event| {
+        #[cfg(test)]
+        tests::SONG_TEXT_COMPARISONS.set(tests::SONG_TEXT_COMPARISONS.get() + 1);
+        event.time_ms <= now_ms
+    });
+    end.checked_sub(1)
+        .map(|index| crate::terminal_text::sanitize(&events[index].text))
 }
 
 fn draw_song_text(
@@ -767,6 +771,10 @@ mod tests {
     use crate::chart::{keys_for, Chart, Note};
     use crate::game::Game;
 
+    thread_local! {
+        pub(super) static SONG_TEXT_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
     fn base_chart(lane_count: usize) -> Chart {
         Chart {
             title: "Song".into(),
@@ -861,7 +869,56 @@ mod tests {
         assert_eq!(song_text_at(&events, 100.0).as_deref(), Some("First"));
         assert_eq!(song_text_at(&events, 199.0).as_deref(), Some("First"));
         assert_eq!(song_text_at(&events, 200.0).as_deref(), Some("Second"));
+        assert_eq!(song_text_at(&events, 299.0).as_deref(), Some("Second"));
+        assert_eq!(song_text_at(&events, 300.0).as_deref(), Some(""));
         assert_eq!(song_text_at(&events, 400.0).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn song_text_uses_last_definition_at_the_same_time() {
+        let events: Vec<_> = [
+            (100.0, "First"),
+            (100.0, "Last"),
+            (200.0, "Text"),
+            (200.0, ""),
+        ]
+        .into_iter()
+        .map(|(time_ms, text)| TextEvent {
+            time_ms,
+            text: text.into(),
+        })
+        .collect();
+        [
+            (99.0, None),
+            (100.0, Some("Last")),
+            (199.0, Some("Last")),
+            (200.0, Some("")),
+            (300.0, Some("")),
+            (100.0, Some("Last")),
+        ]
+        .into_iter()
+        .for_each(|(now, expected)| assert_eq!(song_text_at(&events, now).as_deref(), expected));
+    }
+
+    #[test]
+    fn song_text_search_comparisons_grow_logarithmically_with_future_events() {
+        assert_eq!(song_text_at(&[], 0.0), None);
+        assert_eq!(SONG_TEXT_COMPARISONS.get(), 0);
+        [1_usize, 100, 100_000].into_iter().for_each(|count| {
+            let events: Vec<_> = (0..count)
+                .map(|index| TextEvent {
+                    time_ms: (index + 1) as f64 * 1000.0,
+                    text: "Message".into(),
+                })
+                .collect();
+            [0.0, 999.0, 1000.0, count as f64 * 1000.0]
+                .into_iter()
+                .for_each(|now| {
+                    let expected = (now >= 1000.0).then_some("Message");
+                    assert_eq!(song_text_at(&events, now).as_deref(), expected);
+                    assert!(SONG_TEXT_COMPARISONS.get() <= count.ilog2() as usize + 2);
+                });
+        });
     }
 
     #[test]
