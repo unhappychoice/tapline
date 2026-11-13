@@ -28,6 +28,7 @@ pub struct FlashState {
 }
 
 pub struct Game {
+    pub(crate) volume: crate::audio::PlaybackVolume,
     pub(crate) scroll: crate::scroll::ScrollMap,
     pub chart: Chart,
     pub gauge: Gauge,
@@ -151,6 +152,7 @@ impl Game {
         });
         Self {
             scroll: crate::scroll::ScrollMap::new(&chart.scroll),
+            volume: crate::audio::PlaybackVolume::new(&chart),
             gauge: Gauge::new(GaugeKind::Normal, &chart),
             completed: false,
             next_miss: 0,
