@@ -18,13 +18,22 @@ fn main() -> Result<()> {
 }
 
 fn run(out: &mut Stdout, args: &Args) -> Result<()> {
+    run_session(out, args, cli::choose_chart, runtime::play_chart)
+}
+
+fn run_session(
+    out: &mut Stdout,
+    args: &Args,
+    mut choose: impl FnMut(&mut Stdout, &Args) -> Result<cli::ChartChoice>,
+    mut play: impl FnMut(&mut Stdout, &Args, tapline::chart::Chart) -> Result<()>,
+) -> Result<()> {
     loop {
-        let choice = cli::choose_chart(out, args)?;
+        let choice = choose(out, args)?;
         let Some(chart) = cli::load_chart(&choice, args)? else {
             return Ok(());
         };
-        runtime::play_chart(out, args, chart)?;
-        if args.file.is_some() || args.built_in {
+        play(out, args, chart)?;
+        if !matches!(choice, cli::ChartChoice::Selected(_)) {
             return Ok(());
         }
     }
@@ -48,3 +57,7 @@ fn run_test_tone() -> Result<()> {
     std::thread::sleep(Duration::from_millis(400));
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;
