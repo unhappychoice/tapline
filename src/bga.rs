@@ -9,6 +9,7 @@ use crossterm::{
 use image::{imageops, Rgba, RgbaImage};
 use std::{cell::RefCell, collections::HashMap, io::Write, path::PathBuf};
 
+mod crops;
 mod effect_timeline;
 mod timeline;
 mod video;
@@ -72,36 +73,9 @@ impl ImageBank {
     }
 
     pub fn prepare_crops(&mut self, chart: &crate::chart::Chart) {
-        let crops = chart
-            .bga_extensions
-            .crops
-            .iter()
-            .filter_map(|(&id, crop)| {
-                let source = image::open(chart.bmp_paths.get(&crop.image)?)
-                    .ok()?
-                    .to_rgba8();
-                let [x1, y1, x2, y2, dx, dy] = crop.rect;
-                let mut canvas = RgbaImage::new(256, 256);
-                canvas.enumerate_pixels_mut().for_each(|(x, y, pixel)| {
-                    let sx = x as i64 - dx as i64 + x1.max(0) as i64;
-                    let sy = y as i64 - dy as i64 + y1.max(0) as i64;
-                    if sx >= x1.max(0) as i64
-                        && sy >= y1.max(0) as i64
-                        && sx < x2 as i64
-                        && sy < y2 as i64
-                        && sx < source.width() as i64
-                        && sy < source.height() as i64
-                    {
-                        *pixel = *source.get_pixel(sx as u32, sy as u32);
-                    }
-                });
-                Some((
-                    id,
-                    imageops::resize(&canvas, SIZE, SIZE, imageops::FilterType::Nearest),
-                ))
-            })
-            .collect::<Vec<_>>();
-        self.0.extend(crops);
+        self.0.extend(crops::prepare(chart, |path| {
+            image::open(path).ok().map(|image| image.to_rgba8())
+        }));
     }
 
     fn layer(&self, game: &Game, layer: BgaLayer, now_ms: f64) -> Option<RgbaImage> {
