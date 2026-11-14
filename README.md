@@ -314,6 +314,33 @@ whichever finger is closer.
 | 11, 13, 15 | first N keys of `S D F SPACE J K L Z X C V B N M , A` | asymmetric DP |
 | 14    | `S D F SPACE J K L / Z X C V B N M` | 7K SP layout on the home row for P1, ZXCVBNM below for P2 |
 
+## Personal bests
+
+Completed plays save the best score, accuracy, max combo, and CLEAR achievement
+independently, along with the latest completed result. The result screen compares
+your play with the previous bests; the selector shows best accuracy and clear
+status. Interrupted plays do not change records. Storage errors leave gameplay
+available and display a notice on the result screen; unreadable records are not
+overwritten.
+
+Records are keyed by SHA-256 of the chart file contents and its format, so moving
+a chart preserves progress and editing it starts a new record. BMS random branches
+share bests; the latest result retains its random seed for reproduction with
+`TAPLINE_RANDOM_SEED`. Auto-keysound plays share records because note judgments
+still require input; the latest result records whether it was enabled. Built-in
+practice records are separate for each BPM. Countdown and audio settings do not
+split records.
+
+Results are stored in `results.json` inside:
+
+- Linux: `$XDG_DATA_HOME/tapline`, or `~/.local/share/tapline`
+- macOS: `~/Library/Application Support/tapline`
+- Windows: `%LOCALAPPDATA%\tapline`
+
+Set `TAPLINE_DATA_DIR` to override this directory. No accounts or network service
+are used. Writes replace the file only after a complete temporary file is flushed.
+Use one running instance when saving progress to the same directory.
+
 ## License
 
 MIT

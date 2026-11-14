@@ -1598,7 +1598,7 @@ impl LaneSet {
     }
 }
 
-fn random_seed() -> u64 {
+pub(crate) fn random_seed() -> u64 {
     std::env::var("TAPLINE_RANDOM_SEED")
         .ok()
         .and_then(|value| value.parse().ok())
