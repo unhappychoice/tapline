@@ -33,10 +33,11 @@ fn run_app() -> Result<()> {
 }
 
 fn run(out: &mut Stdout, args: &Args) -> Result<()> {
+    let mut selector = tapline::select::SelectorState::default();
     run_session(
         out,
         args,
-        cli::choose_chart,
+        |out, args| cli::choose_chart_with_selector(out, args, &mut selector),
         runtime::play_chart,
         terminal::show_load_error,
     )
