@@ -55,7 +55,6 @@ pub fn read_meta_with_seed(path: &Path, seed: u64) -> Result<ChartMeta> {
             .and_then(|name| {
                 AssetIndex::new(path.parent().unwrap_or(Path::new(".")))
                     .resolve_path(&name, AUDIO_EXTENSIONS)
-                    .cloned()
             }),
         path: path.to_path_buf(),
         random_seed: seed,
