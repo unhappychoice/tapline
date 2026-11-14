@@ -149,6 +149,20 @@ pub fn run_with_state(
     if charts.is_empty() {
         return Ok(None);
     }
+    let store =
+        crate::results::data_path().and_then(|path| crate::results::Store::load(&path).ok());
+    let progress: Vec<String> = charts
+        .iter()
+        .map(|chart| {
+            if store.is_none() {
+                return "[RECORDS UNAVAILABLE]".into();
+            }
+            let record = crate::results::Identity::file(&chart.path, None)
+                .ok()
+                .and_then(|id| store.as_ref().and_then(|store| store.get(&id)).cloned());
+            format_progress(record.as_ref())
+        })
+        .collect();
     state.editing = false;
     state.refresh(charts);
     let audio = crate::audio::preview_output(!no_audio);
@@ -160,7 +174,7 @@ pub fn run_with_state(
             selected.and_then(|i| charts[i].preview.as_deref()),
             |path| crate::preview::play(audio.as_ref().map(|(_, handle)| handle), path),
         );
-        draw(out, charts, state)?;
+        draw(out, charts, state, &progress)?;
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(k) = event::read()? {
                 if k.kind == KeyEventKind::Release {
@@ -181,14 +195,20 @@ pub fn run_with_state(
     }
 }
 
-fn draw(out: &mut Stdout, charts: &[ChartMeta], state: &mut SelectorState) -> Result<()> {
-    draw_frame(out, charts, state, terminal::size()?)
+fn draw(
+    out: &mut Stdout,
+    charts: &[ChartMeta],
+    state: &mut SelectorState,
+    progress: &[String],
+) -> Result<()> {
+    draw_frame(out, charts, state, progress, terminal::size()?)
 }
 
 fn draw_frame(
     out: &mut impl Write,
     charts: &[ChartMeta],
     state: &mut SelectorState,
+    progress: &[String],
     (cols, rows): (u16, u16),
 ) -> Result<()> {
     let cursor_i = state.cursor;
@@ -261,7 +281,11 @@ fn draw_frame(
         let selected = i == cursor_i;
         let y = list_top + row as u16;
         let arrow = if selected { "▸ " } else { "  " };
-        let text = format_chart_row(m, arrow);
+        let text = format!(
+            "{} {}",
+            progress[state.indices[i]],
+            format_chart_row(m, arrow)
+        );
         let clipped: String = text.chars().take(cols as usize).collect();
         let color = if selected { Color::White } else { Color::Grey };
         queue!(out, cursor::MoveTo(2, y), SetForegroundColor(color))?;
@@ -316,6 +340,17 @@ fn draw_details(out: &mut impl Write, chart: &ChartMeta, cols: u16, top: u16) ->
     let dir = chart.path.parent().unwrap_or(Path::new("."));
     crate::artwork::draw(out, dir, &chart.banner, (0, top + 1, cols, 4))?;
     Ok(())
+}
+
+fn format_progress(record: Option<&crate::results::Record>) -> String {
+    match record {
+        Some(record) => format!(
+            "[BEST {:.1}% {}]",
+            record.best.accuracy,
+            if record.best.clear { "CLEAR" } else { "FAILED" }
+        ),
+        None => "[UNPLAYED]".into(),
+    }
 }
 
 fn format_chart_row(m: &ChartMeta, arrow: &str) -> String {
@@ -387,12 +422,44 @@ mod tests {
         };
         state.refresh(&charts);
         let mut out = Vec::new();
-        draw_frame(&mut out, &charts, &mut state, (100, 24)).unwrap();
+        draw_frame(
+            &mut out,
+            &charts,
+            &mut state,
+            &["[UNPLAYED]".into()],
+            (100, 24),
+        )
+        .unwrap();
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("0 / 1 matches | Lanes: 7K | Query: missing"));
         assert!(output.contains("No matching charts"));
         assert!(!output.contains("Selected chart comment"));
         assert!(!output.contains("Alpha"));
+    }
+
+    #[test]
+    fn filtered_and_scrolled_rows_keep_their_chart_progress() {
+        let charts: Vec<_> = (0..8).map(|i| meta(&format!("Song {i}"))).collect();
+        let progress: Vec<_> = (0..8).map(|i| format!("[BEST {i}.0% CLEAR]")).collect();
+        let mut state = SelectorState {
+            query: "Song 7".into(),
+            ..Default::default()
+        };
+        state.refresh(&charts);
+        let mut out = Vec::new();
+        draw_frame(&mut out, &charts, &mut state, &progress, (100, 12)).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("[BEST 7.0% CLEAR] ▸ [5K NORMAL Lv3 BPM140]  Song 7"));
+        assert!(!output.contains("[BEST 0.0% CLEAR]"));
+
+        state.query.clear();
+        state.refresh(&charts);
+        state.key(KeyCode::End, &charts);
+        let mut out = Vec::new();
+        draw_frame(&mut out, &charts, &mut state, &progress, (100, 12)).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(state.scroll > 0);
+        assert!(output.contains("[BEST 7.0% CLEAR] ▸ [5K NORMAL Lv3 BPM140]  Song 7"));
     }
 
     #[test]
@@ -653,5 +720,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    #[test]
+    fn progress_shows_unplayed_best_accuracy_and_clear_achievement() {
+        assert_eq!(format_progress(None), "[UNPLAYED]");
+        let mut store = crate::results::Store::default();
+        let id = crate::results::Identity::built_in(120.0);
+        let mut game = crate::game::Game::new(crate::chart::built_in(120.0, 0.0));
+        game.completed = true;
+        game.perfect = 3;
+        game.miss = 1;
+        store.record(&id, &game, false);
+        assert_eq!(format_progress(store.get(&id)), "[BEST 75.0% FAILED]");
+        (0..1000).for_each(|_| game.gauge.apply(crate::game::Judgment::Perfect));
+        store.record(&id, &game, false);
+        assert_eq!(format_progress(store.get(&id)), "[BEST 75.0% CLEAR]");
     }
 }

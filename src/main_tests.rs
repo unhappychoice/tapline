@@ -39,7 +39,7 @@ fn selected_chart_returns_to_selector_after_playback() {
             selections += 1;
             Ok(choices.next().expect("unexpected selector restart"))
         },
-        |_, _, _| {
+        |_, _, _, _| {
             plays += 1;
             Ok(())
         },
@@ -61,7 +61,7 @@ fn assert_single_play(args: &Args) {
             assert_eq!(selections, 1, "chart restarted after results closed");
             cli::choose_chart(out, args)
         },
-        |_, _, _| {
+        |_, _, _, _| {
             plays += 1;
             // Both completion and interruption return Ok after closing results.
             Ok(())
@@ -96,7 +96,7 @@ fn failed_selection_returns_to_selector_then_plays_and_cancels() {
             selections += 1;
             Ok(choices.next().expect("unexpected selector restart"))
         },
-        |_, _, chart| {
+        |_, _, chart, _| {
             assert_eq!(chart.title, "Playable");
             plays += 1;
             Ok(())
@@ -122,7 +122,7 @@ fn explicit_invalid_file_returns_error_without_playback_or_recovery() {
         &mut stdout(),
         &args,
         cli::choose_chart,
-        |_, _, _| panic!("invalid chart must not play"),
+        |_, _, _, _| panic!("invalid chart must not play"),
         |_, _| panic!("explicit file must not recover"),
     )
     .unwrap_err();

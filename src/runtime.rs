@@ -28,7 +28,12 @@ impl PlayOptions {
     }
 }
 
-pub fn play_chart(out: &mut Stdout, args: &Args, mut chart: chart::Chart) -> Result<()> {
+pub fn play_chart(
+    out: &mut Stdout,
+    args: &Args,
+    mut chart: chart::Chart,
+    identity: Option<crate::results::Identity>,
+) -> Result<()> {
     let opts = PlayOptions::from_args(args);
     let bank = if args.no_audio {
         audio::SampleBank::silent()
@@ -41,7 +46,42 @@ pub fn play_chart(out: &mut Stdout, args: &Args, mut chart: chart::Chart) -> Res
     let mut game = game::Game::new(chart);
     execute!(out, terminal::Clear(terminal::ClearType::All))?;
     run_game(out, &mut game, &bank, &opts)?;
-    after_playback(bank, || show_result(out, &game))
+    let progress = save_result(identity.as_ref(), &game, args.auto_ks);
+    after_playback(bank, || show_result(out, &game, &progress))
+}
+
+fn save_result(
+    identity: Option<&crate::results::Identity>,
+    game: &game::Game,
+    auto_ks: bool,
+) -> String {
+    let Some(identity) = identity else {
+        return "Results unavailable: chart identity unavailable".into();
+    };
+    let Some(path) = crate::results::data_path() else {
+        return "Results unavailable: no data directory".into();
+    };
+    persist_result(&path, identity, game, auto_ks)
+}
+
+fn persist_result(
+    path: &std::path::Path,
+    identity: &crate::results::Identity,
+    game: &game::Game,
+    auto_ks: bool,
+) -> String {
+    let Ok(mut store) = crate::results::Store::load(path) else {
+        return "Results unavailable: cannot read storage".into();
+    };
+    let progress = render::format_progress(game, store.get(identity));
+    if !game.completed {
+        return progress;
+    }
+    store.record(identity, game, auto_ks);
+    match store.save(path) {
+        Ok(()) => progress,
+        Err(_) => format!("Result not saved: storage unavailable | {progress}"),
+    }
 }
 
 fn after_playback<T, R>(playback: T, show_result: impl FnOnce() -> R) -> R {
@@ -272,9 +312,9 @@ fn advance_deadline(next_frame: Instant) -> Instant {
     }
 }
 
-fn show_result(out: &mut Stdout, game: &game::Game) -> Result<()> {
+fn show_result(out: &mut Stdout, game: &game::Game, progress: &str) -> Result<()> {
     execute!(out, terminal::Clear(terminal::ClearType::All))?;
-    render::draw_result(out, game)?;
+    render::draw_result_with_progress(out, game, progress)?;
     loop {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(k) = event::read()? {
@@ -1091,5 +1131,35 @@ mod tests {
             assert!(!handled);
         }
         assert!(!s.quit);
+    }
+}
+
+#[cfg(test)]
+mod result_tests {
+    use super::*;
+
+    #[test]
+    fn storage_failures_are_non_fatal_and_corrupt_records_are_preserved() {
+        let dir =
+            std::env::temp_dir().join(format!("tapline-runtime-results-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("results.json");
+        let id = crate::results::Identity::built_in(120.0);
+        let mut game = game::Game::new(chart::built_in(120.0, 0.0));
+        assert!(persist_result(&path, &id, &game, false).contains("Interrupted"));
+        assert!(!path.exists());
+        game.completed = true;
+        std::fs::write(&path, "corrupt").unwrap();
+        assert!(persist_result(&path, &id, &game, false).contains("cannot read"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "corrupt");
+        let blocked = path.join("results.json");
+        assert!(persist_result(&blocked, &id, &game, false).contains("unavailable"));
+        std::fs::remove_file(&path).unwrap();
+        assert!(persist_result(&path, &id, &game, false).contains("First completed"));
+        assert!(crate::results::Store::load(&path)
+            .unwrap()
+            .get(&id)
+            .is_some());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

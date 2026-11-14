@@ -722,14 +722,53 @@ pub fn draw_intro_full(
     Ok(())
 }
 
+pub fn format_progress(game: &Game, previous: Option<&crate::results::Record>) -> String {
+    if !game.completed {
+        return "Interrupted: result not saved".into();
+    }
+    match previous {
+        None => "First completed play!".into(),
+        Some(record) => format!(
+            "vs best: score {:+} | accuracy {:+.2}pp | combo {:+}{}",
+            i64::from(game.score) - i64::from(record.best.score),
+            game.accuracy() - record.best.accuracy,
+            i64::from(game.max_combo) - i64::from(record.best.max_combo),
+            if game.gauge.is_clear() && !record.best.clear {
+                " | NEW CLEAR!"
+            } else {
+                ""
+            }
+        ),
+    }
+}
+
+pub fn draw_result_with_progress(
+    out: &mut Stdout,
+    game: &Game,
+    progress: &str,
+) -> anyhow::Result<()> {
+    let (cols, rows) = terminal::size()?;
+    draw_result_content(out, game, cols, rows, progress)
+}
+
 pub fn draw_result(out: &mut Stdout, game: &Game) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
     draw_result_to(out, game, cols, rows)
 }
 
 fn draw_result_to<W: Write>(out: &mut W, game: &Game, cols: u16, rows: u16) -> anyhow::Result<()> {
+    draw_result_content(out, game, cols, rows, "")
+}
+
+fn draw_result_content<W: Write>(
+    out: &mut W,
+    game: &Game,
+    cols: u16,
+    rows: u16,
+    progress: &str,
+) -> anyhow::Result<()> {
     queue!(out, terminal::BeginSynchronizedUpdate)?;
-    let mut y = rows / 2 - 4;
+    let mut y = (rows / 2).saturating_sub(6);
     let line = |o: &mut W, text: String, color: Color, yy: u16| -> anyhow::Result<()> {
         let text = crate::terminal_text::sanitize(&text);
         queue!(
@@ -783,6 +822,11 @@ fn draw_result_to<W: Write>(out: &mut W, game: &Game, cols: u16, rows: u16) -> a
             Color::DarkGrey,
             y,
         )?;
+    }
+    if !progress.is_empty() {
+        y += 2;
+        let clipped: String = progress.chars().take(cols as usize).collect();
+        line(out, clipped, Color::Yellow, y)?;
     }
     y += 2;
     line(out, "press any key to exit".to_string(), Color::DarkGrey, y)?;
@@ -1765,5 +1809,20 @@ mod tests {
                 badge
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    #[test]
+    fn result_screen_renders_previous_best_comparison() {
+        let mut game = Game::new(crate::chart::built_in(120.0, 0.0));
+        game.completed = true;
+        let progress = "vs best: score +100 | accuracy +1.00pp | combo +2";
+        let mut output = Vec::new();
+        draw_result_content(&mut output, &game, 120, 40, progress).unwrap();
+        assert!(String::from_utf8(output).unwrap().contains(progress));
     }
 }
