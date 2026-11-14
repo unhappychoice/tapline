@@ -46,7 +46,13 @@ pub fn read_meta_with_seed(path: &Path, seed: u64) -> Result<ChartMeta> {
             pass.absorb(line)?;
         }
     }
-    let (_, acc, p2_acc) = collect_chart_sides(&raw, &pass, 0.0, false, is_pms(path))?;
+    build_timeline(&raw, &pass, 0.0)?;
+    let acc = collect_lane_occupancy(&raw, &pass, if is_pms(path) { PMS_LANES } else { P1_LANES });
+    let p2_acc = if is_pms(path) {
+        SideOccupancy::default()
+    } else {
+        collect_lane_occupancy(&raw, &pass, P2_LANES)
+    };
     let mode = detect_mode(path, pass.player, &raw, &acc, &p2_acc);
     Ok(ChartMeta {
         preview: pass
@@ -99,7 +105,7 @@ fn is_pms(path: &Path) -> bool {
 
 #[derive(Default)]
 struct ChartAcc {
-    lanes: LaneSet,
+    occupancy: SideOccupancy,
     notes: Vec<Note>,
     invisible_notes: Vec<InvisibleNote>,
     mines: Vec<Mine>,
@@ -176,10 +182,10 @@ fn build_chart(
     let text_events = collect_text_events(&raw, &timeline, &pass.text_defs, pass.base);
     let exrank_events = collect_exrank_events(&raw, &timeline, &pass.exrank_defs, pass.base);
     let bmp_paths = resolve_bmp_paths(&assets, &pass.bmp_defs);
-    let mode = detect_mode(path, pass.player, &raw, &acc, &p2_acc);
-    let lane_count = mode.playable_lane_count(&acc, &p2_acc);
-    let p1_lane_count = mode.side_lane_count(&acc);
-    let p2_lane_count = mode.side_lane_count(&p2_acc);
+    let mode = detect_mode(path, pass.player, &raw, &acc.occupancy, &p2_acc.occupancy);
+    let lane_count = mode.playable_lane_count(&acc.occupancy, &p2_acc.occupancy);
+    let p1_lane_count = mode.side_lane_count(&acc.occupancy);
+    let p2_lane_count = mode.side_lane_count(&p2_acc.occupancy);
     pass.bga_extensions
         .switches
         .values_mut()
@@ -292,6 +298,28 @@ fn collect_chart_sides(
     collect_bgm: bool,
     pms: bool,
 ) -> Result<(Timeline, ChartAcc, ChartAcc)> {
+    let timeline = build_timeline(raw, pass, lead_in_ms)?;
+    let lanes = if pms { PMS_LANES } else { P1_LANES };
+    let acc = accumulate_side(raw, &timeline, lanes, collect_bgm, pass.lntype, pass.base);
+    let p2_acc = if pms {
+        ChartAcc::default()
+    } else {
+        accumulate_side(raw, &timeline, P2_LANES, false, pass.lntype, pass.base)
+    };
+    Ok((timeline, acc, p2_acc))
+}
+
+#[derive(Default)]
+struct SideOccupancy {
+    lanes: LaneSet,
+    playable: bool,
+}
+
+fn build_timeline(
+    raw: &[(u32, String, String)],
+    pass: &HeaderPass,
+    lead_in_ms: f64,
+) -> Result<Timeline> {
     let max_measure = raw
         .iter()
         .map(|(m, _, _)| *m)
@@ -306,15 +334,44 @@ fn collect_chart_sides(
         &pass.stp_events,
         pass.base,
     );
-    let timeline = Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure)?;
-    let lanes = if pms { PMS_LANES } else { P1_LANES };
-    let acc = accumulate_side(raw, &timeline, lanes, collect_bgm, pass.lntype, pass.base);
-    let p2_acc = if pms {
-        ChartAcc::default()
-    } else {
-        accumulate_side(raw, &timeline, P2_LANES, false, pass.lntype, pass.base)
-    };
-    Ok((timeline, acc, p2_acc))
+    Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure)
+}
+
+fn collect_lane_occupancy(
+    raw: &[(u32, String, String)],
+    pass: &HeaderPass,
+    lanes: LaneMap,
+) -> SideOccupancy {
+    let raw = merge_note_lines(raw, lanes, pass.base);
+    let mut occupancy = SideOccupancy::default();
+    let mut long_counts = HashMap::<usize, usize>::new();
+    for (_, ch, data) in &raw {
+        let mine = (lanes.mine)(ch);
+        let count = parse_slots(data, if mine.is_some() { 36 } else { pass.base })
+            .into_iter()
+            .filter(|slot| *slot != 0)
+            .count();
+        if let Some(lane) = (lanes.long)(ch) {
+            *long_counts.entry(lane).or_default() += count;
+        } else if count > 0 {
+            let playable = (lanes.normal)(ch).or(mine);
+            if let Some(lane) = playable.or_else(|| (lanes.invisible)(ch)) {
+                occupancy.lanes.observe_lane(lane);
+                occupancy.playable |= playable.is_some();
+            }
+        }
+    }
+    for (lane, count) in long_counts {
+        if long_lane_is_populated(count, pass.lntype) {
+            occupancy.lanes.observe_lane(lane);
+            occupancy.playable = true;
+        }
+    }
+    occupancy
+}
+
+fn long_lane_is_populated(endpoint_count: usize, lntype: u8) -> bool {
+    endpoint_count >= if lntype == 2 { 1 } else { 2 }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -327,7 +384,7 @@ struct BmsMode {
 }
 
 impl BmsMode {
-    fn side_lane_count(&self, acc: &ChartAcc) -> usize {
+    fn side_lane_count(&self, acc: &SideOccupancy) -> usize {
         match self.keys_per_side {
             9 => 9,
             _ if self.reserve_seven => 7 + usize::from(acc.lanes.0.contains(&7)),
@@ -336,7 +393,7 @@ impl BmsMode {
         }
     }
 
-    fn playable_lane_count(&self, acc: &ChartAcc, p2_acc: &ChartAcc) -> usize {
+    fn playable_lane_count(&self, acc: &SideOccupancy, p2_acc: &SideOccupancy) -> usize {
         let p1 = self.side_lane_count(acc);
         let p2 = self.side_lane_count(p2_acc);
         if self.double_play {
@@ -351,8 +408,8 @@ fn detect_mode(
     path: &Path,
     player: Option<u8>,
     raw: &[(u32, String, String)],
-    acc: &ChartAcc,
-    p2_acc: &ChartAcc,
+    acc: &SideOccupancy,
+    p2_acc: &SideOccupancy,
 ) -> BmsMode {
     let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     if extension.eq_ignore_ascii_case("pms") {
@@ -368,8 +425,7 @@ fn detect_mode(
         || acc.lanes.0.iter().any(|lane| matches!(lane, 5 | 6))
         || (matches!(player, Some(2 | 3))
             && p2_acc.lanes.0.iter().any(|lane| matches!(lane, 5 | 6)));
-    let double_play =
-        matches!(player, Some(2 | 3)) || !p2_acc.notes.is_empty() || !p2_acc.mines.is_empty();
+    let double_play = matches!(player, Some(2 | 3)) || p2_acc.playable;
     let scratch = raw.iter().any(|(_, ch, data)| {
         matches!(ch.as_str(), "16" | "26" | "56" | "66" | "D6" | "E6")
             && parse_slots(data, 36).iter().any(|slot| *slot != 0)
@@ -450,6 +506,11 @@ fn p2_mine_channel_to_lane(ch: &str) -> Option<usize> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static MATERIALIZATION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn accumulate_side(
     raw: &[(u32, String, String)],
     timeline: &Timeline,
@@ -458,6 +519,8 @@ fn accumulate_side(
     lntype: u8,
     base: u32,
 ) -> ChartAcc {
+    #[cfg(test)]
+    MATERIALIZATION_CALLS.with(|calls| calls.set(calls.get() + 1));
     let raw = merge_note_lines(raw, lanes, base);
     let raw = raw.as_slice();
     let mut acc = ChartAcc::default();
@@ -471,7 +534,7 @@ fn accumulate_side(
                 .enumerate()
                 .filter(|(_, slot)| **slot != 0)
                 .for_each(|(i, slot)| {
-                    acc.lanes.observe_lane(lane);
+                    acc.occupancy.lanes.observe_lane(lane);
                     acc.invisible_notes.push(InvisibleNote {
                         time_ms: timeline.time_at(*measure, i as f64 / slots.len() as f64),
                         lane,
@@ -547,7 +610,8 @@ fn push_normal_slots(
             continue;
         }
         let t = timeline.time_at(measure, i as f64 / n as f64);
-        acc.lanes.observe_lane(lane);
+        acc.occupancy.lanes.observe_lane(lane);
+        acc.occupancy.playable = true;
         acc.notes.push(Note {
             time_ms: t,
             lane,
@@ -603,6 +667,9 @@ fn materialize_long_notes_with(
         }
     }
     for (lane, mut events) in per_lane {
+        if !long_lane_is_populated(events.len(), 1) {
+            continue;
+        }
         events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         for pair in events.chunks(2) {
             if pair.len() != 2 {
@@ -610,7 +677,8 @@ fn materialize_long_notes_with(
             }
             let (start_ms, ks) = pair[0];
             let (end_ms, _) = pair[1];
-            acc.lanes.observe_lane(lane);
+            acc.occupancy.lanes.observe_lane(lane);
+            acc.occupancy.playable = true;
             acc.notes.push(Note {
                 time_ms: start_ms,
                 lane,
@@ -650,6 +718,9 @@ fn materialize_continuous_long_notes(
         );
     }
     for (lane, mut spans) in per_lane {
+        if !long_lane_is_populated(spans.len(), 2) {
+            continue;
+        }
         spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         let mut merged: Vec<(f64, f64, u32)> = Vec::new();
         for (start, end, keysound) in spans {
@@ -660,7 +731,8 @@ fn materialize_continuous_long_notes(
             }
         }
         for (start, end, keysound) in merged {
-            acc.lanes.observe_lane(lane);
+            acc.occupancy.lanes.observe_lane(lane);
+            acc.occupancy.playable = true;
             acc.notes.push(Note {
                 time_ms: timeline.time_at(start.floor() as u32, start.fract()),
                 lane,
@@ -693,7 +765,8 @@ fn materialize_mines_with(
                 continue;
             }
             let t = timeline.time_at(*measure, i as f64 / n as f64);
-            acc.lanes.observe_lane(lane);
+            acc.occupancy.lanes.observe_lane(lane);
+            acc.occupancy.playable = true;
             acc.mines.push(Mine {
                 time_ms: t,
                 lane,
@@ -3026,6 +3099,70 @@ mod tests {
     }
 
     #[test]
+    fn metadata_preserves_timing_validation() {
+        let dir = tempdir();
+        let path = dir.join("invalid.bms");
+        for channels in [
+            "#BPM 0",
+            "#BPM 1e-308\n#00102:100",
+            "#BPM 120\n#BPM01 1e-308\n#00108:01\n#00102:100",
+        ] {
+            std::fs::write(&path, channels).unwrap();
+            assert!(load_with_seed(&path, 0.0, 0).is_err(), "{channels}");
+            assert!(read_meta_with_seed(&path, 0).is_err(), "{channels}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn metadata_never_materializes_gameplay_as_note_counts_grow() {
+        let dir = tempdir();
+        let path = dir.join("dense.bms");
+        for count in [1, 100, 10_000] {
+            let slots = "01".repeat(count);
+            std::fs::write(
+                &path,
+                format!(
+                    "#BPM 120\n#00111:{slots}\n#00131:{slots}\n#00151:{slots}\n#001D1:{slots}\n"
+                ),
+            )
+            .unwrap();
+            MATERIALIZATION_CALLS.with(|calls| calls.set(0));
+            read_meta_with_seed(&path, 0).unwrap();
+            MATERIALIZATION_CALLS.with(|calls| assert_eq!(calls.get(), 0));
+            load_with_seed(&path, 0.0, 0).unwrap();
+            MATERIALIZATION_CALLS.with(|calls| assert_eq!(calls.get(), 2));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn metadata_occupancy_matches_loading_across_bms_formats() {
+        let dir = tempdir();
+        let cases = [
+            "#00111:01\n#00129:01",
+            "#00159:01\n#00159:02", // Duplicate endpoints must not form a pair.
+            "#00159:01\n#00259:01\n#00166:0101",
+            "#LNTYPE 2\n#00159:01\n#00169:01",
+            "#BASE 62\n#00159:zzzz\n#001E6:01",
+            "#00139:01\n#00149:01",
+            "#PLAYER 3\n#00111:01\n#00169:0101",
+            "#00156:01\n#00156:0001\n#001E9:01",
+            "#00162:0101\n#001E5:01",
+        ];
+        for extension in ["bms", "bml", "bme", "pms"] {
+            let path = dir.join(format!("song.{extension}"));
+            for channels in cases {
+                std::fs::write(&path, format!("#BPM 120\n{channels}\n")).unwrap();
+                let meta = read_meta_with_seed(&path, 0).unwrap();
+                let chart = load_with_seed(&path, 0.0, 0).unwrap();
+                assert_eq!(meta.lane_count, chart.lane_count, "{extension}: {channels}");
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn load_leaves_p2_pools_empty_for_single_play_charts() {
         let dir = tempdir();
         let path = dir.join("song.bms");
@@ -3995,7 +4132,13 @@ Always
             )
             .unwrap();
             assert_eq!(
-                detect_mode(Path::new(name), player, &raw, &acc, &p2_acc),
+                detect_mode(
+                    Path::new(name),
+                    player,
+                    &raw,
+                    &acc.occupancy,
+                    &p2_acc.occupancy
+                ),
                 BmsMode {
                     keys_per_side,
                     double_play,
