@@ -503,7 +503,7 @@ fn volume_events_follow_millisecond_stops() {
         .iter()
         .map(|event| event.time_ms)
         .collect();
-    assert_eq!(times, vec![2100.0, 3850.0, 3850.0, 4350.0]);
+    assert_eq!(times, vec![2100.0, 3100.0, 3100.0, 4350.0]);
 }
 
 #[test]

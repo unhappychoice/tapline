@@ -1070,7 +1070,8 @@ fn parse_slots_hex(data: &str) -> Vec<u32> {
 #[derive(Debug, Clone, Copy)]
 struct Segment {
     frac_start: f64,
-    ms_at_start: f64,
+    arrival_ms: f64,
+    departure_ms: f64,
     bpm: f64,
 }
 
@@ -1104,7 +1105,8 @@ impl Timeline {
             let beats = 4.0 * scales.get(&(m as u32)).copied().unwrap_or(1.0);
             let mut segments: Vec<Segment> = vec![Segment {
                 frac_start: 0.0,
-                ms_at_start: current_ms,
+                arrival_ms: current_ms,
+                departure_ms: current_ms,
                 bpm: current_bpm,
             }];
             while ev_idx < events.len() && events[ev_idx].measure as usize == m {
@@ -1116,7 +1118,7 @@ impl Timeline {
                 }
                 let last = *segments.last().unwrap();
                 let ms_here =
-                    last.ms_at_start + (frac - last.frac_start) * beats * 60_000.0 / last.bpm;
+                    last.departure_ms + (frac - last.frac_start) * beats * 60_000.0 / last.bpm;
                 match ev.kind {
                     TimingEventKind::Bpm(new_bpm) => {
                         if (frac - last.frac_start).abs() < f64::EPSILON {
@@ -1124,7 +1126,8 @@ impl Timeline {
                         } else {
                             segments.push(Segment {
                                 frac_start: frac,
-                                ms_at_start: ms_here,
+                                arrival_ms: ms_here,
+                                departure_ms: ms_here,
                                 bpm: new_bpm,
                             });
                         }
@@ -1138,14 +1141,19 @@ impl Timeline {
                         };
                         segments.push(Segment {
                             frac_start: frac,
-                            ms_at_start: ms_here + pause_ms,
+                            arrival_ms: if frac == last.frac_start {
+                                last.arrival_ms
+                            } else {
+                                ms_here
+                            },
+                            departure_ms: ms_here + pause_ms,
                             bpm: last.bpm,
                         });
                     }
                 }
             }
             let last = *segments.last().unwrap();
-            let end_ms = last.ms_at_start + (1.0 - last.frac_start) * beats * 60_000.0 / last.bpm;
+            let end_ms = last.departure_ms + (1.0 - last.frac_start) * beats * 60_000.0 / last.bpm;
             ensure!(
                 end_ms.is_finite(),
                 "BMS timeline must be finite at measure {m}"
@@ -1169,7 +1177,11 @@ impl Timeline {
                 .partition_point(|s| s.frac_start <= frac)
                 .saturating_sub(1);
             let seg = segs[idx];
-            seg.ms_at_start + (frac - seg.frac_start) * slice.beats * 60_000.0 / seg.bpm
+            if frac == seg.frac_start {
+                seg.arrival_ms
+            } else {
+                seg.departure_ms + (frac - seg.frac_start) * slice.beats * 60_000.0 / seg.bpm
+            }
         } else {
             let extra = m - self.measures.len();
             let step = self.default_beats * 60_000.0 / self.tail_bpm;
@@ -1976,7 +1988,7 @@ mod tests {
         assert_eq!(chart.exrank_events.len(), 1);
         assert_eq!(chart.judgment_scale(chart.notes[0].time_ms), 0.5);
         assert_eq!(chart.scroll.len(), 1);
-        assert_eq!(chart.scroll[0].time_ms, 3050.0);
+        assert_eq!(chart.scroll[0].time_ms, 2550.0);
         assert_eq!(chart.scroll[0].multiplier, 0.5);
         assert_eq!(chart.speed[0].multiplier, 2.0);
         assert_eq!(chart.duration_ms, original.duration_ms);
@@ -2622,7 +2634,7 @@ mod tests {
     }
 
     #[test]
-    fn timeline_stop_delays_everything_after_the_stop_frac() {
+    fn timeline_stop_preserves_arrival_and_delays_later_positions() {
         // 120 BPM → 2 seconds per measure. STOP of 48 ticks = 1 beat at 120 BPM = 500ms.
         // Halfway through measure 0 we pause 500ms. Then the second half of the
         // measure still plays at 120 BPM = 1000ms. Measure 1 starts at 2500ms.
@@ -2632,7 +2644,9 @@ mod tests {
             kind: TimingEventKind::Stop(48.0),
         }];
         let t = Timeline::build(0.0, 120.0, &HashMap::new(), &evs, 1).unwrap();
-        assert!((t.time_at(0, 0.5) - 1500.0).abs() < 1e-6);
+        assert!((t.time_at(0, 0.25) - 500.0).abs() < 1e-6);
+        assert!((t.time_at(0, 0.5) - 1000.0).abs() < 1e-6);
+        assert!((t.time_at(0, 0.75) - 2000.0).abs() < 1e-6);
         assert!((t.time_at(1, 0.0) - 2500.0).abs() < 1e-6);
     }
 
@@ -3516,6 +3530,59 @@ Always
     }
 
     #[test]
+    fn load_schedules_notes_and_bgm_before_coincident_stops() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        [
+            ("#STOP01 48\n#00109:01\n", 3500.0, 4500.0),
+            (
+                "#STOP01 48\n#BPM01 240\n#00109:01\n#00108:01\n#STP 001.000 125\n#STP 001.000 375\n",
+                3250.0,
+                3750.0,
+            ),
+        ]
+        .iter()
+        .for_each(|(timing, later_ms, next_measure_ms)| {
+            std::fs::write(
+                &path,
+                format!("#BPM 120\n{timing}#00111:0101\n#00101:0101\n#00211:01\n"),
+            )
+            .unwrap();
+            let chart = load(&path, 0.0).unwrap();
+            let times: Vec<_> = chart.notes.iter().map(|note| note.time_ms).collect();
+            assert_eq!(times, vec![2000.0, *later_ms, *next_measure_ms]);
+            let bgm: Vec<_> = chart.bgm.iter().map(|event| event.time_ms).collect();
+            assert_eq!(bgm, vec![2000.0, *later_ms]);
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn load_schedules_long_note_endpoints_before_coincident_stops() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        [
+            "#00151:0101\n#00152:0001\n#00252:01\n",
+            "#LNOBJ ZZ\n#00111:01ZZ\n#00112:0001\n#00212:ZZ\n",
+        ]
+        .iter()
+        .for_each(|notes| {
+            std::fs::write(&path, format!("#BPM 120\n#STOP01 48\n#00109:0101\n{notes}")).unwrap();
+            let chart = load(&path, 0.0).unwrap();
+            let endpoints: Vec<_> = chart
+                .notes
+                .iter()
+                .map(|note| (note.time_ms, note.end_ms))
+                .collect();
+            assert_eq!(
+                endpoints,
+                vec![(2000.0, Some(3500.0)), (3500.0, Some(5000.0))]
+            );
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn load_applies_channel_09_stop_to_note_timing() {
         let dir = tempdir();
         let path = dir.join("song.bms");
@@ -3549,7 +3616,7 @@ Always
         .unwrap();
         let chart = load(&path, 250.0).unwrap();
         let times: Vec<_> = chart.notes.iter().map(|note| note.time_ms).collect();
-        assert_eq!(times, vec![4250.0, 4750.0, 6250.0, 6750.0, 7250.0]);
+        assert_eq!(times, vec![4250.0, 4750.0, 5250.0, 6750.0, 7250.0]);
     }
 
     #[test]
@@ -3569,7 +3636,7 @@ Always
             .iter()
             .map(|note| (note.lane, note.time_ms))
             .collect();
-        assert_eq!(notes, vec![(5, 4250.0), (5, 6250.0), (8, 6750.0)]);
+        assert_eq!(notes, vec![(5, 4250.0), (5, 5250.0), (8, 6750.0)]);
         assert_eq!(chart.duration_ms, 10250.0);
     }
 
@@ -3586,7 +3653,8 @@ Always
         ];
         let (timeline, _, _) = collect_chart_sides(&raw, &pass, 0.0, false, false).unwrap();
         assert_eq!(timeline.time_at(2, 0.25), 4500.0);
-        assert_eq!(timeline.time_at(2, 0.5), 6500.0);
+        assert_eq!(timeline.time_at(2, 0.5), 5000.0);
+        assert_eq!(timeline.time_at(2, 0.75), 6750.0);
         assert_eq!(timeline.time_at(3, 0.0), 7000.0);
     }
 
@@ -3602,7 +3670,7 @@ Always
         ];
         let (timeline, _, _) = collect_chart_sides(&raw, &pass, 0.0, false, false).unwrap();
         assert_eq!(timeline.time_at(2, 0.25), 4500.0);
-        assert_eq!(timeline.time_at(2, 0.5), 6250.0);
+        assert_eq!(timeline.time_at(2, 0.5), 5000.0);
         assert_eq!(timeline.time_at(3, 0.0), 6750.0);
     }
 
@@ -3911,7 +3979,7 @@ Always
                     chart
                         .notes
                         .iter()
-                        .any(|note| note.lane == *lane && (note.time_ms - 4500.0).abs() < 0.01),
+                        .any(|note| note.lane == *lane && (note.time_ms - 4000.0).abs() < 0.01),
                     "{name}: {lane}"
                 );
             });
