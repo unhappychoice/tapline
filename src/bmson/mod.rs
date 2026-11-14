@@ -75,13 +75,21 @@ pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
 }
 
 pub fn read_meta(path: &Path) -> Result<ChartMeta> {
-    let data = read(path)?;
+    read_meta_bytes(path, &crate::chart_file::read(path)?)
+}
+
+pub(crate) fn read_meta_bytes(path: &Path, bytes: &[u8]) -> Result<ChartMeta> {
+    let data = parse(path, bytes)?;
     Timeline::new(&data, 0.0)?;
     metadata::convert(path, &data.info)
 }
 
 fn read(path: &Path) -> Result<Bmson> {
-    let data: Bmson = serde_json::from_slice(&crate::chart_file::read(path)?)
+    parse(path, &crate::chart_file::read(path)?)
+}
+
+fn parse(path: &Path, bytes: &[u8]) -> Result<Bmson> {
+    let data: Bmson = serde_json::from_slice(bytes)
         .with_context(|| format!("Invalid bmson: {}", path.display()))?;
     ensure!(
         data.version == "1.0.0",

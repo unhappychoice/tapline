@@ -35,7 +35,11 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
 
 /// Read metadata using an explicit seed instead of the environment override.
 pub fn read_meta_with_seed(path: &Path, seed: u64) -> Result<ChartMeta> {
-    let text = read_text(path)?;
+    read_meta_bytes(path, &crate::chart_file::read(path)?, seed)
+}
+
+pub(crate) fn read_meta_bytes(path: &Path, bytes: &[u8], seed: u64) -> Result<ChartMeta> {
+    let text = decode_text(bytes);
     let text = resolve_control_flow(&text, seed);
     let mut pass = HeaderPass::for_text(&text);
     let mut raw = Vec::new();

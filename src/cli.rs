@@ -91,7 +91,7 @@ pub fn choose_chart_with_selector(
     let Some(dir) = args.dir.clone().or_else(default_songs_dir) else {
         return Ok(ChartChoice::BuiltIn);
     };
-    let charts = select::scan(&dir);
+    let charts = state.scan(&dir);
     if charts.is_empty() {
         return Ok(ChartChoice::BuiltIn);
     }
