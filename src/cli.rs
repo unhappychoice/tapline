@@ -121,12 +121,27 @@ pub fn load_session(choice: &ChartChoice, args: &Args) -> Result<Option<LoadedSe
         }
         ChartChoice::Cancelled => return Ok(None),
     };
-    let identity = Identity::file(path, seed).ok();
+    let bytes = crate::chart_file::read(path)?;
+    Ok(Some(session_from_bytes(
+        path,
+        &bytes,
+        seed,
+        args.countdown_ms,
+    )?))
+}
+
+fn session_from_bytes(
+    path: &Path,
+    bytes: &[u8],
+    seed: Option<u64>,
+    lead_in_ms: f64,
+) -> Result<LoadedSession> {
+    let identity = crate::results::Identity::from_bytes(path, bytes, seed);
     let chart = match seed {
-        Some(seed) => bms::load_with_seed(path, args.countdown_ms, seed)?,
-        None => bmson::load(path, args.countdown_ms)?,
+        Some(seed) => bms::load_bytes(path, bytes, lead_in_ms, seed)?,
+        None => bmson::load_bytes(path, bytes, lead_in_ms)?,
     };
-    Ok(Some((chart, identity)))
+    Ok((chart, Some(identity)))
 }
 
 pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::chart::Chart>> {
@@ -509,6 +524,71 @@ mod tests {
 #[cfg(test)]
 mod session_tests {
     use super::*;
+
+    #[test]
+    fn bms_session_uses_the_snapshot_after_path_replacement() {
+        assert_snapshot_session("bms", Some(42));
+    }
+
+    #[test]
+    fn bmson_session_uses_the_snapshot_after_path_replacement() {
+        assert_snapshot_session("bmson", None);
+    }
+
+    fn assert_snapshot_session(extension: &str, seed: Option<u64>) {
+        use crate::{
+            game::Game,
+            results::{Identity, Store},
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "tapline-session-snapshot-{}-{extension}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("chart.{extension}"));
+        let (original, replacement) = match extension {
+            "bms" => (
+                b"#TITLE Original\n#BPM 120\n#00111:01\n".as_slice(),
+                b"#TITLE Replacement\n#BPM 180\n#00112:0101\n".as_slice(),
+            ),
+            _ => (
+                br#"{"version":"1.0.0","info":{"title":"Original","artist":"Test","init_bpm":120,"mode_hint":"generic-4keys"},"sound_channels":[{"name":"tone.wav","notes":[{"x":1,"y":240}]}]}"#.as_slice(),
+                br#"{"version":"1.0.0","info":{"title":"Replacement","artist":"Test","init_bpm":180,"mode_hint":"generic-4keys"},"sound_channels":[{"name":"tone.wav","notes":[{"x":2,"y":240},{"x":2,"y":480}]}]}"#.as_slice(),
+            ),
+        };
+        std::fs::write(&path, original).unwrap();
+        let snapshot = crate::chart_file::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, replacement).unwrap();
+        let (chart, identity) = session_from_bytes(&path, &snapshot, seed, 500.0).unwrap();
+        let identity = identity.unwrap();
+        assert_eq!(chart.title, "Original");
+        assert_eq!(chart.bpm, 120.0);
+        assert_eq!(chart.notes.len(), 1);
+        assert_eq!(chart.notes[0].lane, 0);
+        assert_eq!(chart.asset_dir, dir);
+        assert_eq!(
+            identity.key,
+            Identity::from_bytes(&path, original, seed).key
+        );
+        assert_eq!(identity.random_seed, seed);
+        let replacement_identity = Identity::file(&path, seed).unwrap();
+        assert_ne!(identity.key, replacement_identity.key);
+        let replacement_chart =
+            load_chart(&ChartChoice::File(path), &Args::parse_from(["tapline"]))
+                .unwrap()
+                .unwrap();
+        assert_eq!(replacement_chart.title, "Replacement");
+        assert_eq!(replacement_chart.notes.len(), 2);
+        let mut game = Game::new(chart);
+        game.completed = true;
+        game.score = 300;
+        let mut store = Store::default();
+        store.record(&identity, &game, false);
+        assert_eq!(store.get(&identity).unwrap().best.score, 300);
+        assert!(store.get(&replacement_identity).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn selected_random_seed_is_carried_to_the_loaded_session() {

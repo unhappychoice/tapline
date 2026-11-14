@@ -88,7 +88,11 @@ pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
 
 /// Load the same control-flow branches used by metadata with this seed.
 pub fn load_with_seed(path: &Path, lead_in_ms: f64, seed: u64) -> Result<Chart> {
-    let text = read_text(path)?;
+    load_bytes(path, &crate::chart_file::read(path)?, lead_in_ms, seed)
+}
+
+pub(crate) fn load_bytes(path: &Path, bytes: &[u8], lead_in_ms: f64, seed: u64) -> Result<Chart> {
+    let text = decode_text(bytes);
     let text = resolve_control_flow(&text, seed);
     let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut pass = HeaderPass::for_text(&text);
@@ -1772,11 +1776,6 @@ fn split_first_word(s: &str) -> (&str, &str) {
         Some(i) => (&s[..i], &s[i..]),
         None => (s, ""),
     }
-}
-
-fn read_text(path: &Path) -> Result<String> {
-    let bytes = crate::chart_file::read(path)?;
-    Ok(decode_text(&bytes))
 }
 
 fn header_lines(text: &str) -> impl Iterator<Item = &str> {
