@@ -18,7 +18,13 @@ fn main() -> Result<()> {
 }
 
 fn run(out: &mut Stdout, args: &Args) -> Result<()> {
-    run_session(out, args, cli::choose_chart, runtime::play_chart)
+    run_session(
+        out,
+        args,
+        cli::choose_chart,
+        runtime::play_chart,
+        terminal::show_load_error,
+    )
 }
 
 fn run_session(
@@ -26,11 +32,18 @@ fn run_session(
     args: &Args,
     mut choose: impl FnMut(&mut Stdout, &Args) -> Result<cli::ChartChoice>,
     mut play: impl FnMut(&mut Stdout, &Args, tapline::chart::Chart) -> Result<()>,
+    mut report_error: impl FnMut(&mut Stdout, &anyhow::Error) -> Result<()>,
 ) -> Result<()> {
     loop {
         let choice = choose(out, args)?;
-        let Some(chart) = cli::load_chart(&choice, args)? else {
-            return Ok(());
+        let chart = match cli::load_chart(&choice, args) {
+            Ok(Some(chart)) => chart,
+            Ok(None) => return Ok(()),
+            Err(error) if matches!(choice, cli::ChartChoice::Selected(_)) => {
+                report_error(out, &error)?;
+                continue;
+            }
+            Err(error) => return Err(error),
         };
         play(out, args, chart)?;
         if !matches!(choice, cli::ChartChoice::Selected(_)) {
