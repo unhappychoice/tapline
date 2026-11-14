@@ -115,3 +115,70 @@ fn chart_without_asset_definitions_never_visits_asset_directories() {
     assert!(chart.bmp_paths.is_empty());
     DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 0));
 }
+
+#[test]
+fn matching_work_grows_linearly_with_files_and_references() {
+    let work: Vec<_> = [100, 200]
+        .into_iter()
+        .map(|size| {
+            let fixture = Fixture::new(&format!("matching-{size}"));
+            (0..size).for_each(|index| fixture.write(&format!("sample-{index}.ogg")));
+            let assets = AssetIndex::new(&fixture.0);
+            MATCHING_WORK.with(|count| count.set(0));
+            (0..size).for_each(|index| {
+                assert_eq!(
+                    assets.resolve_path(&format!("SAMPLE-{index}.wav"), &["wav", "ogg"]),
+                    Some(fixture.0.join(format!("sample-{index}.ogg")))
+                );
+            });
+            let initial = MATCHING_WORK.with(|count| count.get());
+            // One normalization per cached file, three candidate names, and one match.
+            assert_eq!(initial, size * 5);
+            MATCHING_WORK.with(|count| count.set(0));
+            (0..size).for_each(|index| {
+                assert!(assets
+                    .resolve_path(&format!("sample-{index}.ogg"), &[])
+                    .is_some());
+            });
+            // Warm exact-case lookups normalize only the reference and inspect its bucket.
+            MATCHING_WORK.with(|count| assert_eq!(count.get(), size * 2));
+            initial
+        })
+        .collect();
+    assert_eq!(work[1], work[0] * 2);
+}
+
+#[test]
+fn filename_collisions_preserve_exact_case_and_sorted_fallback() {
+    let fixture = Fixture::new("filename-collisions");
+    fixture.write("Kick.wav");
+    if fixture.0.join("kick.wav").exists() {
+        return;
+    }
+    fixture.write("kick.wav");
+    let assets = AssetIndex::new(&fixture.0);
+    assert_eq!(
+        assets.resolve_path("kick.wav", &[]),
+        Some(fixture.0.join("kick.wav"))
+    );
+    assert_eq!(
+        assets.resolve_path("KICK.WAV", &[]),
+        Some(fixture.0.join("Kick.wav"))
+    );
+}
+
+#[test]
+fn cached_entries_keep_types_and_revalidate_regular_files() {
+    let fixture = Fixture::new("entry-types");
+    fixture.write("sample.wav/nested.ogg");
+    fixture.write("sample.ogg");
+    fixture.write("removed.wav");
+    let assets = AssetIndex::new(&fixture.0);
+    assert_eq!(
+        assets.resolve_path("sample.wav", &["ogg"]),
+        Some(fixture.0.join("sample.ogg"))
+    );
+    assert!(assets.resolve_path("sample.ogg/nested.ogg", &[]).is_none());
+    std::fs::remove_file(fixture.0.join("removed.wav")).unwrap();
+    assert!(assets.resolve_path("removed.wav", &[]).is_none());
+}
