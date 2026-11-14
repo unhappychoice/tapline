@@ -42,7 +42,8 @@ pub fn play_chart(
             .with_slices(&chart.sample_slices)
             .with_layers(&chart.sound_layers)
     };
-    chart.duration_ms = bank.chart_duration_ms(&chart, opts.auto_ks, opts.audio_lead_ms);
+    chart.duration_ms =
+        bank.chart_duration_ms(&chart, opts.auto_ks, opts.synth_mode, opts.audio_lead_ms);
     let mut game = game::Game::new(chart);
     execute!(out, terminal::Clear(terminal::ClearType::All))?;
     run_game(out, &mut game, &bank, &opts)?;
