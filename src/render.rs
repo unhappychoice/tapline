@@ -724,9 +724,14 @@ pub fn draw_intro_full(
 
 pub fn draw_result(out: &mut Stdout, game: &Game) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
+    draw_result_to(out, game, cols, rows)
+}
+
+fn draw_result_to<W: Write>(out: &mut W, game: &Game, cols: u16, rows: u16) -> anyhow::Result<()> {
     queue!(out, terminal::BeginSynchronizedUpdate)?;
     let mut y = rows / 2 - 4;
-    let line = |o: &mut Stdout, text: String, color: Color, yy: u16| -> anyhow::Result<()> {
+    let line = |o: &mut W, text: String, color: Color, yy: u16| -> anyhow::Result<()> {
+        let text = crate::terminal_text::sanitize(&text);
         queue!(
             o,
             cursor::MoveTo(cols.saturating_sub(text.chars().count() as u16) / 2, yy),
@@ -791,6 +796,31 @@ mod tests {
     use super::*;
     use crate::chart::{keys_for, Chart, Note};
     use crate::game::Game;
+
+    #[test]
+    fn result_sanitizes_maker_controls_and_preserves_unicode_credits() {
+        let controls: String = (0..=0x9f)
+            .filter_map(char::from_u32)
+            .filter(|c| c.is_control())
+            .collect();
+        let credit = "Author 日本語 café 🎵";
+        let mut chart = base_chart(4);
+        chart.maker = format!("{credit}\x1b]52;c;VEVTVA==\x07\x1b[2J\u{9b}2J{controls}");
+        let mut out = Vec::new();
+        let mut game = Game::new(chart);
+        draw_result_to(&mut out, &game, 120, 40).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+        let expected = format!("chart by {credit}]52;c;VEVTVA==[2J2J");
+        game.chart.maker = format!("{credit}]52;c;VEVTVA==[2J2J");
+        let mut sanitized_out = Vec::new();
+        draw_result_to(&mut sanitized_out, &game, 120, 40).unwrap();
+        assert_eq!(rendered, String::from_utf8(sanitized_out).unwrap());
+        assert!(rendered.contains(&expected));
+        assert!(!rendered.contains("\x1b]52"));
+        assert!(!rendered.contains("\x1b[2J"));
+        assert!(rendered.contains("R E S U L T"));
+        assert!(rendered.contains("press any key to exit"));
+    }
 
     thread_local! {
         pub(super) static SONG_TEXT_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
