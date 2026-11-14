@@ -74,12 +74,48 @@ pub(super) fn stamp(path: &Path) -> Option<Stamp> {
 mod tests {
     use super::*;
 
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            (0..)
+                .find_map(|index| {
+                    let path = std::env::temp_dir()
+                        .join(format!("tapline-identities-{}-{index}", std::process::id()));
+                    match std::fs::create_dir(&path) {
+                        Ok(()) => Some(Self(path)),
+                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                        Err(error) => panic!("failed to create test directory: {error}"),
+                    }
+                })
+                .unwrap()
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn test_directories_are_isolated_and_removed_on_drop() {
+        let first = TestDir::new();
+        let second = TestDir::new();
+        std::fs::write(first.0.join("results.json"), b"stale results").unwrap();
+        assert_ne!(first.0, second.0);
+        assert!(!second.0.join("results.json").exists());
+        let path = first.0.clone();
+        drop(first);
+        assert!(!path.exists());
+        assert!(second.0.is_dir());
+    }
+
     #[test]
     fn selector_visits_reuse_reads_and_refresh_records_after_changes() {
-        let dir = std::env::temp_dir().join(format!("tapline-identities-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("chart.bms");
-        let results = dir.join("results.json");
+        let dir = TestDir::new();
+        let path = dir.0.join("chart.bms");
+        let results = dir.0.join("results.json");
         std::fs::write(&path, b"#TITLE Original").unwrap();
         let mut cache = Identities::default();
         let mut reads = 0;
@@ -121,15 +157,12 @@ mod tests {
         assert_eq!(reads, 2);
         std::fs::remove_file(&path).unwrap();
         assert!(cache.get(&path).is_none());
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn discovery_changes_do_not_cache_stale_bytes() {
-        let dir =
-            std::env::temp_dir().join(format!("tapline-discovery-race-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("chart.bms");
+        let dir = TestDir::new();
+        let path = dir.0.join("chart.bms");
         let mut cache = Identities::default();
         std::fs::write(&path, b"#TITLE Original").unwrap();
         let original = cache.get(&path).unwrap();
@@ -148,7 +181,6 @@ mod tests {
                 .key,
             changed.key
         );
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
