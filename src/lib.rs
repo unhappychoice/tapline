@@ -7,6 +7,7 @@ pub mod cli;
 pub mod game;
 pub mod gauge;
 pub mod render;
+pub mod results;
 pub mod runtime;
 pub mod screen;
 pub mod select;

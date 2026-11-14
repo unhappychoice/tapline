@@ -46,12 +46,17 @@ fn run_session(
     out: &mut Stdout,
     args: &Args,
     mut choose: impl FnMut(&mut Stdout, &Args) -> Result<cli::ChartChoice>,
-    mut play: impl FnMut(&mut Stdout, &Args, tapline::chart::Chart) -> Result<()>,
+    mut play: impl FnMut(
+        &mut Stdout,
+        &Args,
+        tapline::chart::Chart,
+        Option<tapline::results::Identity>,
+    ) -> Result<()>,
     mut report_error: impl FnMut(&mut Stdout, &anyhow::Error) -> Result<()>,
 ) -> Result<()> {
     loop {
         let choice = choose(out, args)?;
-        let chart = match cli::load_chart(&choice, args) {
+        let (chart, identity) = match cli::load_session(&choice, args) {
             Ok(Some(chart)) => chart,
             Ok(None) => return Ok(()),
             Err(error) if matches!(choice, cli::ChartChoice::Selected(_)) => {
@@ -60,7 +65,7 @@ fn run_session(
             }
             Err(error) => return Err(error),
         };
-        play(out, args, chart)?;
+        play(out, args, chart, identity)?;
         if !matches!(choice, cli::ChartChoice::Selected(_)) {
             return Ok(());
         }

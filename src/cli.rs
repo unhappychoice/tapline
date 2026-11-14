@@ -93,21 +93,34 @@ pub fn choose_chart(out: &mut Stdout, args: &Args) -> Result<ChartChoice> {
     })
 }
 
-pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::chart::Chart>> {
-    match choice {
-        ChartChoice::File(p) if bmson::is_bmson(p) => Ok(Some(bmson::load(p, args.countdown_ms)?)),
-        ChartChoice::File(p) => Ok(Some(bms::load(p, args.countdown_ms)?)),
-        ChartChoice::Selected(meta) if bmson::is_bmson(&meta.path) => {
-            Ok(Some(bmson::load(&meta.path, args.countdown_ms)?))
-        }
-        ChartChoice::Selected(meta) => Ok(Some(bms::load_with_seed(
+pub type LoadedSession = (crate::chart::Chart, Option<crate::results::Identity>);
+
+pub fn load_session(choice: &ChartChoice, args: &Args) -> Result<Option<LoadedSession>> {
+    use crate::results::Identity;
+    let (path, seed) = match choice {
+        ChartChoice::File(path) => (path, (!bmson::is_bmson(path)).then(bms::random_seed)),
+        ChartChoice::Selected(meta) => (
             &meta.path,
-            args.countdown_ms,
-            meta.random_seed,
-        )?)),
-        ChartChoice::BuiltIn => Ok(Some(crate::chart::built_in(args.bpm, args.countdown_ms))),
-        ChartChoice::Cancelled => Ok(None),
-    }
+            (!bmson::is_bmson(&meta.path)).then_some(meta.random_seed),
+        ),
+        ChartChoice::BuiltIn => {
+            return Ok(Some((
+                crate::chart::built_in(args.bpm, args.countdown_ms),
+                Some(Identity::built_in(args.bpm)),
+            )))
+        }
+        ChartChoice::Cancelled => return Ok(None),
+    };
+    let identity = Identity::file(path, seed).ok();
+    let chart = match seed {
+        Some(seed) => bms::load_with_seed(path, args.countdown_ms, seed)?,
+        None => bmson::load(path, args.countdown_ms)?,
+    };
+    Ok(Some((chart, identity)))
+}
+
+pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::chart::Chart>> {
+    Ok(load_session(choice, args)?.map(|(chart, _)| chart))
 }
 
 /// Parse a positive, finite BPM that keeps the built-in chart duration finite.
@@ -480,5 +493,37 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn selected_random_seed_is_carried_to_the_loaded_session() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.bms");
+        let meta = bms::read_meta_with_seed(&path, 42).unwrap();
+        let args = Args::parse_from(["tapline"]);
+        let (chart, identity) = load_session(&ChartChoice::Selected(Box::new(meta)), &args)
+            .unwrap()
+            .unwrap();
+        let identity = identity.unwrap();
+        assert_eq!(identity.random_seed, Some(42));
+        assert_eq!(
+            identity.key,
+            crate::results::Identity::file(&path, None).unwrap().key
+        );
+        assert_eq!(
+            chart.notes.len(),
+            bms::load_with_seed(&path, args.countdown_ms, 42)
+                .unwrap()
+                .notes
+                .len()
+        );
+        let (_, explicit) = load_session(&ChartChoice::File(path), &args)
+            .unwrap()
+            .unwrap();
+        assert!(explicit.unwrap().random_seed.is_some());
     }
 }
