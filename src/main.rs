@@ -3,12 +3,27 @@ mod terminal;
 use anyhow::Result;
 use clap::Parser;
 use std::io::{stdout, Stdout};
+use std::process::ExitCode;
 use std::time::Duration;
 use tapline::cli::Args;
 use tapline::{audio, cli, runtime};
 
+fn main() -> ExitCode {
+    match run_app() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            let message: String = format!("{error:#}")
+                .chars()
+                .filter(|c| !c.is_control())
+                .collect();
+            eprintln!("Error: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// Validate timing before initializing audio or entering terminal raw mode.
-fn main() -> Result<()> {
+fn run_app() -> Result<()> {
     let args = Args::parse();
     args.validate().unwrap_or_else(|err| err.exit());
     if args.test_tone {
