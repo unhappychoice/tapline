@@ -3,6 +3,7 @@ mod metadata;
 mod model;
 mod timing;
 
+use crate::assets::AssetIndex;
 use crate::bms::ChartMeta;
 use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, Note, SampleSlice};
 use anyhow::{ensure, Context, Result};
@@ -37,14 +38,15 @@ pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
         ..Chart::default()
     };
     let dir = path.parent().unwrap_or(Path::new("."));
+    let assets = AssetIndex::new(dir);
     for channel in &data.sound_channels {
-        add_channel(&mut chart, channel, &timeline, dir, mode)?;
+        add_channel(&mut chart, channel, &timeline, dir, &assets, mode)?;
     }
     layers::merge(&mut chart)?;
     for image in &data.bga.bga_header {
         chart
             .bmp_paths
-            .insert(image.id, asset_path(dir, &image.name)?);
+            .insert(image.id, asset_path(dir, &assets, &image.name, &[])?);
     }
     for (events, layer) in [
         (&data.bga.bga_events, BgaLayer::Base),
@@ -94,15 +96,12 @@ fn add_channel(
     channel: &SoundChannel,
     timeline: &Timeline,
     dir: &Path,
+    assets: &AssetIndex,
     mode: &str,
 ) -> Result<()> {
     #[cfg(test)]
     tests::CHANNEL_BUILDS.with(|count| count.set(count.get() + 1));
-    let direct = asset_path(dir, &channel.name)?;
-    let path = std::iter::once(direct.clone())
-        .chain(["wav", "ogg", "mp3"].map(|ext| direct.with_extension(ext)))
-        .find(|p| p.is_file())
-        .unwrap_or(direct);
+    let path = asset_path(dir, assets, &channel.name, &["wav", "ogg", "mp3"])?;
     let mut notes: Vec<_> = channel.notes.iter().collect();
     notes.sort_by_key(|n| n.y);
     let mut restart = notes.first().map_or(0.0, |n| timeline.time(n.y.into()));
@@ -155,7 +154,7 @@ fn lane(x: u32, count: usize, mode: &str) -> Option<usize> {
     }
 }
 
-fn asset_path(dir: &Path, name: &str) -> Result<PathBuf> {
+fn asset_path(dir: &Path, assets: &AssetIndex, name: &str, extensions: &[&str]) -> Result<PathBuf> {
     #[cfg(test)]
     tests::ASSET_RESOLUTIONS.with(|count| count.set(count.get() + 1));
     let normalized = name.replace('\\', "/");
@@ -167,7 +166,9 @@ fn asset_path(dir: &Path, name: &str) -> Result<PathBuf> {
                 .all(|c| matches!(c, Component::Normal(_) | Component::CurDir)),
         "Invalid asset path"
     );
-    Ok(dir.join(path))
+    Ok(assets
+        .resolve_path(name, extensions)
+        .unwrap_or_else(|| dir.join(path)))
 }
 
 #[cfg(test)]
