@@ -12,15 +12,15 @@ pub(crate) struct SelectionPreview {
 impl SelectionPreview {
     pub(crate) fn update(
         &mut self,
-        selected: usize,
+        selected: Option<usize>,
         path: Option<&Path>,
         play: impl FnOnce(&Path) -> Option<Sink>,
     ) {
-        if self.selected == Some(selected) {
+        if self.selected == selected {
             return;
         }
         self.sink.take().inspect(Sink::stop);
-        self.selected = Some(selected);
+        self.selected = selected;
         self.sink = path.and_then(play);
     }
 }
@@ -57,16 +57,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn empty_results_stop_preview_and_restoring_selection_restarts_it() {
+        let mut preview = SelectionPreview::default();
+        let (sink, mut queue) = Sink::new_idle();
+        sink.append(rodio::source::SineWave::new(440.0).repeat_infinite());
+        preview.update(Some(3), Some(Path::new("preview.wav")), |_| Some(sink));
+        assert!(queue.next().is_some());
+        preview.update(None, None, |_| panic!("empty results must not play"));
+        assert!(queue.skip(512).take(1024).all(|sample| sample == 0.0));
+        assert!(preview.sink.is_none());
+        preview.update(None, None, |_| panic!("empty results must stay silent"));
+        let mut restarted = false;
+        preview.update(Some(3), Some(Path::new("preview.wav")), |_| {
+            restarted = true;
+            None
+        });
+        assert!(restarted);
+    }
+
+    #[test]
     fn selection_changes_stop_previous_audio_and_unchanged_selection_keeps_playing() {
         let mut preview = SelectionPreview::default();
         let path = Some(Path::new("preview.wav"));
         let (sink, mut queue) = Sink::new_idle();
         sink.append(rodio::source::SineWave::new(440.0).repeat_infinite());
-        preview.update(0, path, |_| Some(sink));
+        preview.update(Some(0), path, |_| Some(sink));
         assert!(queue.next().is_some());
-        preview.update(0, path, |_| panic!("must not restart"));
+        preview.update(Some(0), path, |_| panic!("must not restart"));
         assert!(queue.next().is_some());
-        preview.update(1, None, |_| panic!("no preview"));
+        preview.update(Some(1), None, |_| panic!("no preview"));
         assert!(queue.skip(512).take(1024).all(|sample| sample == 0.0));
         assert!(preview.sink.is_none());
     }
@@ -76,8 +95,8 @@ mod tests {
         let mut preview = SelectionPreview::default();
         let (sink, mut queue) = Sink::new_idle();
         sink.append(rodio::source::SineWave::new(440.0).repeat_infinite());
-        preview.update(0, Some(Path::new("first.wav")), |_| None);
-        preview.update(1, Some(Path::new("second.wav")), |_| Some(sink));
+        preview.update(Some(0), Some(Path::new("first.wav")), |_| None);
+        preview.update(Some(1), Some(Path::new("second.wav")), |_| Some(sink));
         assert!(queue.next().is_some());
         drop(preview);
         assert!(queue.skip(512).take(1024).all(|sample| sample == 0.0));
