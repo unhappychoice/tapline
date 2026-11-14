@@ -9,7 +9,7 @@ use std::{
 pub(super) struct Identities(HashMap<PathBuf, (Stamp, Identity)>);
 
 #[derive(PartialEq, Eq)]
-struct Stamp {
+pub(super) struct Stamp {
     length: u64,
     modified: SystemTime,
     #[cfg(unix)]
@@ -17,11 +17,16 @@ struct Stamp {
 }
 
 impl Identities {
-    pub(super) fn get(&mut self, path: &Path, bytes: Option<&[u8]>) -> Option<Identity> {
-        self.get_with(path, || match bytes {
-            Some(bytes) => Ok(Identity::from_bytes(path, bytes, None)),
-            None => Identity::file(path, None),
-        })
+    pub(super) fn get(&mut self, path: &Path) -> Option<Identity> {
+        self.get_with(path, || Identity::file(path, None))
+    }
+
+    pub(super) fn discover(&mut self, path: &Path, bytes: &[u8], before: Option<Stamp>) {
+        if before.is_none() || before != stamp(path) {
+            self.0.remove(path);
+            return;
+        }
+        self.get_at(path, before, || Ok(Identity::from_bytes(path, bytes, None)));
     }
 
     fn get_with(
@@ -29,7 +34,15 @@ impl Identities {
         path: &Path,
         read: impl FnOnce() -> anyhow::Result<Identity>,
     ) -> Option<Identity> {
-        let current = stamp(path);
+        self.get_at(path, stamp(path), read)
+    }
+
+    fn get_at(
+        &mut self,
+        path: &Path,
+        current: Option<Stamp>,
+        read: impl FnOnce() -> anyhow::Result<Identity>,
+    ) -> Option<Identity> {
         if let Some((old, identity)) = self.0.get(path) {
             if current.as_ref() == Some(old) {
                 return Some(identity.clone());
@@ -44,7 +57,7 @@ impl Identities {
     }
 }
 
-fn stamp(path: &Path) -> Option<Stamp> {
+pub(super) fn stamp(path: &Path) -> Option<Stamp> {
     let meta = path.metadata().ok().filter(|meta| meta.is_file())?;
     Some(Stamp {
         length: meta.len(),
@@ -107,16 +120,47 @@ mod tests {
         visit(&mut cache);
         assert_eq!(reads, 2);
         std::fs::remove_file(&path).unwrap();
-        assert!(cache.get(&path, None).is_none());
+        assert!(cache.get(&path).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn discovery_changes_do_not_cache_stale_bytes() {
+        let dir =
+            std::env::temp_dir().join(format!("tapline-discovery-race-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("chart.bms");
+        let mut cache = Identities::default();
+        std::fs::write(&path, b"#TITLE Original").unwrap();
+        let original = cache.get(&path).unwrap();
+        let before = stamp(&path);
+        let bytes = crate::chart_file::read(&path).unwrap();
+        std::fs::write(&path, b"#TITLE Changed during parsing").unwrap();
+        cache.discover(&path, &bytes, before);
+        assert!(!cache.0.contains_key(&path));
+        let changed = cache.get(&path).unwrap();
+        assert_ne!(original.key, changed.key);
+        assert_eq!(changed.key, Identity::file(&path, None).unwrap().key);
+        assert_eq!(
+            cache
+                .get_with(&path, || panic!("unchanged chart reread"))
+                .unwrap()
+                .key,
+            changed.key
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn discovery_bytes_supply_identity_without_another_read() {
         let path = Path::new("tests/fixtures/minimal.bmson");
+        let before = stamp(path);
         let bytes = crate::chart_file::read(path).unwrap();
         let mut cache = Identities::default();
-        let identity = cache.get(path, Some(&bytes)).unwrap();
+        cache.discover(path, &bytes, before);
+        let identity = cache
+            .get_with(path, || panic!("discovery bytes reread"))
+            .unwrap();
         assert_eq!(identity.key, Identity::file(path, None).unwrap().key);
         assert_eq!(
             cache

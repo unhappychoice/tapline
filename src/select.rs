@@ -49,6 +49,7 @@ fn walk(
         if ty.map(|t| t.is_dir()).unwrap_or(false) {
             walk(&path, depth + 1, out, identities);
         } else if is_bms(&path) {
+            let before = identities::stamp(&path);
             let Ok(bytes) = crate::chart_file::read(&path) else {
                 continue;
             };
@@ -58,7 +59,7 @@ fn walk(
                 bms::read_meta_bytes(&path, &bytes, bms::random_seed())
             };
             if let Ok(meta) = meta {
-                identities.get(&path, Some(&bytes));
+                identities.discover(&path, &bytes, before);
                 out.push(meta);
             }
         }
@@ -178,7 +179,7 @@ pub fn run_with_state(
             }
             let record = state
                 .identities
-                .get(&chart.path, None)
+                .get(&chart.path)
                 .and_then(|id| store.as_ref().and_then(|store| store.get(&id)).cloned());
             format_progress(record.as_ref())
         })
