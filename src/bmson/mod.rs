@@ -17,7 +17,11 @@ pub fn is_bmson(path: &Path) -> bool {
 }
 
 pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
-    let data = read(path)?;
+    load_bytes(path, &crate::chart_file::read(path)?, lead_in_ms)
+}
+
+pub(crate) fn load_bytes(path: &Path, bytes: &[u8], lead_in_ms: f64) -> Result<Chart> {
+    let data = parse(path, bytes)?;
     let timeline = Timeline::new(&data, lead_in_ms)?;
     let meta = metadata::convert(path, &data.info)?;
     let mode = data.info.mode_hint.as_deref().unwrap_or("beat-7k");
@@ -82,10 +86,6 @@ pub(crate) fn read_meta_bytes(path: &Path, bytes: &[u8]) -> Result<ChartMeta> {
     let data = parse(path, bytes)?;
     Timeline::new(&data, 0.0)?;
     metadata::convert(path, &data.info)
-}
-
-fn read(path: &Path) -> Result<Bmson> {
-    parse(path, &crate::chart_file::read(path)?)
 }
 
 fn parse(path: &Path, bytes: &[u8]) -> Result<Bmson> {
