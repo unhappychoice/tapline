@@ -5,9 +5,11 @@ use std::{
     rc::Rc,
 };
 
+type DirectoryEntries = HashMap<String, Vec<Entry>>;
+
 pub(crate) struct AssetIndex {
     root: PathBuf,
-    directories: RefCell<HashMap<PathBuf, Rc<Vec<Entry>>>>,
+    directories: RefCell<HashMap<PathBuf, Rc<DirectoryEntries>>>,
 }
 
 struct Entry {
@@ -58,22 +60,19 @@ impl AssetIndex {
         let mut candidates = vec![PathBuf::new()];
         for (index, component) in components.iter().enumerate() {
             let directory = index + 1 < components.len();
-            let name = component.as_os_str().to_string_lossy().to_lowercase();
+            let name = normalize_filename(&component.as_os_str().to_string_lossy());
             candidates = candidates
                 .iter()
                 .flat_map(|parent| {
                     self.entries(parent)
-                        .iter()
-                        .filter(|entry| entry.directory == directory)
-                        .filter(|entry| {
-                            entry
-                                .path
-                                .file_name()
-                                .unwrap()
-                                .to_string_lossy()
-                                .to_lowercase()
-                                == name
+                        .get(&name)
+                        .into_iter()
+                        .flatten()
+                        .inspect(|_| {
+                            #[cfg(test)]
+                            MATCHING_WORK.with(|count| count.set(count.get() + 1));
                         })
+                        .filter(|entry| entry.directory == directory)
                         .filter(|entry| directory || self.root.join(&entry.path).is_file())
                         .map(|entry| entry.path.clone())
                         .collect::<Vec<_>>()
@@ -87,7 +86,7 @@ impl AssetIndex {
             .map(|path| self.root.join(path))
     }
 
-    fn entries(&self, relative: &Path) -> Rc<Vec<Entry>> {
+    fn entries(&self, relative: &Path) -> Rc<DirectoryEntries> {
         self.directories
             .borrow_mut()
             .entry(relative.to_path_buf())
@@ -106,14 +105,27 @@ impl AssetIndex {
                     })
                     .collect();
                 entries.sort_by(|a, b| a.path.cmp(&b.path));
-                Rc::new(entries)
+                let mut by_name: HashMap<String, Vec<Entry>> = HashMap::new();
+                entries.into_iter().for_each(|entry| {
+                    let name =
+                        normalize_filename(&entry.path.file_name().unwrap().to_string_lossy());
+                    by_name.entry(name).or_default().push(entry);
+                });
+                Rc::new(by_name)
             })
             .clone()
     }
 }
 
+fn normalize_filename(name: &str) -> String {
+    #[cfg(test)]
+    MATCHING_WORK.with(|count| count.set(count.get() + 1));
+    name.to_lowercase()
+}
+
 #[cfg(test)]
 thread_local! {
+    static MATCHING_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static DIRECTORY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
