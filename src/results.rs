@@ -15,15 +15,19 @@ pub struct Identity {
 impl Identity {
     pub fn file(path: &Path, random_seed: Option<u64>) -> anyhow::Result<Self> {
         let bytes = crate::chart_file::read(path)?;
+        Ok(Self::from_bytes(path, &bytes, random_seed))
+    }
+
+    pub(crate) fn from_bytes(path: &Path, bytes: &[u8], random_seed: Option<u64>) -> Self {
         let extension = path
             .extension()
             .unwrap_or_default()
             .to_string_lossy()
             .to_ascii_lowercase();
-        Ok(Self {
+        Self {
             key: format!("{extension}:{:x}", Sha256::digest(bytes)),
             random_seed,
-        })
+        }
     }
 
     pub fn built_in(bpm: f64) -> Self {

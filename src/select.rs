@@ -1,3 +1,4 @@
+mod identities;
 use crate::bms::{self, ChartMeta};
 use crate::chart::difficulty_label;
 use anyhow::Result;
@@ -15,8 +16,12 @@ use std::time::Duration;
 const EXTS: [&str; 5] = ["bms", "bml", "bme", "pms", "bmson"];
 
 pub fn scan(root: &Path) -> Vec<ChartMeta> {
+    scan_with_identities(root, &mut identities::Identities::default())
+}
+
+fn scan_with_identities(root: &Path, identities: &mut identities::Identities) -> Vec<ChartMeta> {
     let mut out = Vec::new();
-    walk(root, 0, &mut out);
+    walk(root, 0, &mut out, identities);
     out.sort_by(|a, b| {
         a.title
             .to_ascii_lowercase()
@@ -26,7 +31,12 @@ pub fn scan(root: &Path) -> Vec<ChartMeta> {
     out
 }
 
-fn walk(dir: &Path, depth: usize, out: &mut Vec<ChartMeta>) {
+fn walk(
+    dir: &Path,
+    depth: usize,
+    out: &mut Vec<ChartMeta>,
+    identities: &mut identities::Identities,
+) {
     if depth > 5 {
         return;
     }
@@ -37,14 +47,19 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<ChartMeta>) {
         let path = entry.path();
         let ty = entry.file_type().ok();
         if ty.map(|t| t.is_dir()).unwrap_or(false) {
-            walk(&path, depth + 1, out);
+            walk(&path, depth + 1, out, identities);
         } else if is_bms(&path) {
+            let before = identities::stamp(&path);
+            let Ok(bytes) = crate::chart_file::read(&path) else {
+                continue;
+            };
             let meta = if crate::bmson::is_bmson(&path) {
-                crate::bmson::read_meta(&path)
+                crate::bmson::read_meta_bytes(&path, &bytes)
             } else {
-                bms::read_meta(&path)
+                bms::read_meta_bytes(&path, &bytes, bms::random_seed())
             };
             if let Ok(meta) = meta {
+                identities.discover(&path, &bytes, before);
                 out.push(meta);
             }
         }
@@ -60,6 +75,7 @@ fn is_bms(p: &Path) -> bool {
 
 #[derive(Default)]
 pub struct SelectorState {
+    identities: identities::Identities,
     query: String,
     lanes: Option<usize>,
     editing: bool,
@@ -69,6 +85,10 @@ pub struct SelectorState {
 }
 
 impl SelectorState {
+    pub fn scan(&mut self, root: &Path) -> Vec<ChartMeta> {
+        scan_with_identities(root, &mut self.identities)
+    }
+
     fn refresh(&mut self, charts: &[ChartMeta]) {
         let query = self.query.to_lowercase();
         self.indices = charts
@@ -157,8 +177,9 @@ pub fn run_with_state(
             if store.is_none() {
                 return "[RECORDS UNAVAILABLE]".into();
             }
-            let record = crate::results::Identity::file(&chart.path, None)
-                .ok()
+            let record = state
+                .identities
+                .get(&chart.path)
                 .and_then(|id| store.as_ref().and_then(|store| store.get(&id)).cloned());
             format_progress(record.as_ref())
         })
