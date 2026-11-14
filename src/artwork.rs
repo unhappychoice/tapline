@@ -34,7 +34,7 @@ pub(crate) fn draw(
         if cache.as_ref().map(|entry| &entry.path) != Some(&path) {
             let image = AssetIndex::new(dir)
                 .resolve_path(name, &[])
-                .and_then(|path| load_image(path));
+                .and_then(|path| load_image(&path));
             *cache = Some(ArtworkCache {
                 path,
                 image,
