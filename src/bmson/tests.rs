@@ -152,3 +152,116 @@ fn gameplay_asset_and_layer_validation_is_deferred_until_selection() {
             .contains("unequal lengths"));
     });
 }
+
+#[test]
+fn banner_and_bga_share_case_insensitive_asset_resolution() {
+    ["COVER.PNG", "IMAGES\\COVER.PNG", ".\\IMAGES\\COVER.PNG"]
+        .iter()
+        .for_each(|name| {
+            let mut data = base();
+            data["info"]["banner_image"] = json!(name);
+            data["bga"] = json!({"bga_header":[{"id":1,"name":name}],
+                "bga_events":[{"y":0,"id":1}]});
+            with_chart(&data, |path| {
+                let dir = path.parent().unwrap();
+                std::fs::create_dir(dir.join("images")).unwrap();
+                let image = image::DynamicImage::new_rgb8(2, 2);
+                image.save(dir.join("cover.png")).unwrap();
+                image.save(dir.join("images/cover.png")).unwrap();
+                let chart = load(path, 0.0).unwrap();
+                assert!(image::open(&chart.bmp_paths[&1]).is_ok());
+                assert_eq!(chart.bga[0].bmp_id, 1);
+                assert_eq!(chart.bga[0].layer, BgaLayer::Base);
+                let meta = read_meta(path).unwrap();
+                let mut output = Vec::new();
+                crate::artwork::draw(&mut output, dir, &meta.banner, (0, 0, 2, 1)).unwrap();
+                assert!(String::from_utf8(output).unwrap().contains('▀'));
+            });
+        });
+}
+
+#[test]
+fn audio_resolves_directory_filename_and_fallback_extension_case() {
+    [
+        ("SUB/KICK.WAV", "sub/kick.wav"),
+        (".\\SUB\\KICK.WAV", "sub/kick.wav"),
+        ("SUB/KICK.WAV", "sub/kick.OGG"),
+        ("SUB/KICK", "sub/kick.MP3"),
+        ("SUB/KICK.OGG", "sub/kick.WAV"),
+    ]
+    .iter()
+    .for_each(|(name, actual)| {
+        let mut data = base();
+        data["sound_channels"] = json!([{"name":name,"notes":[{"x":1,"y":0}]}]);
+        with_chart(&data, |path| {
+            let dir = path.parent().unwrap();
+            std::fs::create_dir(dir.join("sub")).unwrap();
+            std::fs::write(dir.join(actual), []).unwrap();
+            let chart = load(path, 0.0).unwrap();
+            assert_eq!(chart.wav_paths[&0], dir.join(actual));
+        });
+    });
+}
+
+#[test]
+fn assets_preserve_exact_matches_fallback_order_and_missing_paths() {
+    let mut data = base();
+    data["sound_channels"] = json!([{"name":"kick.OGG","notes":[{"x":1,"y":0}]}]);
+    data["bga"] = json!({"bga_header":[{"id":1,"name":"Cover.png"}]});
+    with_chart(&data, |path| {
+        let dir = path.parent().unwrap();
+        ["kick.OGG", "kick.wav", "kick.mp3", "Cover.png"]
+            .iter()
+            .for_each(|name| std::fs::write(dir.join(name), []).unwrap());
+        if !dir.join("kick.ogg").exists() {
+            std::fs::write(dir.join("kick.ogg"), []).unwrap();
+            std::fs::write(dir.join("cover.png"), []).unwrap();
+        }
+        let chart = load(path, 0.0).unwrap();
+        assert_eq!(chart.wav_paths[&0], dir.join("kick.OGG"));
+        assert_eq!(chart.bmp_paths[&1], dir.join("Cover.png"));
+        std::fs::remove_file(dir.join("kick.OGG")).unwrap();
+        if dir.join("kick.ogg").exists() {
+            std::fs::remove_file(dir.join("kick.ogg")).unwrap();
+        }
+        assert_eq!(load(path, 0.0).unwrap().wav_paths[&0], dir.join("kick.wav"));
+        std::fs::remove_file(dir.join("kick.wav")).unwrap();
+        std::fs::remove_file(dir.join("kick.mp3")).unwrap();
+        std::fs::remove_file(dir.join("Cover.png")).unwrap();
+        if dir.join("cover.png").exists() {
+            std::fs::remove_file(dir.join("cover.png")).unwrap();
+        }
+        let chart = load(path, 0.0).unwrap();
+        assert_eq!(chart.wav_paths[&0], dir.join("kick.OGG"));
+        assert_eq!(chart.bmp_paths[&1], dir.join("Cover.png"));
+    });
+}
+
+#[test]
+fn audio_and_bga_reject_invalid_paths_before_resolution() {
+    [
+        "../outside.wav",
+        "SUB\\..\\outside.wav",
+        "/absolute.wav",
+        "C:\\kick.wav",
+        "bad\0.wav",
+    ]
+    .iter()
+    .for_each(|name| {
+        ["sound_channels", "bga"].iter().for_each(|kind| {
+            let mut data = base();
+            data[kind] = if *kind == "bga" {
+                json!({"bga_header":[{"id":1,"name":name}]})
+            } else {
+                json!([{"name":name,"notes":[]}])
+            };
+            with_chart(&data, |path| {
+                assert!(load(path, 0.0)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("Invalid asset path"));
+            });
+        });
+    });
+}
