@@ -74,6 +74,14 @@ pub enum ChartChoice {
 }
 
 pub fn choose_chart(out: &mut Stdout, args: &Args) -> Result<ChartChoice> {
+    choose_chart_with_selector(out, args, &mut select::SelectorState::default())
+}
+
+pub fn choose_chart_with_selector(
+    out: &mut Stdout,
+    args: &Args,
+    state: &mut select::SelectorState,
+) -> Result<ChartChoice> {
     if args.built_in {
         return Ok(ChartChoice::BuiltIn);
     }
@@ -87,10 +95,12 @@ pub fn choose_chart(out: &mut Stdout, args: &Args) -> Result<ChartChoice> {
     if charts.is_empty() {
         return Ok(ChartChoice::BuiltIn);
     }
-    Ok(match select::run(out, &charts, args.no_audio)? {
-        Some(meta) => ChartChoice::Selected(Box::new(meta)),
-        None => ChartChoice::Cancelled,
-    })
+    Ok(
+        match select::run_with_state(out, &charts, args.no_audio, state)? {
+            Some(meta) => ChartChoice::Selected(Box::new(meta)),
+            None => ChartChoice::Cancelled,
+        },
+    )
 }
 
 pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::chart::Chart>> {

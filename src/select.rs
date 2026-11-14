@@ -58,44 +58,141 @@ fn is_bms(p: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[derive(Default)]
+pub struct SelectorState {
+    query: String,
+    lanes: Option<usize>,
+    editing: bool,
+    cursor: usize,
+    scroll: usize,
+    indices: Vec<usize>,
+}
+
+impl SelectorState {
+    fn refresh(&mut self, charts: &[ChartMeta]) {
+        let query = self.query.to_lowercase();
+        self.indices = charts
+            .iter()
+            .enumerate()
+            .filter(|(_, chart)| {
+                self.lanes.is_none_or(|lanes| chart.lane_count == lanes)
+                    && [&chart.title, &chart.subtitle, &chart.artist]
+                        .iter()
+                        .any(|text| text.to_lowercase().contains(&query))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        self.cursor = self.cursor.min(self.indices.len().saturating_sub(1));
+        self.scroll = self.scroll.min(self.cursor);
+    }
+
+    fn selected(&self) -> Option<usize> {
+        self.indices.get(self.cursor).copied()
+    }
+
+    fn key(&mut self, key: KeyCode, charts: &[ChartMeta]) {
+        if self.editing {
+            match key {
+                KeyCode::Esc | KeyCode::Enter => self.editing = false,
+                KeyCode::Backspace => {
+                    self.query.pop();
+                }
+                KeyCode::Char(c) if !c.is_control() => self.query.push(c),
+                _ => return,
+            }
+            self.cursor = 0;
+            self.scroll = 0;
+            self.refresh(charts);
+            return;
+        }
+        let last = self.indices.len().saturating_sub(1);
+        match key {
+            KeyCode::Char('/') => self.editing = true,
+            KeyCode::Char('l') => {
+                let mut lanes: Vec<_> = charts.iter().map(|chart| chart.lane_count).collect();
+                lanes.sort_unstable();
+                lanes.dedup();
+                self.lanes = lanes
+                    .into_iter()
+                    .find(|&n| self.lanes.is_none_or(|old| n > old));
+                self.cursor = 0;
+                self.scroll = 0;
+            }
+            KeyCode::Char('c') => {
+                self.query.clear();
+                self.lanes = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.cursor = self.cursor.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => self.cursor = (self.cursor + 1).min(last),
+            KeyCode::Home | KeyCode::Char('g') => self.cursor = 0,
+            KeyCode::End | KeyCode::Char('G') => self.cursor = last,
+            KeyCode::PageUp => self.cursor = self.cursor.saturating_sub(10),
+            KeyCode::PageDown => self.cursor = (self.cursor + 10).min(last),
+            _ => return,
+        }
+        if matches!(key, KeyCode::Char('l' | 'c')) {
+            self.refresh(charts);
+        }
+    }
+}
+
 pub fn run(out: &mut Stdout, charts: &[ChartMeta], no_audio: bool) -> Result<Option<ChartMeta>> {
+    run_with_state(out, charts, no_audio, &mut SelectorState::default())
+}
+
+pub fn run_with_state(
+    out: &mut Stdout,
+    charts: &[ChartMeta],
+    no_audio: bool,
+    state: &mut SelectorState,
+) -> Result<Option<ChartMeta>> {
     if charts.is_empty() {
         return Ok(None);
     }
+    state.editing = false;
+    state.refresh(charts);
     let audio = crate::audio::preview_output(!no_audio);
     let mut preview = crate::preview::SelectionPreview::default();
-    let mut cursor_i: usize = 0;
-    let mut scroll: usize = 0;
     loop {
-        preview.update(cursor_i, charts[cursor_i].preview.as_deref(), |path| {
-            crate::preview::play(audio.as_ref().map(|(_, handle)| handle), path)
-        });
-        draw(out, charts, cursor_i, &mut scroll)?;
+        let selected = state.selected();
+        preview.update(
+            selected,
+            selected.and_then(|i| charts[i].preview.as_deref()),
+            |path| crate::preview::play(audio.as_ref().map(|(_, handle)| handle), path),
+        );
+        draw(out, charts, state)?;
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(k) = event::read()? {
                 if k.kind == KeyEventKind::Release {
                     continue;
                 }
-                match k.code {
-                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => return Ok(None),
-                    KeyCode::Up | KeyCode::Char('k') => cursor_i = cursor_i.saturating_sub(1),
-                    KeyCode::Down | KeyCode::Char('j') if cursor_i + 1 < charts.len() => {
-                        cursor_i += 1;
+                if !state.editing {
+                    match k.code {
+                        KeyCode::Esc | KeyCode::Char('q' | 'Q') => return Ok(None),
+                        KeyCode::Enter if selected.is_some() => {
+                            return Ok(selected.map(|i| charts[i].clone()))
+                        }
+                        _ => {}
                     }
-                    KeyCode::Home | KeyCode::Char('g') => cursor_i = 0,
-                    KeyCode::End | KeyCode::Char('G') => cursor_i = charts.len() - 1,
-                    KeyCode::PageUp => cursor_i = cursor_i.saturating_sub(10),
-                    KeyCode::PageDown => cursor_i = (cursor_i + 10).min(charts.len() - 1),
-                    KeyCode::Enter => return Ok(Some(charts[cursor_i].clone())),
-                    _ => {}
                 }
+                state.key(k.code, charts);
             }
         }
     }
 }
 
-fn draw(out: &mut Stdout, charts: &[ChartMeta], cursor_i: usize, scroll: &mut usize) -> Result<()> {
-    let (cols, rows) = terminal::size()?;
+fn draw(out: &mut Stdout, charts: &[ChartMeta], state: &mut SelectorState) -> Result<()> {
+    draw_frame(out, charts, state, terminal::size()?)
+}
+
+fn draw_frame(
+    out: &mut impl Write,
+    charts: &[ChartMeta],
+    state: &mut SelectorState,
+    (cols, rows): (u16, u16),
+) -> Result<()> {
+    let cursor_i = state.cursor;
+    let scroll = &mut state.scroll;
     queue!(
         out,
         terminal::BeginSynchronizedUpdate,
@@ -122,7 +219,23 @@ fn draw(out: &mut Stdout, charts: &[ChartMeta], cursor_i: usize, scroll: &mut us
         ResetColor
     )?;
 
-    let list_top = 4u16;
+    let status = format!(
+        "{} / {} matches | Lanes: {} | {}Query: {}",
+        state.indices.len(),
+        charts.len(),
+        state
+            .lanes
+            .map(|n| format!("{n}K"))
+            .unwrap_or_else(|| "all".into()),
+        if state.editing { "/ editing | " } else { "" },
+        crate::terminal_text::sanitize(&state.query),
+    );
+    let status: String = status
+        .chars()
+        .take(cols.saturating_sub(4) as usize)
+        .collect();
+    queue!(out, cursor::MoveTo(2, 3), Print(status))?;
+    let list_top = 5u16;
     let detail_rows = if rows >= 16 { 6 } else { 0 };
     let list_bottom = rows.saturating_sub(2 + detail_rows);
     let view_rows = list_bottom.saturating_sub(list_top) as usize;
@@ -141,10 +254,10 @@ fn draw(out: &mut Stdout, charts: &[ChartMeta], cursor_i: usize, scroll: &mut us
 
     for row in 0..view_rows {
         let i = *scroll + row;
-        if i >= charts.len() {
+        if i >= state.indices.len() {
             break;
         }
-        let m = &charts[i];
+        let m = &charts[state.indices[i]];
         let selected = i == cursor_i;
         let y = list_top + row as u16;
         let arrow = if selected { "▸ " } else { "  " };
@@ -163,16 +276,26 @@ fn draw(out: &mut Stdout, charts: &[ChartMeta], cursor_i: usize, scroll: &mut us
         )?;
     }
 
-    if detail_rows > 0 {
-        draw_details(out, &charts[cursor_i], cols, list_bottom)?;
+    if state.indices.is_empty() {
+        queue!(
+            out,
+            cursor::MoveTo(2, list_top),
+            Print("No matching charts. Edit / search or press c to clear.")
+        )?;
+    } else if detail_rows > 0 {
+        draw_details(out, &charts[state.indices[cursor_i]], cols, list_bottom)?;
     }
 
-    let hint = "↑↓ / j k  move    Enter  play    Esc  quit";
+    let hint = if state.editing {
+        "Type to search  Backspace delete  Enter / Esc finish editing"
+    } else {
+        "↑↓ move  / search  l lanes  c clear  Enter play  Esc quit"
+    };
     queue!(
         out,
         cursor::MoveTo(
             cols.saturating_sub(hint.chars().count() as u16) / 2,
-            rows - 1
+            rows.saturating_sub(1)
         ),
         SetForegroundColor(Color::DarkGrey),
         Print(hint),
@@ -250,6 +373,99 @@ mod tests {
             difficulty: Some(2),
             lane_count: 5,
         }
+    }
+
+    #[test]
+    fn empty_results_render_conditions_and_no_stale_chart_details() {
+        let mut chart = meta("Alpha");
+        chart.comment = "Selected chart comment".into();
+        let charts = vec![chart];
+        let mut state = SelectorState {
+            query: "missing".into(),
+            lanes: Some(7),
+            ..Default::default()
+        };
+        state.refresh(&charts);
+        let mut out = Vec::new();
+        draw_frame(&mut out, &charts, &mut state, (100, 24)).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("0 / 1 matches | Lanes: 7K | Query: missing"));
+        assert!(output.contains("No matching charts"));
+        assert!(!output.contains("Selected chart comment"));
+        assert!(!output.contains("Alpha"));
+    }
+
+    #[test]
+    fn search_matches_title_subtitle_and_artist_case_insensitively() {
+        let mut charts = vec![meta("ÉTOILE"), meta("Other"), meta("Third")];
+        charts[1].subtitle = "Étoile remix".into();
+        charts[2].artist = "étoile".into();
+        let mut state = SelectorState {
+            query: "éTOILE".into(),
+            ..Default::default()
+        };
+        state.refresh(&charts);
+        assert_eq!(state.indices, vec![0, 1, 2]);
+        charts[1].lane_count = 7;
+        state.lanes = Some(7);
+        state.refresh(&charts);
+        assert_eq!(state.indices, vec![1]);
+        assert_eq!(state.selected(), Some(1));
+        assert_eq!(charts[0].title, "ÉTOILE");
+    }
+
+    #[test]
+    fn navigation_stays_in_bounds_and_empty_results_can_be_cleared() {
+        let charts = vec![meta("Alpha"), meta("Beta")];
+        let mut state = SelectorState::default();
+        state.refresh(&charts);
+        state.key(KeyCode::PageDown, &charts);
+        assert_eq!(state.selected(), Some(1));
+        state.scroll = 1;
+        state.key(KeyCode::Char('/'), &charts);
+        state.key(KeyCode::Char('q'), &charts);
+        assert_eq!(state.query, "q");
+        assert_eq!(state.selected(), None);
+        assert_eq!(state.scroll, 0);
+        state.key(KeyCode::Enter, &charts);
+        for key in [
+            KeyCode::End,
+            KeyCode::Down,
+            KeyCode::PageDown,
+            KeyCode::Up,
+            KeyCode::PageUp,
+            KeyCode::Home,
+        ] {
+            state.key(key, &charts);
+            assert_eq!(state.cursor, 0);
+            assert_eq!(state.selected(), None);
+        }
+        state.key(KeyCode::Char('c'), &charts);
+        assert_eq!(state.selected(), Some(0));
+    }
+
+    #[test]
+    fn editing_and_lane_cycle_combine_and_retain_conditions_on_refresh() {
+        let mut charts = vec![meta("Alpha"), meta("Beta")];
+        charts[1].lane_count = 7;
+        let mut state = SelectorState::default();
+        state.refresh(&charts);
+        state.key(KeyCode::Char('l'), &charts);
+        assert_eq!(state.lanes, Some(5));
+        state.key(KeyCode::Char('/'), &charts);
+        state.key(KeyCode::Char('B'), &charts);
+        state.key(KeyCode::Esc, &charts);
+        assert!(state.indices.is_empty());
+        state.key(KeyCode::Char('l'), &charts);
+        assert_eq!(state.selected(), Some(1));
+        state.refresh(&charts);
+        assert_eq!(state.query, "B");
+        assert_eq!(state.lanes, Some(7));
+        state.key(KeyCode::Char('l'), &charts);
+        assert_eq!(state.lanes, None);
+        state.key(KeyCode::Char('/'), &charts);
+        state.key(KeyCode::Backspace, &charts);
+        assert_eq!(state.indices, vec![0, 1]);
     }
 
     #[test]

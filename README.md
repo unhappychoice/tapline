@@ -53,7 +53,15 @@ tapline --built-in --bpm 160           # play the built-in practice chart
 Charts with `#PREVIEW` loop their preview audio while selected. Moving to another
 chart or leaving the selector stops playback. Use `--no-audio` to disable it.
 
-Inside the selector: `↑ ↓` / `j k` to move, `Enter` to play, `Esc` / `q` to quit.
+Inside the selector: `↑ ↓` / `j k` to move, `PageUp` / `PageDown` to page,
+`Home` / `End` (or `g` / `G`) to jump, `Enter` to play, `Esc` / `q` to quit.
+Press `/` to edit a live, case-insensitive search across title, subtitle, and
+artist. Type to search, `Backspace` to delete, and `Enter` / `Esc` to finish
+editing without starting a chart or quitting. Press `l` outside search editing
+to cycle through the collection's lane counts and back to all lanes; `c` clears
+both conditions. The selector shows the active conditions and matching count.
+Empty results stop preview playback and cannot be played. Search and lane
+conditions persist when returning from play within the same session.
 
 ### Fixing audio delay
 
