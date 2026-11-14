@@ -85,10 +85,10 @@ mod tests {
 
     #[test]
     fn regular_audio_decodes_and_repeats() {
-        let path = Path::new("tests/fixtures/tone.wav");
-        let samples: Vec<_> = load_source(path).unwrap().collect();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tone.wav");
+        let samples: Vec<_> = load_source(&path).unwrap().collect();
         assert!(!samples.is_empty());
-        let repeated: Vec<_> = load_source(path)
+        let repeated: Vec<_> = load_source(&path)
             .unwrap()
             .repeat_infinite()
             .take(samples.len() * 3)
