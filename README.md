@@ -88,14 +88,16 @@ lane counts and difficulty tiers:
 
 | chart                        | lanes | difficulty  | BPM | flavor                                    |
 | ---------------------------- | ----- | ----------- | --- | ----------------------------------------- |
-| `01-first-steps.bms`         | 4     | BEGINNER 1  | 100 | lane recognition + first chords           |
+| `01-first-steps.bmson`       | 4     | BEGINNER 1  | 100 | lane recognition + first chords           |
 | `02-steady-rain.bms`         | 5     | NORMAL 4    | 130 | 8ths + 16th runs + syncopation            |
 | `03-rolling-thunder.bms`     | 7     | HYPER 8     | 155 | rolls, jacks, dense finales               |
-| `04-neon-drive.bms`          | 4     | NORMAL 3    | 128 | synthwave groove, chord shots             |
+| `04-neon-drive.bmson`        | 4     | NORMAL 3    | 128 | synthwave groove, chord shots             |
 | `05-circuit-breaker.bms`     | 5     | HYPER 7     | 148 | breakbeat runs, alternating hands         |
 | `06-blue-hour.bms`           | 7     | NORMAL 5    | 140 | gentler 7K to learn all seven keys        |
 | `07-final-cascade.bms`       | 7     | ANOTHER 11  | 175 | endgame chart: streams, jacks, staircases |
-| `08-arcade-hero.bms`         | 4     | HYPER 7     | 165 | chiptune 4K with 16th runs                |
+| `08-arcade-hero.bmson`       | 4     | HYPER 7     | 165 | chiptune 4K with 16th runs                |
+
+The 4K charts use bmson’s explicit `generic-4keys` mode for the `S D K L` layout.
 
 All charts play with the synth fallback — no WAV assets required.
 
