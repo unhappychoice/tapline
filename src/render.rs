@@ -965,7 +965,7 @@ mod tests {
             bank.enabled = enabled;
             [false, true].into_iter().for_each(|auto_ks| {
                 let mut loaded = crate::bms::load(&path, 0.0).unwrap();
-                loaded.duration_ms = bank.chart_duration_ms(&loaded, auto_ks, 0.0);
+                loaded.duration_ms = bank.chart_duration_ms(&loaded, auto_ks, false, 0.0);
                 assert_eq!(
                     loaded.duration_ms,
                     if enabled { 12500.0 } else { chart.duration_ms }
