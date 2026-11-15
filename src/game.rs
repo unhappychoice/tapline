@@ -49,6 +49,7 @@ pub struct Game {
     max_good: f64,
     lane_notes: Vec<Vec<usize>>,
     lane_mines: Vec<Vec<usize>>,
+    mine_index: crate::mine_visibility::MineIndex,
     #[cfg(test)]
     mine_visits: usize,
     held_notes: Vec<usize>,
@@ -163,8 +164,11 @@ impl Game {
                 *sound = note.keysound;
             }
         });
+        let scroll = crate::scroll::ScrollMap::new(&chart.scroll);
+        let mine_index = crate::mine_visibility::MineIndex::new(&chart.mines, &scroll);
         Self {
-            scroll: crate::scroll::ScrollMap::new(&chart.scroll),
+            scroll,
+            mine_index,
             volume: crate::audio::PlaybackVolume::new(&chart),
             gauge: Gauge::new(GaugeKind::Normal, &chart),
             completed: false,
@@ -380,6 +384,16 @@ impl Game {
         let start = ids.partition_point(|&i| self.chart.notes[i].time_ms < now_ms - good);
         let end = ids.partition_point(|&i| self.chart.notes[i].time_ms <= now_ms + good);
         &ids[start..end]
+    }
+
+    /// Select unexpired mines inside the current scroll-distance window.
+    pub fn visible_mines(&self, now_ms: f64, approach_ms: f64) -> Vec<&crate::chart::Mine> {
+        self.mine_index.visible(
+            &self.chart.mines,
+            &self.scroll.frame(&self.chart, now_ms),
+            now_ms,
+            approach_ms,
+        )
     }
 
     /// Charts must keep their notes in ascending time order throughout play.
