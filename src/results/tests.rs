@@ -105,3 +105,23 @@ fn persistence_round_trip_replaces_file_and_rejects_corrupt_storage() {
     assert!(store.save(&dir).is_err());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn loading_a_replacement_fifo_does_not_block() {
+    let dir = directory();
+    let path = dir.join("results.json");
+    std::fs::write(&path, b"{}").unwrap();
+    assert!(path.metadata().unwrap().is_file());
+    std::fs::remove_file(&path).unwrap();
+    let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker_path = path.clone();
+    std::thread::spawn(move || {
+        sender.send(Store::load(&worker_path).is_err()).ok();
+    });
+    let result = receiver.recv_timeout(std::time::Duration::from_secs(5));
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(result.expect("replacement FIFO must not block Store::load"));
+}
