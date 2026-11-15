@@ -2,7 +2,7 @@
 name = "tapline"
 version = "0.1.0"
 edition = "2021"
-description = "A simple 4-lane rhythm game in your terminal"
+description = "A simple rhythm game in your terminal"
 license = "MIT"
 repository = "https://github.com/unhappychoice/tapline"
 readme = "README.md"
