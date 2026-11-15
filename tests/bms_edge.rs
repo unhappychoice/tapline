@@ -186,8 +186,8 @@ fn invalid_extended_bpm_referenced_by_a_channel_08_event_is_ignored_not_fatal() 
                 let path = write_text(&format!(
                     "#BASE {base}\n#{header} {bpm}\n#00108:01\n#00111:0100\n"
                 ));
-                let chart = bms::load(&path, 0.0)
-                    .unwrap_or_else(|e| panic!("{base} {header} {bpm}: {e}"));
+                let chart =
+                    bms::load(&path, 0.0).unwrap_or_else(|e| panic!("{base} {header} {bpm}: {e}"));
                 assert_eq!(chart.notes.len(), 1, "{base} {header} {bpm}");
                 assert!(bms::read_meta(&path).is_ok(), "{base} {header} {bpm}");
             }
