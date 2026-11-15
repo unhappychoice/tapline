@@ -1597,7 +1597,10 @@ mod tests {
         std::fs::write(&within_limit, silence_wav(1_000)).unwrap();
         std::fs::write(&past_limit, silence_wav(1_001)).unwrap();
 
-        assert_eq!(decode_capped(&within_limit, 1_000).unwrap().data.len(), 1_000);
+        assert_eq!(
+            decode_capped(&within_limit, 1_000).unwrap().data.len(),
+            1_000
+        );
         assert!(decode_capped(&past_limit, 1_000).is_err());
 
         std::fs::remove_dir_all(dir).unwrap();
@@ -1605,8 +1608,8 @@ mod tests {
 
     #[test]
     fn chart_loading_treats_an_oversized_sample_as_a_decode_failure_and_still_loads_the_rest() {
-        let dir = std::env::temp_dir()
-            .join(format!("tapline-decode-cap-chart-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("tapline-decode-cap-chart-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let huge = dir.join("huge.wav");
         let normal = dir.join("normal.wav");
@@ -1615,8 +1618,7 @@ mod tests {
         let paths = HashMap::from([(1, huge), (2, normal)]);
 
         let max_samples = 1_000usize;
-        let (samples, failures) =
-            decode_all_with(&paths, |path| decode_capped(path, max_samples));
+        let (samples, failures) = decode_all_with(&paths, |path| decode_capped(path, max_samples));
 
         assert_eq!(failures, 1);
         assert!(!samples.contains_key(&1));
