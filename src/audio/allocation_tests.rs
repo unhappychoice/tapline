@@ -6,6 +6,7 @@ struct CountingAllocator;
 
 thread_local! {
     static ALLOCATIONS: Cell<Option<usize>> = const { Cell::new(None) };
+    static PEAK_ALLOC_SIZE: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
 #[global_allocator]
@@ -13,17 +14,17 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        record_allocation();
+        record_allocation(layout.size());
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        record_allocation();
+        record_allocation(layout.size());
         unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        record_allocation();
+        record_allocation(size);
         unsafe { System.realloc(ptr, layout, size) }
     }
 
@@ -32,9 +33,12 @@ unsafe impl GlobalAlloc for CountingAllocator {
     }
 }
 
-fn record_allocation() {
+fn record_allocation(size: usize) {
     let _ = ALLOCATIONS.try_with(|count| {
         count.set(count.get().map(|value| value + 1));
+    });
+    let _ = PEAK_ALLOC_SIZE.try_with(|peak| {
+        peak.set(peak.get().map(|value| value.max(size)));
     });
 }
 
@@ -98,4 +102,29 @@ fn gains_preserve_pcm_and_restart_channel_parity_for_each_frame() {
         assert_eq!(sample.sample_rate, 44100);
         assert_eq!(*original, [1.0, -0.5, 0.25, -1.0, 0.5, -0.25, 0.75]);
     });
+}
+
+#[test]
+fn capped_collection_rejects_unbounded_silence_without_allocating_for_its_full_length() {
+    let max_samples = 1_000usize;
+    // An endless stream of silence stands in for a crafted long-duration
+    // (synthetic silence) sample: real decoders only read from the source as
+    // `collect_capped` pulls items, so this exercises the exact mechanism a
+    // compression-bomb file would hit, without needing gigabytes of real PCM.
+    let unbounded_silence = std::iter::repeat(0.0_f32);
+
+    ALLOCATIONS.with(|count| count.set(Some(0)));
+    PEAK_ALLOC_SIZE.with(|peak| peak.set(Some(0)));
+    let result = collect_capped(unbounded_silence, max_samples);
+    let peak = PEAK_ALLOC_SIZE.with(|peak| peak.replace(None).unwrap());
+    ALLOCATIONS.with(|count| count.set(None));
+
+    assert!(result.is_err());
+    // No single allocation should come anywhere close to the unbounded input;
+    // it should stay on the order of the capped sample count.
+    let max_expected_bytes = (max_samples + 1) * std::mem::size_of::<f32>() * 2;
+    assert!(
+        peak <= max_expected_bytes,
+        "allocation of {peak} bytes exceeds the capped bound of {max_expected_bytes} bytes"
+    );
 }

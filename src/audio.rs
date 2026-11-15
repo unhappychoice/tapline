@@ -435,17 +435,44 @@ fn synth_ping(freq: f32, duration_ms: u32, sample_rate: u32) -> Vec<f32> {
         .collect()
 }
 
+/// Upper bound on the number of `f32` samples a single `#WAVxx` file may decode
+/// into (10 minutes of 48kHz stereo audio). Lossy codecs can compress long
+/// runs of near-silent audio by enormous ratios, so without a cap a tiny
+/// chart-referenced file could decode into gigabytes of PCM before gameplay
+/// even starts; this is far beyond any real keysound or BGM track, so it never
+/// affects legitimate charts.
+const MAX_DECODED_SAMPLES: usize = 48_000 * 60 * 10 * 2;
+
 fn decode(path: &std::path::Path) -> anyhow::Result<DecodedSample> {
+    decode_capped(path, MAX_DECODED_SAMPLES)
+}
+
+fn decode_capped(path: &std::path::Path, max_samples: usize) -> anyhow::Result<DecodedSample> {
     let file = BufReader::new(file::open(path)?);
     let decoder = Decoder::new(file)?;
     let channels = decoder.channels();
     let sample_rate = decoder.sample_rate();
-    let data: Vec<f32> = decoder.convert_samples::<f32>().collect();
+    let data = collect_capped(decoder.convert_samples::<f32>(), max_samples)?;
     Ok(DecodedSample {
         channels,
         sample_rate,
         data: Arc::new(data),
     })
+}
+
+/// `.take()` stops pulling further items from `samples` once the cap is
+/// reached, so a decoder backed by an oversized (or unbounded) source never
+/// gets fully drained into memory.
+fn collect_capped(
+    samples: impl Iterator<Item = f32>,
+    max_samples: usize,
+) -> anyhow::Result<Vec<f32>> {
+    let data: Vec<f32> = samples.take(max_samples.saturating_add(1)).collect();
+    anyhow::ensure!(
+        data.len() <= max_samples,
+        "decoded audio exceeds the {max_samples}-sample limit"
+    );
+    Ok(data)
 }
 
 #[cfg(unix)]
@@ -1540,6 +1567,64 @@ mod tests {
     fn decode_reports_error_for_missing_file() {
         let missing = PathBuf::from("/nonexistent-tapline-audio-test-xyz.wav");
         assert!(decode(&missing).is_err());
+    }
+
+    fn silence_wav(sample_count: u32) -> Vec<u8> {
+        let mut wav = b"RIFF".to_vec();
+        let data_size = sample_count * 2; // 16-bit mono => 2 bytes per decoded sample
+        wav.extend((36 + data_size).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes()); // PCM
+        wav.extend(1u16.to_le_bytes()); // mono
+        wav.extend(8000u32.to_le_bytes()); // sample rate
+        wav.extend(16000u32.to_le_bytes()); // byte rate
+        wav.extend(2u16.to_le_bytes()); // block align
+        wav.extend(16u16.to_le_bytes()); // bits per sample
+        wav.extend(b"data");
+        wav.extend(data_size.to_le_bytes());
+        wav.resize(44 + data_size as usize, 0);
+        wav
+    }
+
+    #[test]
+    fn decode_capped_rejects_audio_past_the_limit_but_allows_audio_within_it() {
+        let dir =
+            std::env::temp_dir().join(format!("tapline-decode-capped-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let within_limit = dir.join("within.wav");
+        let past_limit = dir.join("past.wav");
+        std::fs::write(&within_limit, silence_wav(1_000)).unwrap();
+        std::fs::write(&past_limit, silence_wav(1_001)).unwrap();
+
+        assert_eq!(
+            decode_capped(&within_limit, 1_000).unwrap().data.len(),
+            1_000
+        );
+        assert!(decode_capped(&past_limit, 1_000).is_err());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn chart_loading_treats_an_oversized_sample_as_a_decode_failure_and_still_loads_the_rest() {
+        let dir =
+            std::env::temp_dir().join(format!("tapline-decode-cap-chart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let huge = dir.join("huge.wav");
+        let normal = dir.join("normal.wav");
+        std::fs::write(&huge, silence_wav(2_000)).unwrap();
+        std::fs::write(&normal, silence_wav(500)).unwrap();
+        let paths = HashMap::from([(1, huge), (2, normal)]);
+
+        let max_samples = 1_000usize;
+        let (samples, failures) = decode_all_with(&paths, |path| decode_capped(path, max_samples));
+
+        assert_eq!(failures, 1);
+        assert!(!samples.contains_key(&1));
+        assert_eq!(samples[&2].data.len(), 500);
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 
