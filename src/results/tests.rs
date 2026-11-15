@@ -37,6 +37,18 @@ fn identity_tracks_contents_and_format_but_not_location_or_seed() {
 }
 
 #[test]
+fn identity_key_hex_encodes_the_sha256_digest() {
+    let dir = directory();
+    let path = dir.join("file.bms");
+    std::fs::write(&path, "#TITLE One").unwrap();
+    let identity = Identity::file(&path, None).unwrap();
+    let digest = identity.key.strip_prefix("bms:").unwrap();
+    assert_eq!(digest.len(), 64);
+    assert!(digest.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn best_values_improve_independently_and_latest_keeps_provenance() {
     let mut store = Store::default();
     let mut id = Identity::built_in(120.0);

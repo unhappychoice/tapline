@@ -24,8 +24,12 @@ impl Identity {
             .unwrap_or_default()
             .to_string_lossy()
             .to_ascii_lowercase();
+        let digest = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         Self {
-            key: format!("{extension}:{:x}", Sha256::digest(bytes)),
+            key: format!("{extension}:{digest}"),
             random_seed,
         }
     }
