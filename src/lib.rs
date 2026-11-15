@@ -19,5 +19,6 @@ pub mod sample_settings;
 mod artwork;
 mod assets;
 mod chart_file;
+mod fs_guard;
 mod preview;
 mod scroll;

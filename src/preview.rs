@@ -1,5 +1,6 @@
+use crate::fs_guard;
 use rodio::{Decoder, OutputStreamHandle, Sink, Source};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
@@ -34,21 +35,7 @@ pub(crate) fn play(handle: Option<&OutputStreamHandle>, path: &Path) -> Option<S
 }
 
 fn load_source(path: &Path) -> Option<Decoder<BufReader<File>>> {
-    if !path.metadata().ok()?.is_file() {
-        return None;
-    }
-    let mut options = OpenOptions::new();
-    options.read(true);
-    // Avoid blocking if a regular file is replaced with a FIFO before opening.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK);
-    }
-    let file = options.open(path).ok()?;
-    if !file.metadata().ok()?.is_file() {
-        return None;
-    }
+    let file = fs_guard::open(path).ok()?;
     Decoder::new(BufReader::new(file)).ok()
 }
 
