@@ -37,6 +37,15 @@ fn identity_tracks_contents_and_format_but_not_location_or_seed() {
 }
 
 #[test]
+fn identity_key_hex_encodes_the_sha256_digest() {
+    let identity = Identity::from_bytes(Path::new("file.BMS"), b"abc", None);
+    assert_eq!(
+        identity.key,
+        "bms:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+}
+
+#[test]
 fn best_values_improve_independently_and_latest_keeps_provenance() {
     let mut store = Store::default();
     let mut id = Identity::built_in(120.0);
