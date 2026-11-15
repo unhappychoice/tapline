@@ -1,26 +1,13 @@
-use anyhow::{ensure, Context, Result};
-use std::{fs::OpenOptions, io::Read, path::Path};
+use crate::fs_guard;
+use anyhow::{Context, Result};
+use std::{io::Read, path::Path};
 
 pub(crate) fn read(path: &Path) -> Result<Vec<u8>> {
     read_regular(path).with_context(|| format!("cannot read chart {}", path.display()))
 }
 
 fn read_regular(path: &Path) -> Result<Vec<u8>> {
-    ensure!(path.metadata()?.is_file(), "chart must be a regular file");
-    read_opened(path)
-}
-
-fn read_opened(path: &Path) -> Result<Vec<u8>> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    // A file may be replaced with a FIFO after the path metadata check.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK);
-    }
-    let mut file = options.open(path)?;
-    ensure!(file.metadata()?.is_file(), "chart must be a regular file");
+    let mut file = fs_guard::open(path)?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
     Ok(bytes)
@@ -46,7 +33,8 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let worker_path = path.clone();
         std::thread::spawn(move || {
-            let rejected = read_opened(&worker_path).is_err() && read_opened(&device).is_err();
+            let rejected = fs_guard::open_verified(&worker_path).is_err()
+                && fs_guard::open_verified(&device).is_err();
             sender.send(rejected).ok();
         });
         let result = receiver.recv_timeout(Duration::from_secs(2));

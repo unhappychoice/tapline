@@ -77,7 +77,7 @@ fn replacement_fifo_and_device_are_rejected_after_open() {
         std::fs::write(&path, b"regular").unwrap();
         assert!(path.metadata().unwrap().is_file());
         std::fs::rename(fifo, &path).unwrap();
-        assert!(load_verified(&path).is_none());
-        assert!(load_verified(Path::new("/dev/zero")).is_none());
+        assert!(crate::fs_guard::open_verified(&path).is_err());
+        assert!(crate::fs_guard::open_verified(Path::new("/dev/zero")).is_err());
     });
 }

@@ -1,4 +1,5 @@
 use crate::assets::AssetIndex;
+use crate::fs_guard;
 use crossterm::{
     cursor, queue,
     style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
@@ -6,7 +7,6 @@ use crossterm::{
 use image::{DynamicImage, ImageReader, RgbaImage};
 use std::{
     cell::RefCell,
-    fs::OpenOptions,
     io::{BufReader, Write},
     path::{Path, PathBuf},
 };
@@ -73,21 +73,7 @@ impl ArtworkCache {
 }
 
 fn load_image(path: &Path) -> Option<DynamicImage> {
-    if !path.metadata().ok()?.is_file() {
-        return None;
-    }
-    let mut options = OpenOptions::new();
-    options.read(true);
-    // Avoid blocking if a regular file is replaced with a FIFO before opening.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK);
-    }
-    let file = options.open(path).ok()?;
-    if !file.metadata().ok()?.is_file() {
-        return None;
-    }
+    let file = fs_guard::open(path).ok()?;
     ImageReader::new(BufReader::new(file))
         .with_guessed_format()
         .ok()?
