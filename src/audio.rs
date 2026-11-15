@@ -391,21 +391,19 @@ fn apply_settings(sample: &mut DecodedSample, settings: &crate::sample_settings:
     let (left, right) = settings.gains();
     if left != 1.0 || right != 1.0 {
         let channels = sample.channels as usize;
-        let data = sample
-            .data
-            .chunks(channels)
-            .flat_map(|frame| {
-                if channels == 1 {
-                    vec![frame[0] * left, frame[0] * right]
-                } else {
+        let mut data = Vec::with_capacity(sample.data.len() * if channels == 1 { 2 } else { 1 });
+        sample.data.chunks(channels).for_each(|frame| {
+            if channels == 1 {
+                data.extend([frame[0] * left, frame[0] * right]);
+            } else {
+                data.extend(
                     frame
                         .iter()
                         .enumerate()
-                        .map(|(i, value)| value * if i % 2 == 0 { left } else { right })
-                        .collect()
-                }
-            })
-            .collect();
+                        .map(|(i, value)| value * if i % 2 == 0 { left } else { right }),
+                );
+            }
+        });
         sample.data = Arc::new(data);
         sample.channels = sample.channels.max(2);
     }
@@ -1552,3 +1550,6 @@ where
 {
     f()
 }
+
+#[cfg(test)]
+mod allocation_tests;
