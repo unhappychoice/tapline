@@ -155,6 +155,22 @@ const PMS_LANES: LaneMap = LaneMap {
     mine: |ch| pms_channel_to_lane(ch, "D", "E"),
 };
 
+/// Shared digit->lane correspondence for P1/P2 normal, long, and mine channels.
+fn suffix_to_lane(suffix: &str) -> Option<usize> {
+    match suffix {
+        "1" => Some(0),
+        "2" => Some(1),
+        "3" => Some(2),
+        "4" => Some(3),
+        "5" => Some(4),
+        "6" => Some(7),
+        "7" => None, // Free zone / pedal is not a playable lane.
+        "8" => Some(5),
+        "9" => Some(6),
+        _ => None,
+    }
+}
+
 fn pms_channel_to_lane(ch: &str, left: &str, right: &str) -> Option<usize> {
     match (ch.strip_prefix(left), ch.strip_prefix(right)) {
         (Some("1"), _) => Some(0),
@@ -470,48 +486,15 @@ fn compact_scratch(notes: &mut [Note], mines: &mut [Mine], lane_count: usize) {
 }
 
 fn p2_channel_to_lane(ch: &str) -> Option<usize> {
-    match ch {
-        "21" => Some(0),
-        "22" => Some(1),
-        "23" => Some(2),
-        "24" => Some(3),
-        "25" => Some(4),
-        "26" => Some(7),
-        "27" => None, // Free zone / pedal is not a playable lane.
-        "28" => Some(5),
-        "29" => Some(6),
-        _ => None,
-    }
+    suffix_to_lane(ch.strip_prefix('2')?)
 }
 
 fn p2_long_channel_to_lane(ch: &str) -> Option<usize> {
-    match ch {
-        "61" => Some(0),
-        "62" => Some(1),
-        "63" => Some(2),
-        "64" => Some(3),
-        "65" => Some(4),
-        "66" => Some(7),
-        "67" => None, // Free zone / pedal is not a playable lane.
-        "68" => Some(5),
-        "69" => Some(6),
-        _ => None,
-    }
+    suffix_to_lane(ch.strip_prefix('6')?)
 }
 
 fn p2_mine_channel_to_lane(ch: &str) -> Option<usize> {
-    match ch {
-        "E1" => Some(0),
-        "E2" => Some(1),
-        "E3" => Some(2),
-        "E4" => Some(3),
-        "E5" => Some(4),
-        "E6" => Some(7),
-        "E7" => None, // Free zone / pedal is not a playable lane.
-        "E8" => Some(5),
-        "E9" => Some(6),
-        _ => None,
-    }
+    suffix_to_lane(ch.strip_prefix('E')?)
 }
 
 #[cfg(test)]
@@ -959,33 +942,11 @@ fn resolve_bmp_paths(assets: &AssetIndex, defs: &HashMap<u32, String>) -> HashMa
 }
 
 fn mine_channel_to_lane(ch: &str) -> Option<usize> {
-    match ch {
-        "D1" => Some(0),
-        "D2" => Some(1),
-        "D3" => Some(2),
-        "D4" => Some(3),
-        "D5" => Some(4),
-        "D6" => Some(7),
-        "D7" => None, // Free zone / pedal is not a playable lane.
-        "D8" => Some(5),
-        "D9" => Some(6),
-        _ => None,
-    }
+    suffix_to_lane(ch.strip_prefix('D')?)
 }
 
 fn long_channel_to_lane(ch: &str) -> Option<usize> {
-    match ch {
-        "51" => Some(0),
-        "52" => Some(1),
-        "53" => Some(2),
-        "54" => Some(3),
-        "55" => Some(4),
-        "56" => Some(7),
-        "57" => None, // Free zone / pedal is not a playable lane.
-        "58" => Some(5),
-        "59" => Some(6),
-        _ => None,
-    }
+    suffix_to_lane(ch.strip_prefix('5')?)
 }
 
 fn promote_lnobj(notes: &mut Vec<Note>, lnobj: u32) {
@@ -1851,18 +1812,7 @@ fn parse_slots(data: &str, base: u32) -> Vec<u32> {
 }
 
 fn channel_to_lane(ch: &str) -> Option<usize> {
-    match ch {
-        "11" => Some(0),
-        "12" => Some(1),
-        "13" => Some(2),
-        "14" => Some(3),
-        "15" => Some(4),
-        "16" => Some(7),
-        "17" => None, // Free zone / pedal is not a playable lane.
-        "18" => Some(5),
-        "19" => Some(6),
-        _ => None,
-    }
+    suffix_to_lane(ch.strip_prefix('1')?)
 }
 
 fn resolve_wavs(assets: &AssetIndex, defs: &HashMap<u32, String>) -> HashMap<u32, PathBuf> {
