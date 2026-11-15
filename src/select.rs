@@ -82,6 +82,10 @@ pub struct SelectorState {
     cursor: usize,
     scroll: usize,
     indices: Vec<usize>,
+    /// Lowercased title/subtitle/artist for each chart, keyed by index into
+    /// the `charts` slice passed to `refresh`. Rebuilt only when the chart
+    /// count changes, so repeated keystrokes don't re-lowercase every chart.
+    lowercase_cache: Vec<(String, String, String)>,
 }
 
 impl SelectorState {
@@ -90,15 +94,29 @@ impl SelectorState {
     }
 
     fn refresh(&mut self, charts: &[ChartMeta]) {
+        if self.lowercase_cache.len() != charts.len() {
+            self.lowercase_cache = charts
+                .iter()
+                .map(|chart| {
+                    (
+                        chart.title.to_lowercase(),
+                        chart.subtitle.to_lowercase(),
+                        chart.artist.to_lowercase(),
+                    )
+                })
+                .collect();
+        }
         let query = self.query.to_lowercase();
         self.indices = charts
             .iter()
             .enumerate()
-            .filter(|(_, chart)| {
-                self.lanes.is_none_or(|lanes| chart.lane_count == lanes)
-                    && [&chart.title, &chart.subtitle, &chart.artist]
+            .filter(|(i, chart)| {
+                self.lanes.is_none_or(|lanes| chart.lane_count == lanes) && {
+                    let (title, subtitle, artist) = &self.lowercase_cache[*i];
+                    [title, subtitle, artist]
                         .iter()
-                        .any(|text| text.to_lowercase().contains(&query))
+                        .any(|text| text.contains(&query))
+                }
             })
             .map(|(i, _)| i)
             .collect();
@@ -500,6 +518,32 @@ mod tests {
         assert_eq!(state.indices, vec![1]);
         assert_eq!(state.selected(), Some(1));
         assert_eq!(charts[0].title, "ÉTOILE");
+    }
+
+    #[test]
+    fn refresh_reuses_cached_lowercase_strings_while_chart_count_is_unchanged() {
+        let mut charts = vec![meta("Alpha"), meta("Beta")];
+        let mut state = SelectorState {
+            query: "beta".into(),
+            ..Default::default()
+        };
+        state.refresh(&charts);
+        assert_eq!(state.indices, vec![1]);
+        let cache_before = state.lowercase_cache.clone();
+
+        // Mutate a title in place without changing the chart count: refresh
+        // must keep using the cached lowercase strings instead of
+        // recomputing them, so the stale match for "Beta" still shows up.
+        charts[1].title = "Gamma".into();
+        state.refresh(&charts);
+        assert_eq!(state.indices, vec![1]);
+        assert_eq!(state.lowercase_cache, cache_before);
+
+        // Once the chart count changes, the cache is rebuilt and reflects
+        // the current data.
+        charts.push(meta("Delta"));
+        state.refresh(&charts);
+        assert_eq!(state.indices, Vec::<usize>::new());
     }
 
     #[test]
