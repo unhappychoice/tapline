@@ -23,8 +23,10 @@ pub fn with_alt_screen<W: Write, F: FnOnce(&mut W) -> Result<()>>(out: &mut W, f
     if pushed {
         let _ = execute!(out, PopKeyboardEnhancementFlags);
     }
-    execute!(out, cursor::Show, terminal::LeaveAlternateScreen)?;
-    raw_mode.restore()?;
+    // Best-effort: a result already produced by `f` (e.g. a completed and
+    // saved play) must not be discarded because a cleanup write fails.
+    let _ = execute!(out, cursor::Show, terminal::LeaveAlternateScreen);
+    let _ = raw_mode.restore();
     result
 }
 
