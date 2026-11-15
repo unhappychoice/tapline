@@ -110,7 +110,7 @@ jobs:
         run: cargo llvm-cov --locked --workspace --lcov --output-path lcov.info
 
       - name: cargo llvm-cov summary
-        run: cargo llvm-cov report --summary-only
+        run: cargo llvm-cov report --summary-only --fail-under-lines 90
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
