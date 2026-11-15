@@ -69,14 +69,17 @@ pub struct Store {
 
 impl Store {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        if path.exists() && !path.metadata()?.is_file() {
-            anyhow::bail!("results must be a regular file");
-        }
-        match std::fs::read(path) {
-            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(error.into()),
-        }
+        use std::io::Read;
+        let mut file = match crate::fs_guard::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default())
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(serde_json::from_slice(&bytes)?)
     }
 
     pub fn get(&self, identity: &Identity) -> Option<&Record> {
