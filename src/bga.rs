@@ -84,7 +84,9 @@ impl ImageBank {
         layer: BgaLayer,
         now_ms: f64,
     ) -> Option<u32> {
-        self.3.latest(layer, now_ms).map(|index| events[index].bmp_id)
+        self.3
+            .latest(layer, now_ms)
+            .map(|index| events[index].bmp_id)
     }
 
     fn layer(&self, game: &Game, layer: BgaLayer, now_ms: f64) -> Option<RgbaImage> {

@@ -64,10 +64,7 @@ fn active_bga_id_costs_logarithmic_work_for_large_charts() {
         let bank = ImageBank::load(&HashMap::new(), &events, &Extensions::default());
         for _ in 0..2 {
             bank.3.reset_comparisons();
-            assert_eq!(
-                bank.active_bga_id(&events, BgaLayer::Base, 0.0),
-                Some(0)
-            );
+            assert_eq!(bank.active_bga_id(&events, BgaLayer::Base, 0.0), Some(0));
             assert!(bank.3.comparisons() <= count.ilog2() as usize + 2);
         }
         bank.3.reset_comparisons();
