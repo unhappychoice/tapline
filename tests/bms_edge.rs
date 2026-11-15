@@ -164,17 +164,50 @@ fn zero_bpm_is_rejected() {
 }
 
 #[test]
-fn invalid_base_and_extended_bpms_are_rejected() {
+fn invalid_base_bpm_is_rejected() {
     for bpm in ["0", "-1", "NaN", "inf", "-inf", "1e309", "invalid"] {
         for base in [36, 62] {
-            for header in ["BPM", "BPM01", "EXBPM01", "BPM0a", "EXBPM0a"] {
+            let path = write_text(&format!(
+                "#BASE {base}\n#BPM {bpm}\n#00108:01\n#00111:0100\n"
+            ));
+            assert!(bms::load(&path, 0.0).is_err(), "{base} BPM {bpm}");
+            assert!(bms::read_meta(&path).is_err(), "{base} BPM {bpm}");
+        }
+    }
+}
+
+#[test]
+fn invalid_extended_bpm_referenced_by_a_channel_08_event_is_ignored_not_fatal() {
+    // Channel 08 slot "01" resolves to id 1 regardless of base, matching the
+    // "01" id in the header below, so this id is actually referenced.
+    for bpm in ["0", "-1", "NaN", "inf", "-inf", "1e309", "invalid"] {
+        for base in [36, 62] {
+            for header in ["BPM01", "EXBPM01"] {
                 let path = write_text(&format!(
                     "#BASE {base}\n#{header} {bpm}\n#00108:01\n#00111:0100\n"
                 ));
-                assert!(bms::load(&path, 0.0).is_err(), "{base} {header} {bpm}");
-                assert!(bms::read_meta(&path).is_err(), "{base} {header} {bpm}");
+                let chart = bms::load(&path, 0.0)
+                    .unwrap_or_else(|e| panic!("{base} {header} {bpm}: {e}"));
+                assert_eq!(chart.notes.len(), 1, "{base} {header} {bpm}");
+                assert!(bms::read_meta(&path).is_ok(), "{base} {header} {bpm}");
             }
         }
+    }
+}
+
+#[test]
+fn invalid_unreferenced_extended_bpm_does_not_abort_an_otherwise_valid_chart() {
+    // "0a" (id 10) is never referenced by the channel 08 event below, which
+    // uses slot "01" (id 1), so this invalid definition is dead code.
+    for header in ["BPM05", "EXBPM05", "BPM0a", "EXBPM0a"] {
+        let path = write_text(&format!(
+            "#TITLE Example\n#BPM 120\n#{header} -1\n#00108:01\n#00111:0100\n"
+        ));
+        let chart = bms::load(&path, 0.0).unwrap_or_else(|e| panic!("{header}: {e}"));
+        assert_eq!(chart.bpm, 120.0);
+        assert_eq!(chart.notes.len(), 1);
+        let meta = bms::read_meta(&path).unwrap();
+        assert_eq!(meta.bpm, 120.0);
     }
 }
 

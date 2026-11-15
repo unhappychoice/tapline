@@ -1542,7 +1542,9 @@ impl HeaderPass {
                 {
                     if !rest.is_empty() {
                         if let Some(id) = parse_id(rest, self.base) {
-                            self.bpm_defs.insert(id, parse_bpm(val)?);
+                            if let Ok(bpm) = parse_bpm(val) {
+                                self.bpm_defs.insert(id, bpm);
+                            }
                         }
                     }
                 } else if let Some(rest) = up.strip_prefix("STOP").and_then(|_| cmd.get(4..)) {
@@ -3930,10 +3932,13 @@ Always
         let mut p = HeaderPass::default();
         p.absorb("BPM01 175.5").unwrap();
         p.absorb("BPMZZ 60").unwrap();
-        assert!(p.absorb("BPM02 -20").is_err());
+        p.absorb("BPM02 -20").unwrap();
         assert_eq!(p.bpm_defs.get(&1), Some(&175.5));
         assert_eq!(p.bpm_defs.get(&1295), Some(&60.0));
-        assert!(!p.bpm_defs.contains_key(&2), "non-positive BPM is rejected");
+        assert!(
+            !p.bpm_defs.contains_key(&2),
+            "non-positive BPM is silently ignored, not an error"
+        );
     }
 
     #[test]
@@ -3941,11 +3946,19 @@ Always
         let mut p = HeaderPass::default();
         p.absorb("EXBPM01 180").unwrap();
         p.absorb("exbpmZZ 60").unwrap();
-        assert!(p.absorb("EXBPM02 -20").is_err());
-        assert!(p.absorb("EXBPM03 invalid").is_err());
+        p.absorb("EXBPM02 -20").unwrap();
+        p.absorb("EXBPM03 invalid").unwrap();
         p.absorb("EXBPM 240").unwrap();
         assert_eq!(p.bpm_defs.get(&1), Some(&180.0));
         assert_eq!(p.bpm_defs.get(&1295), Some(&60.0));
+        assert!(
+            !p.bpm_defs.contains_key(&2),
+            "non-positive BPM is silently ignored, not an error"
+        );
+        assert!(
+            !p.bpm_defs.contains_key(&3),
+            "unparsable BPM is silently ignored, not an error"
+        );
         assert_eq!(p.bpm_defs.len(), 2);
         assert_eq!(p.bpm, 130.0);
         p.absorb("BPM01 150").unwrap();
