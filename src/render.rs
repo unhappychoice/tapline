@@ -532,10 +532,7 @@ pub fn draw(out: &mut impl Write, game: &Game, now_ms: f64) -> anyhow::Result<()
     }
 
     let scroll = game.scroll.frame(&game.chart, now_ms);
-    for mine in &game.chart.mines {
-        if mine.exploded || mine.time_ms < now_ms - 60.0 {
-            continue;
-        }
+    for mine in game.visible_mines(now_ms, APPROACH_MS) {
         let Some(y) = note_screen_y(scroll.distance(mine.time_ms), &layout) else {
             continue;
         };

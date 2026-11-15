@@ -108,7 +108,7 @@ impl ScrollFrame<'_> {
         (a.min(b), a.max(b))
     }
 
-    fn transform(&self, coordinate: f64) -> f64 {
+    pub(crate) fn transform(&self, coordinate: f64) -> f64 {
         (coordinate - self.now) * self.speed
     }
 }
