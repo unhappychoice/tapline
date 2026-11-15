@@ -73,6 +73,22 @@ impl ImageBank {
         }));
     }
 
+    /// Return the BMP id currently active on a given BGA layer at `now_ms`,
+    /// or `None` if no event on that layer has fired yet. `events` must be
+    /// the same slice `self` was built from. Uses the per-layer timeline
+    /// built once in `ImageBank::load`, so the lookup is O(log n) per layer
+    /// rather than a per-frame linear scan.
+    pub fn active_bga_id(
+        &self,
+        events: &[crate::chart::BgaEvent],
+        layer: BgaLayer,
+        now_ms: f64,
+    ) -> Option<u32> {
+        self.3
+            .latest(layer, now_ms)
+            .map(|index| events[index].bmp_id)
+    }
+
     fn layer(&self, game: &Game, layer: BgaLayer, now_ms: f64) -> Option<RgbaImage> {
         let slot = timeline::slot(layer);
         let event = self

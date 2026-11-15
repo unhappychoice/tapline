@@ -271,25 +271,20 @@ pub fn format_audio_badge(audio_on: bool, samples: usize, failures: usize) -> St
     }
 }
 
-/// Return the BMP id currently active on a given BGA layer at `now_ms`, or
-/// `None` if no event on that layer has fired yet. Events must already be
-/// sorted ascending by time_ms — bms::load guarantees this.
-pub fn active_bga_id(bga: &[BgaEvent], layer: BgaLayer, now_ms: f64) -> Option<u32> {
-    bga.iter()
-        .rev()
-        .find(|e| e.layer == layer && e.time_ms <= now_ms)
-        .map(|e| e.bmp_id)
-}
-
 /// Compact HUD tag summarising the base/overlay/poor BGA slots the way a
 /// real player would care about — one line, base36 IDs, dashes where a slot
 /// hasn't fired yet.
-pub fn format_bga_badge(bga: &[BgaEvent], now_ms: f64) -> Option<String> {
+pub fn format_bga_badge(
+    bga_bank: &crate::bga::ImageBank,
+    bga: &[BgaEvent],
+    now_ms: f64,
+) -> Option<String> {
     if bga.is_empty() {
         return None;
     }
     let fmt = |layer: BgaLayer| -> String {
-        active_bga_id(bga, layer, now_ms)
+        bga_bank
+            .active_bga_id(bga, layer, now_ms)
             .map(bmp_id_label)
             .unwrap_or_else(|| "--".to_string())
     };
@@ -466,7 +461,7 @@ pub fn draw(out: &mut impl Write, game: &Game, now_ms: f64) -> anyhow::Result<()
         Print(gauge)
     )?;
 
-    if let Some(tag) = format_bga_badge(&game.chart.bga, now_ms) {
+    if let Some(tag) = format_bga_badge(&game.bga, &game.chart.bga, now_ms) {
         queue!(
             out,
             cursor::MoveTo(cols.saturating_sub(tag.chars().count() as u16 + 2), 2),
@@ -1463,6 +1458,14 @@ mod tests {
         assert_eq!(bmp_id_label(36 * 36 - 1), "ZZ");
     }
 
+    fn image_bank(events: &[BgaEvent]) -> crate::bga::ImageBank {
+        crate::bga::ImageBank::load(
+            &std::collections::HashMap::new(),
+            events,
+            &crate::bga::Extensions::default(),
+        )
+    }
+
     #[test]
     fn active_bga_id_returns_none_when_no_event_has_passed_yet() {
         let evs = vec![BgaEvent {
@@ -1470,7 +1473,8 @@ mod tests {
             layer: BgaLayer::Base,
             bmp_id: 1,
         }];
-        assert!(active_bga_id(&evs, BgaLayer::Base, 500.0).is_none());
+        let bank = image_bank(&evs);
+        assert!(bank.active_bga_id(&evs, BgaLayer::Base, 500.0).is_none());
     }
 
     #[test]
@@ -1492,7 +1496,8 @@ mod tests {
                 bmp_id: 3,
             },
         ];
-        assert_eq!(active_bga_id(&evs, BgaLayer::Base, 2000.0), Some(2));
+        let bank = image_bank(&evs);
+        assert_eq!(bank.active_bga_id(&evs, BgaLayer::Base, 2000.0), Some(2));
     }
 
     #[test]
@@ -1509,14 +1514,15 @@ mod tests {
                 bmp_id: 7,
             },
         ];
-        assert_eq!(active_bga_id(&evs, BgaLayer::Base, 2000.0), Some(1));
-        assert_eq!(active_bga_id(&evs, BgaLayer::Overlay, 2000.0), Some(7));
-        assert_eq!(active_bga_id(&evs, BgaLayer::Poor, 2000.0), None);
+        let bank = image_bank(&evs);
+        assert_eq!(bank.active_bga_id(&evs, BgaLayer::Base, 2000.0), Some(1));
+        assert_eq!(bank.active_bga_id(&evs, BgaLayer::Overlay, 2000.0), Some(7));
+        assert_eq!(bank.active_bga_id(&evs, BgaLayer::Poor, 2000.0), None);
     }
 
     #[test]
     fn format_bga_badge_returns_none_when_the_chart_has_no_bga() {
-        assert!(format_bga_badge(&[], 0.0).is_none());
+        assert!(format_bga_badge(&image_bank(&[]), &[], 0.0).is_none());
     }
 
     #[test]
@@ -1526,7 +1532,11 @@ mod tests {
             layer: BgaLayer::Base,
             bmp_id: 1,
         }];
-        assert_eq!(format_bga_badge(&evs, 200.0).unwrap(), "BGA 01·--·--");
+        let bank = image_bank(&evs);
+        assert_eq!(
+            format_bga_badge(&bank, &evs, 200.0).unwrap(),
+            "BGA 01·--·--"
+        );
     }
 
     #[test]

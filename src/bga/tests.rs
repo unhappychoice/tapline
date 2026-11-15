@@ -52,6 +52,28 @@ fn game() -> Game {
 }
 
 #[test]
+fn active_bga_id_costs_logarithmic_work_for_large_charts() {
+    for count in [1_usize, 100, 100_000] {
+        let events: Vec<BgaEvent> = (0..count)
+            .map(|index| BgaEvent {
+                time_ms: index as f64 * 1000.0,
+                layer: BgaLayer::Base,
+                bmp_id: index as u32,
+            })
+            .collect();
+        let bank = ImageBank::load(&HashMap::new(), &events, &Extensions::default());
+        for _ in 0..2 {
+            bank.3.reset_comparisons();
+            assert_eq!(bank.active_bga_id(&events, BgaLayer::Base, 0.0), Some(0));
+            assert!(bank.3.comparisons() <= count.ilog2() as usize + 2);
+        }
+        bank.3.reset_comparisons();
+        assert_eq!(bank.active_bga_id(&events, BgaLayer::Overlay, 0.0), None);
+        assert_eq!(bank.3.comparisons(), 0);
+    }
+}
+
+#[test]
 fn switches_layers_and_keys_out_black() {
     let game = game();
     assert_eq!(

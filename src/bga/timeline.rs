@@ -28,6 +28,16 @@ impl Timeline {
         });
         end.checked_sub(1).map(|index| events[index].1)
     }
+
+    #[cfg(test)]
+    pub(super) fn comparisons(&self) -> usize {
+        self.comparisons.get()
+    }
+
+    #[cfg(test)]
+    pub(super) fn reset_comparisons(&self) {
+        self.comparisons.set(0);
+    }
 }
 
 pub(super) fn slot(layer: BgaLayer) -> usize {
