@@ -17,17 +17,28 @@ fn check_output_failure(fail_on_flush: usize) {
     if std::env::var_os("TAPLINE_RAW_MODE_TEST_CHILD").is_some() {
         let mut output = FailingOutput { fail_on_flush };
         let mut ran = false;
-        let error = with_alt_screen(&mut output, |_| {
+        let result = with_alt_screen(&mut output, |_| {
             ran = true;
             assert!(terminal::is_raw_mode_enabled()?);
             Ok(())
-        })
-        .unwrap_err();
+        });
         assert_eq!(ran, fail_on_flush != 1);
-        assert_eq!(
-            error.downcast_ref::<io::Error>().unwrap().kind(),
-            io::ErrorKind::BrokenPipe
-        );
+        if fail_on_flush == 1 {
+            // Initialization failed before `f` ran: there is no inner
+            // result to preserve, so the write error must propagate.
+            assert_eq!(
+                result
+                    .unwrap_err()
+                    .downcast_ref::<io::Error>()
+                    .unwrap()
+                    .kind(),
+                io::ErrorKind::BrokenPipe
+            );
+        } else {
+            // Cleanup failed after `f` already succeeded: the inner
+            // result must win over the cleanup write error.
+            result.unwrap();
+        }
         return;
     }
     check_in_child();
