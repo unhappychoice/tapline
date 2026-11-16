@@ -83,13 +83,14 @@ pub struct SelectorState {
     scroll: usize,
     indices: Vec<usize>,
     /// Lowercased title/subtitle/artist for each chart, keyed by index into
-    /// the `charts` slice passed to `refresh`. Rebuilt only when the chart
-    /// count changes, so repeated keystrokes don't re-lowercase every chart.
+    /// the `charts` slice passed to `refresh`. Invalidated on each scan and
+    /// reused across search keystrokes within the same collection.
     lowercase_cache: Vec<(String, String, String)>,
 }
 
 impl SelectorState {
     pub fn scan(&mut self, root: &Path) -> Vec<ChartMeta> {
+        self.lowercase_cache.clear();
         scan_with_identities(root, &mut self.identities)
     }
 
@@ -521,29 +522,76 @@ mod tests {
     }
 
     #[test]
-    fn refresh_reuses_cached_lowercase_strings_while_chart_count_is_unchanged() {
-        let mut charts = vec![meta("Alpha"), meta("Beta")];
-        let mut state = SelectorState {
-            query: "beta".into(),
-            ..Default::default()
+    fn rescan_refreshes_metadata_and_reordered_search_entries_at_the_same_count() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(
+            &path,
+            "#TITLE Alpha\n#SUBTITLE Old remix\n#ARTIST Original\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("other.bms"), "#TITLE Middle\n").unwrap();
+        let mut state = SelectorState::default();
+        let charts = state.scan(&dir);
+        state.refresh(&charts);
+        assert_eq!(charts[0].path, path);
+
+        std::fs::write(
+            &path,
+            "#TITLE Omega\n#SUBTITLE New remix\n#ARTIST Updated\n",
+        )
+        .unwrap();
+        let rescanned = state.scan(&dir);
+        assert_eq!(rescanned.len(), charts.len());
+        assert_eq!(rescanned[1].path, path);
+        [
+            "Omega",
+            "New remix",
+            "Updated",
+            "Middle",
+            "Alpha",
+            "Old remix",
+            "Original",
+        ]
+        .into_iter()
+        .zip([vec![1], vec![1], vec![1], vec![0], vec![], vec![], vec![]])
+        .for_each(|(query, expected)| {
+            state.query = query.into();
+            state.refresh(&rescanned);
+            assert_eq!(state.indices, expected, "query: {query}");
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn search_keystrokes_reuse_cached_lowercase_string_allocations() {
+        let charts = vec![meta("Alpha"), meta("Beta")];
+        let mut state = SelectorState::default();
+        state.refresh(&charts);
+        let allocations = |state: &SelectorState| {
+            state
+                .lowercase_cache
+                .iter()
+                .map(|(title, subtitle, artist)| {
+                    (
+                        title.as_ptr() as usize,
+                        subtitle.as_ptr() as usize,
+                        artist.as_ptr() as usize,
+                    )
+                })
+                .collect::<Vec<_>>()
         };
-        state.refresh(&charts);
+        let before = allocations(&state);
+        state.key(KeyCode::Char('/'), &charts);
+        state.key(KeyCode::Char('B'), &charts);
         assert_eq!(state.indices, vec![1]);
-        let cache_before = state.lowercase_cache.clone();
-
-        // Mutate a title in place without changing the chart count: refresh
-        // must keep using the cached lowercase strings instead of
-        // recomputing them, so the stale match for "Beta" still shows up.
-        charts[1].title = "Gamma".into();
-        state.refresh(&charts);
+        assert_eq!(allocations(&state), before);
+        state.key(KeyCode::Char('e'), &charts);
         assert_eq!(state.indices, vec![1]);
-        assert_eq!(state.lowercase_cache, cache_before);
-
-        // Once the chart count changes, the cache is rebuilt and reflects
-        // the current data.
-        charts.push(meta("Delta"));
-        state.refresh(&charts);
-        assert_eq!(state.indices, Vec::<usize>::new());
+        assert_eq!(allocations(&state), before);
+        state.key(KeyCode::Backspace, &charts);
+        assert_eq!(state.indices, vec![1]);
+        assert_eq!(allocations(&state), before);
     }
 
     #[test]
