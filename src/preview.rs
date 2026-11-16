@@ -1,5 +1,5 @@
 use crate::fs_guard;
-use rodio::{Decoder, OutputStreamHandle, Sink, Source};
+use rodio::{Decoder, MixerDeviceSink, Player, Source};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -7,7 +7,7 @@ use std::path::Path;
 #[derive(Default)]
 pub(crate) struct SelectionPreview {
     selected: Option<usize>,
-    sink: Option<Sink>,
+    sink: Option<Player>,
 }
 
 impl SelectionPreview {
@@ -15,28 +15,28 @@ impl SelectionPreview {
         &mut self,
         selected: Option<usize>,
         path: Option<&Path>,
-        play: impl FnOnce(&Path) -> Option<Sink>,
+        play: impl FnOnce(&Path) -> Option<Player>,
     ) {
         if self.selected == selected {
             return;
         }
-        self.sink.take().inspect(Sink::stop);
+        self.sink.take().inspect(Player::stop);
         self.selected = selected;
         self.sink = path.and_then(play);
     }
 }
 
-pub(crate) fn play(handle: Option<&OutputStreamHandle>, path: &Path) -> Option<Sink> {
+pub(crate) fn play(handle: Option<&MixerDeviceSink>, path: &Path) -> Option<Player> {
     let handle = handle?;
     let source = load_source(path)?;
-    let sink = Sink::try_new(handle).ok()?;
+    let sink = Player::connect_new(handle.mixer());
     sink.append(source.repeat_infinite());
     Some(sink)
 }
 
 fn load_source(path: &Path) -> Option<Decoder<BufReader<File>>> {
     let file = fs_guard::open(path).ok()?;
-    Decoder::new(BufReader::new(file)).ok()
+    Decoder::try_from(file).ok()
 }
 
 #[cfg(test)]
@@ -46,7 +46,7 @@ mod tests {
     #[test]
     fn empty_results_stop_preview_and_restoring_selection_restarts_it() {
         let mut preview = SelectionPreview::default();
-        let (sink, mut queue) = Sink::new_idle();
+        let (sink, mut queue) = Player::new();
         sink.append(rodio::source::SineWave::new(440.0).repeat_infinite());
         preview.update(Some(3), Some(Path::new("preview.wav")), |_| Some(sink));
         assert!(queue.next().is_some());
@@ -66,7 +66,7 @@ mod tests {
     fn selection_changes_stop_previous_audio_and_unchanged_selection_keeps_playing() {
         let mut preview = SelectionPreview::default();
         let path = Some(Path::new("preview.wav"));
-        let (sink, mut queue) = Sink::new_idle();
+        let (sink, mut queue) = Player::new();
         sink.append(rodio::source::SineWave::new(440.0).repeat_infinite());
         preview.update(Some(0), path, |_| Some(sink));
         assert!(queue.next().is_some());
@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn selection_replaces_preview_and_stops_on_drop() {
         let mut preview = SelectionPreview::default();
-        let (sink, mut queue) = Sink::new_idle();
+        let (sink, mut queue) = Player::new();
         sink.append(rodio::source::SineWave::new(440.0).repeat_infinite());
         preview.update(Some(0), Some(Path::new("first.wav")), |_| None);
         preview.update(Some(1), Some(Path::new("second.wav")), |_| Some(sink));

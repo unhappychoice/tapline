@@ -212,7 +212,7 @@ pub fn run_with_state(
         preview.update(
             selected,
             selected.and_then(|i| charts[i].preview.as_deref()),
-            |path| crate::preview::play(audio.as_ref().map(|(_, handle)| handle), path),
+            |path| crate::preview::play(audio.as_ref(), path),
         );
         draw(out, charts, state, &progress)?;
         if event::poll(Duration::from_millis(200))? {
