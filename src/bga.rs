@@ -12,6 +12,8 @@ use std::{cell::RefCell, collections::HashMap, io::Write, path::PathBuf};
 mod crops;
 mod effect_timeline;
 mod image_file;
+mod presentation;
+pub use presentation::Presentation;
 mod timeline;
 mod video;
 
@@ -189,18 +191,19 @@ fn panel_width(left_margin: u16, height: u16) -> Option<u16> {
 pub fn draw(
     out: &mut impl Write,
     game: &Game,
+    bank: &ImageBank,
     now_ms: f64,
     left_margin: u16,
     top: u16,
     height: u16,
 ) -> anyhow::Result<()> {
-    let Some(width) = panel_width(left_margin, height)
-        .filter(|_| !game.bga.0.is_empty() || !game.bga.1.is_empty())
+    let Some(width) =
+        panel_width(left_margin, height).filter(|_| !bank.0.is_empty() || !bank.1.is_empty())
     else {
         return Ok(());
     };
     let frame = imageops::resize(
-        &game.bga.frame(game, now_ms),
+        &bank.frame(game, now_ms),
         width.into(),
         width.into(),
         imageops::FilterType::Nearest,

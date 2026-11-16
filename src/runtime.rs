@@ -98,6 +98,8 @@ fn run_game(
     bank: &audio::SampleBank,
     opts: &PlayOptions,
 ) -> Result<()> {
+    let mut bga = crate::bga::Presentation::new(&game.chart);
+    render::prepare_bga(game, &mut bga)?;
     let start = Instant::now();
     let mut next_frame = Instant::now() + FRAME_DT;
     let mut state = LoopState::new(build_auto_notes(game, opts));
@@ -107,7 +109,7 @@ fn run_game(
         if game.advance_completion(now) {
             break;
         }
-        draw_frame(out, game, bank, opts, &mut state, now)?;
+        draw_frame(out, game, bank, opts, &mut state, &mut bga, now)?;
         pump_input(out, game, bank, opts, &mut state, start, next_frame)?;
         next_frame = advance_deadline(next_frame);
     }
@@ -158,6 +160,7 @@ fn draw_frame(
     bank: &audio::SampleBank,
     opts: &PlayOptions,
     state: &mut LoopState,
+    bga: &mut crate::bga::Presentation,
     now: f64,
 ) -> Result<()> {
     fire_scheduled_audio(bank, opts, state, game, now);
@@ -168,7 +171,7 @@ fn draw_frame(
         queue!(state.screen, terminal::Clear(terminal::ClearType::All))?;
         state.prev_mode = mode;
     }
-    draw_mode(&mut state.screen, game, bank, opts, mode, now)?;
+    draw_mode(&mut state.screen, game, bank, opts, bga, mode, now)?;
     state.screen.present(out)?;
     Ok(())
 }
@@ -178,6 +181,7 @@ fn draw_mode(
     game: &mut game::Game,
     bank: &audio::SampleBank,
     opts: &PlayOptions,
+    bga: &mut crate::bga::Presentation,
     mode: u8,
     now: f64,
 ) -> Result<()> {
@@ -192,7 +196,7 @@ fn draw_mode(
         );
     }
     game.check_misses(now);
-    render::draw(screen, game, now)
+    render::draw(screen, game, bga, now)
 }
 
 fn fire_scheduled_audio(
@@ -649,7 +653,10 @@ mod tests {
                 (2000.0, 3),
             ] {
                 // Rendering can fail without a terminal; audio must still be scheduled.
-                let _ = draw_frame(&mut out, &mut game, &bank, &options, &mut state, now);
+                let mut bga = crate::bga::Presentation::new(&game.chart);
+                let _ = draw_frame(
+                    &mut out, &mut game, &bank, &options, &mut state, &mut bga, now,
+                );
                 assert_eq!(state.bgm_cursor, expected, "BGM at {now} ms");
                 assert_eq!(
                     state.note_snd_cursor,

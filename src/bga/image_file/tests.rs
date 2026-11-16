@@ -26,7 +26,8 @@ fn bmson_fifo_and_symlink_headers_without_events_do_not_block_initialization() {
         let path = dir.join("chart.bmson");
         std::fs::write(&path, r#"{"version":"1.0.0","info":{"title":"FIFO","artist":"Test","init_bpm":120},"sound_channels":[],"bga":{"bga_header":[{"id":1,"name":"blocked.png"},{"id":2,"name":"link.png"},{"id":3,"name":"."}]}}"#).unwrap();
         let game = Game::new(crate::bmson::load(&path, 0.0).unwrap());
-        assert!(game.bga.0.is_empty());
+        let bank = crate::bga::tests::load_bank(&game.chart);
+        assert!(bank.0.is_empty());
     });
 }
 
@@ -63,10 +64,11 @@ fn crops_skip_special_files_and_preserve_regular_images() {
             })
             .collect();
         let game = Game::new(chart);
-        assert_eq!(game.bga.0.len(), 2);
-        assert_eq!(*game.bga.0[&4].get_pixel(0, 0), color);
-        assert_eq!(*game.bga.0[&14].get_pixel(63, 63), color);
-        assert_eq!(game.bga.0[&14].get_pixel(0, 0).0, [0; 4]);
+        let bank = crate::bga::tests::load_bank(&game.chart);
+        assert_eq!(bank.0.len(), 2);
+        assert_eq!(*bank.0[&4].get_pixel(0, 0), color);
+        assert_eq!(*bank.0[&14].get_pixel(63, 63), color);
+        assert_eq!(bank.0[&14].get_pixel(0, 0).0, [0; 4]);
     });
 }
 

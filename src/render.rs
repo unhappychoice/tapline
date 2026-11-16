@@ -413,8 +413,21 @@ fn format_gauge_status(game: &Game, clear: bool) -> String {
     )
 }
 
+pub fn prepare_bga(game: &Game, bga: &mut crate::bga::Presentation) -> anyhow::Result<()> {
+    let (cols, rows) = terminal::size()?;
+    if let Some(layout) = PlayLayout::compute(cols, rows, game.chart.lane_count) {
+        bga.prepare(&game.chart, layout.x0, layout.bottom - layout.top);
+    }
+    Ok(())
+}
+
 /// Draw the play field using notes near the current time and active long notes.
-pub fn draw(out: &mut impl Write, game: &Game, now_ms: f64) -> anyhow::Result<()> {
+pub fn draw(
+    out: &mut impl Write,
+    game: &Game,
+    bga: &mut crate::bga::Presentation,
+    now_ms: f64,
+) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
     let lanes = game.chart.lane_count as u16;
     let Some(layout) = PlayLayout::compute(cols, rows, game.chart.lane_count) else {
@@ -461,7 +474,8 @@ pub fn draw(out: &mut impl Write, game: &Game, now_ms: f64) -> anyhow::Result<()
         Print(gauge)
     )?;
 
-    if let Some(tag) = format_bga_badge(&game.bga, &game.chart.bga, now_ms) {
+    bga.prepare(&game.chart, x0, bottom - top);
+    if let Some(tag) = format_bga_badge(&bga.bank, &game.chart.bga, now_ms) {
         queue!(
             out,
             cursor::MoveTo(cols.saturating_sub(tag.chars().count() as u16 + 2), 2),
@@ -471,7 +485,7 @@ pub fn draw(out: &mut impl Write, game: &Game, now_ms: f64) -> anyhow::Result<()
         )?;
     }
 
-    crate::bga::draw(out, game, now_ms, x0, top, bottom - top)?;
+    crate::bga::draw(out, game, &bga.bank, now_ms, x0, top, bottom - top)?;
 
     for lane in 0..lanes {
         let lx = x0 + 1 + lane * LANE_WIDTH;
