@@ -1,5 +1,8 @@
 # Contributing
 
+See the [architecture guide](docs/architecture.md) for the session flow, module
+responsibilities, and starting points for changes.
+
 ## Development environment
 
 You need Git and a stable Rust toolchain with Cargo.
