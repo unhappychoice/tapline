@@ -33,7 +33,6 @@ pub struct Game {
     pub chart: Chart,
     pub gauge: Gauge,
     pub completed: bool,
-    pub bga: crate::bga::ImageBank,
     pub bga_switch: crate::bga::SwitchPlayback,
     pub score: u32,
     pub combo: u32,
@@ -147,9 +146,6 @@ impl Game {
             .iter()
             .map(|note| JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms)).good)
             .fold(0.0, f64::max);
-        let mut bga =
-            crate::bga::ImageBank::load(&chart.bmp_paths, &chart.bga, &chart.bga_extensions);
-        bga.prepare_crops(&chart);
         let mut events = chart.notes.clone();
         events.extend(chart.invisible_notes.iter().map(|note| Note {
             time_ms: note.time_ms,
@@ -189,7 +185,6 @@ impl Game {
             keysound_events: events.into_iter().peekable(),
             bga_switch: crate::bga::SwitchPlayback::new(&chart.bga_extensions),
             chart,
-            bga,
             score: 0,
             combo: 0,
             max_combo: 0,
