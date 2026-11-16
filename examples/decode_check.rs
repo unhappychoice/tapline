@@ -15,12 +15,12 @@ fn main() {
                 continue;
             }
         };
-        match Decoder::new(f) {
+        match Decoder::try_from(f) {
             Ok(dec) => {
                 let ch = dec.channels();
                 let sr = dec.sample_rate();
                 let dur = dec.total_duration();
-                let n: usize = dec.convert_samples::<f32>().count();
+                let n: usize = dec.count();
                 println!("OK {arg} ch={ch} sr={sr} dur={dur:?} samples={n}");
             }
             Err(e) => println!("DECODE-ERR {} :: {}", arg, e),

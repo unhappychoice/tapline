@@ -973,10 +973,10 @@ mod tests {
                 let bank = SampleBank::silent();
                 let (sinks, mut outputs): (Vec<_>, Vec<_>) = (0..2)
                     .map(|_| {
-                        let (sink, mut output) = rodio::Sink::new_idle();
+                        let (sink, mut output) = rodio::Player::new();
                         sink.append(rodio::buffer::SamplesBuffer::new(
-                            1,
-                            44_100,
+                            rodio::nz!(1),
+                            rodio::nz!(44_100),
                             vec![0.5; 44_100 * 60],
                         ));
                         assert_eq!(output.next(), Some(0.5));

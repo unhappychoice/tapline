@@ -38,13 +38,13 @@ impl<S: Source<Item = f32>> Iterator for Voice<S> {
 }
 
 impl<S: Source<Item = f32>> Source for Voice<S> {
-    fn current_frame_len(&self) -> Option<usize> {
-        self.inner.current_frame_len()
+    fn current_span_len(&self) -> Option<usize> {
+        self.inner.current_span_len()
     }
-    fn channels(&self) -> u16 {
+    fn channels(&self) -> rodio::ChannelCount {
         self.inner.channels()
     }
-    fn sample_rate(&self) -> u32 {
+    fn sample_rate(&self) -> rodio::SampleRate {
         self.inner.sample_rate()
     }
     fn total_duration(&self) -> Option<Duration> {
@@ -59,16 +59,27 @@ mod tests {
 
     #[test]
     fn voice_ends_with_its_samples() {
-        let (source, _handle) = voice(SamplesBuffer::new(1, 1000, vec![0.5, 0.25]));
+        let (source, _handle) = voice(SamplesBuffer::new(
+            rodio::nz!(1),
+            rodio::nz!(1000),
+            vec![0.5, 0.25],
+        ));
         assert_eq!(source.collect::<Vec<_>>(), [0.5, 0.25]);
     }
 
     #[test]
     fn stopping_the_handle_ends_the_voice_immediately() {
-        let (mut source, handle) = voice(SamplesBuffer::new(2, 1000, vec![0.5; 8]));
+        let (mut source, handle) = voice(SamplesBuffer::new(
+            rodio::nz!(2),
+            rodio::nz!(1000),
+            vec![0.5; 8],
+        ));
         assert_eq!(source.next(), Some(0.5));
         handle.stop();
         assert_eq!(source.next(), None);
-        assert_eq!((source.channels(), source.sample_rate()), (2, 1000));
+        assert_eq!(
+            (source.channels().get(), source.sample_rate().get()),
+            (2, 1000)
+        );
     }
 }

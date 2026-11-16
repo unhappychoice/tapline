@@ -5,7 +5,7 @@ use crate::chart::VolumeTarget;
 use master::MasterBus;
 use rayon::prelude::*;
 use rodio::buffer::SamplesBuffer;
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Source};
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Source};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::BufReader;
@@ -21,10 +21,8 @@ mod master;
 mod voice;
 mod volume;
 
-pub(crate) fn preview_output(enabled: bool) -> Option<(OutputStream, OutputStreamHandle)> {
-    enabled
-        .then(|| silence_stderr(OutputStream::try_default))
-        .and_then(Result::ok)
+pub(crate) fn preview_output(enabled: bool) -> Option<MixerDeviceSink> {
+    enabled.then(|| silence_stderr(open_output)).flatten()
 }
 
 #[derive(Clone)]
@@ -58,14 +56,14 @@ impl Iterator for SharedSamples {
 }
 
 impl Source for SharedSamples {
-    fn current_frame_len(&self) -> Option<usize> {
+    fn current_span_len(&self) -> Option<usize> {
         None
     }
-    fn channels(&self) -> u16 {
-        self.channels
+    fn channels(&self) -> rodio::ChannelCount {
+        rodio::ChannelCount::new(self.channels).unwrap()
     }
-    fn sample_rate(&self) -> u32 {
-        self.sample_rate
+    fn sample_rate(&self) -> rodio::SampleRate {
+        rodio::SampleRate::new(self.sample_rate).unwrap()
     }
     fn total_duration(&self) -> Option<Duration> {
         None
@@ -73,7 +71,7 @@ impl Source for SharedSamples {
 }
 
 pub struct SampleBank {
-    _stream: Option<OutputStream>,
+    _stream: Option<MixerDeviceSink>,
     bus: Option<MasterBus>,
     samples: HashMap<u32, DecodedSample>,
     layers: HashMap<u32, Vec<u32>>,
@@ -254,7 +252,7 @@ impl SampleBank {
         };
         let sr: u32 = 44_100;
         let data = synth_ping(freq, duration_ms, sr);
-        bus.add(SamplesBuffer::new(1, sr, data).amplify(gain));
+        bus.add(SamplesBuffer::new(rodio::nz!(1), rodio::nz!(44_100), data).amplify(gain));
     }
 
     pub fn play_hit(&self, lane: usize, keysound: Option<u32>, synth_mode: bool) {
@@ -326,9 +324,16 @@ impl SampleBank {
     }
 }
 
-fn open_master_bus() -> Option<(OutputStream, MasterBus)> {
-    let (stream, handle) = OutputStream::try_default().ok()?;
-    master::master_bus(&handle).map(|bus| (stream, bus))
+fn open_output() -> Option<MixerDeviceSink> {
+    let mut stream = DeviceSinkBuilder::open_default_sink().ok()?;
+    stream.log_on_drop(false);
+    Some(stream)
+}
+
+fn open_master_bus() -> Option<(MixerDeviceSink, MasterBus)> {
+    let stream = open_output()?;
+    let bus = master::master_bus(stream.mixer());
+    Some((stream, bus))
 }
 
 fn sample_source(s: &DecodedSample, slice: Option<&crate::chart::SampleSlice>) -> SharedSamples {
@@ -449,10 +454,10 @@ fn decode(path: &std::path::Path) -> anyhow::Result<DecodedSample> {
 
 fn decode_capped(path: &std::path::Path, max_samples: usize) -> anyhow::Result<DecodedSample> {
     let file = BufReader::new(file::open(path)?);
-    let decoder = Decoder::new(file)?;
-    let channels = decoder.channels();
-    let sample_rate = decoder.sample_rate();
-    let data = collect_capped(decoder.convert_samples::<f32>(), max_samples)?;
+    let decoder = Decoder::try_from(file)?;
+    let channels = decoder.channels().get();
+    let sample_rate = decoder.sample_rate().get();
+    let data = collect_capped(decoder, max_samples)?;
     Ok(DecodedSample {
         channels,
         sample_rate,
@@ -1144,8 +1149,8 @@ mod tests {
             duration_ms: Some(2.0),
         };
         let source = sample_source(&sample, Some(&slice));
-        assert_eq!(source.channels(), 2);
-        assert_eq!(source.sample_rate(), 2000);
+        assert_eq!(source.channels().get(), 2);
+        assert_eq!(source.sample_rate().get(), 2000);
         assert_eq!(source.collect::<Vec<_>>(), [0.0, 1.0].repeat(4));
         assert_eq!(original.len(), 20);
         assert!(original.iter().all(|&value| value == 1.0));
@@ -1268,7 +1273,7 @@ mod tests {
 
     #[test]
     fn shared_slices_replace_playback_but_other_slices_keep_playing() {
-        let buffer = |v: f32| SamplesBuffer::new(1, 44100, vec![v; 1000]);
+        let buffer = |v: f32| SamplesBuffer::new(rodio::nz!(1), rodio::nz!(44100), vec![v; 1000]);
         let bank = SampleBank::silent();
         let (mut first, first_handle) = voice::voice(buffer(1.0));
         bank.replace_sample(1, first_handle);
@@ -1531,8 +1536,8 @@ mod tests {
                 channels: sample.channels,
                 sample_rate: sample.sample_rate,
             };
-            assert_eq!(source.channels(), 2);
-            assert_eq!(source.sample_rate(), 44_100);
+            assert_eq!(source.channels().get(), 2);
+            assert_eq!(source.sample_rate().get(), 44_100);
             assert_eq!(source.collect::<Vec<_>>(), vec![0.25, -0.25]);
         });
     }
@@ -1585,6 +1590,23 @@ mod tests {
         wav.extend(data_size.to_le_bytes());
         wav.resize(44 + data_size as usize, 0);
         wav
+    }
+
+    #[test]
+    fn pcm_decoding_preserves_normalized_float_amplitudes() {
+        let path = std::env::temp_dir().join(format!("tapline-pcm-{}.wav", std::process::id()));
+        let mut wav = silence_wav(5);
+        let pcm = [i16::MIN, -16384, 0, 16384, i16::MAX];
+        wav[44..].copy_from_slice(
+            &pcm.into_iter()
+                .flat_map(i16::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
+        std::fs::write(&path, wav).unwrap();
+        let decoded = decode(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!((decoded.channels, decoded.sample_rate), (1, 8000));
+        assert_eq!(*decoded.data, vec![-1.0, -0.5, 0.0, 0.5, 32767.0 / 32768.0]);
     }
 
     #[test]
