@@ -54,18 +54,22 @@ mod tests {
 
     #[test]
     fn gameplay_hits_enqueue_shared_pcm_without_an_audio_device() {
-        let (bus, mut output) = rodio::mixer::mixer(rodio::nz!(1), rodio::nz!(44_100));
+        let (mixer, mut output) = rodio::mixer::mixer(rodio::nz!(2), rodio::nz!(44_100));
+        let bus = super::super::master::master_bus(&mixer);
         let bank = super::super::SampleBank {
             bus: Some(bus),
             ..super::super::SampleBank::silent()
         };
+        assert!(output.by_ref().take(2048).all(|sample| sample == 0.0));
         let source = hit_source(6);
         bank.play_hit_with_gain(6, None, false, 0.25);
         bank.play_hit_with_gain(6, Some(123), true, 0.5);
         assert!(Arc::strong_count(&source.data) >= 4);
         source.for_each(|sample| {
-            assert_eq!(output.next(), Some(sample * 0.25 + sample * 0.5));
+            let expected = sample * 0.25 + sample * 0.5;
+            assert_eq!(output.next(), Some(expected));
+            assert_eq!(output.next(), Some(expected));
         });
-        assert_eq!(output.next(), None);
+        assert!(output.take(2048).all(|sample| sample == 0.0));
     }
 }
