@@ -18,6 +18,7 @@ mod file;
 #[cfg(test)]
 mod loading_tests;
 mod master;
+mod synth;
 mod voice;
 mod volume;
 
@@ -268,8 +269,9 @@ impl SampleBank {
     ) {
         match self.hit_sound(keysound, synth_mode) {
             HitSound::Synth => {
-                let f = LANE_PITCHES[lane % LANE_PITCHES.len()];
-                self.play_synth_with_gain(f, HIT_SYNTH_DURATION_MS, gain);
+                if let Some(bus) = &self.bus {
+                    bus.add(synth::hit_source(lane).amplify(gain));
+                }
             }
             HitSound::Sample(id) => self.play_with_gain(id, gain),
             HitSound::Silent => {}
