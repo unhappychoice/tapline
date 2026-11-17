@@ -41,6 +41,7 @@ cargo install --path .
 ## Play
 
 For a source installation and first-play walkthrough, see [Getting started](docs/getting-started.md).
+For all options, defaults, and selection priority, see the [CLI reference](docs/cli-reference.md).
 
 ```sh
 tapline                                # open the chart selector (see "Song discovery")
