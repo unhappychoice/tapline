@@ -1,7 +1,7 @@
 mod bga_extensions;
 use crate::assets::AssetIndex;
 use crate::chart::{
-    keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, ExRankEvent, InvisibleNote, LnMode, Mine, Note,
+    BgaEvent, BgaLayer, BgmEvent, Chart, ExRankEvent, InvisibleNote, Lane, LnMode, Mine, Note,
     ScrollEvent, TextEvent, VolumeEvent, VolumeTarget,
 };
 use anyhow::{ensure, Context, Result};
@@ -210,6 +210,12 @@ fn build_chart(
     let lane_count = mode.playable_lane_count(&acc.occupancy, &p2_acc.occupancy);
     let p1_lane_count = mode.side_lane_count(&acc.occupancy);
     let p2_lane_count = mode.side_lane_count(&p2_acc.occupancy);
+    let lanes = Lane::sides(
+        p1_lane_count,
+        mode.double_play.then_some(p2_lane_count),
+        mode.keys_per_side != 9 && acc.occupancy.lanes.0.contains(&7),
+        mode.keys_per_side != 9 && p2_acc.occupancy.lanes.0.contains(&7),
+    );
     pass.bga_extensions
         .switches
         .values_mut()
@@ -307,7 +313,8 @@ fn build_chart(
         speed,
         duration_ms,
         lane_count,
-        keys: keys_for(lane_count),
+        keys: Lane::bindings(&lanes),
+        lanes,
         wav_paths,
         sample_settings: pass.sample_settings,
         sample_slices: HashMap::new(),
@@ -2397,7 +2404,7 @@ mod tests {
                 let chart = load(&path, 500.0).unwrap();
                 assert_eq!(chart.lane_count, 9);
                 assert_eq!(read_meta(&path).unwrap().lane_count, 9);
-                assert_eq!(chart.keys, keys_for(9));
+                assert_eq!(chart.keys, crate::chart::keys_for(9));
                 assert!(chart.p2_notes.is_empty());
                 assert!(chart.p2_mines.is_empty());
                 assert_eq!(chart.bgm.len(), 1);

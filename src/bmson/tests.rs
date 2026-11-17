@@ -50,6 +50,18 @@ fn metadata_matches_gameplay_for_every_supported_mode() {
         with_chart(&data, |path| {
             let meta = read_meta(path).unwrap();
             let chart = load(path, 0.0).unwrap();
+            assert_eq!(chart.lanes.len(), chart.lane_count);
+            chart.lanes.iter().enumerate().for_each(|(index, lane)| {
+                assert_eq!(lane.role, crate::chart::LaneRole::Key);
+                assert_eq!(
+                    lane.player,
+                    if chart.lane_count == 14 && index >= 7 {
+                        crate::chart::Player::Two
+                    } else {
+                        crate::chart::Player::One
+                    }
+                );
+            });
             assert_eq!(
                 (
                     meta.title,

@@ -1,5 +1,8 @@
 use std::path::PathBuf;
 
+mod layout;
+pub use layout::{Lane, LaneRole, Player};
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Note {
     pub time_ms: f64,
@@ -140,6 +143,7 @@ pub struct Chart {
     pub duration_ms: f64,
     pub lane_count: usize,
     pub keys: Vec<Vec<char>>,
+    pub lanes: Vec<Lane>,
     pub sample_settings: std::collections::HashMap<u32, crate::sample_settings::SampleSettings>,
     pub sound_layers: std::collections::HashMap<u32, Vec<u32>>,
     pub sample_slices: std::collections::HashMap<u32, SampleSlice>,
@@ -202,6 +206,7 @@ impl Default for Chart {
             duration_ms: 0.0,
             lane_count: 4,
             keys: keys_for(4),
+            lanes: Lane::ordinary(4),
             sample_settings: Default::default(),
             sound_layers: std::collections::HashMap::new(),
             sample_slices: std::collections::HashMap::new(),
