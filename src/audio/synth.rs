@@ -60,7 +60,7 @@ mod tests {
             bus: Some(bus),
             ..super::super::SampleBank::silent()
         };
-        assert!(output.by_ref().take(2048).all(|sample| sample == 0.0));
+        (0..2048).for_each(|_| assert_eq!(output.next(), Some(0.0)));
         let source = hit_source(6);
         bank.play_hit_with_gain(6, None, false, 0.25);
         bank.play_hit_with_gain(6, Some(123), true, 0.5);
@@ -70,6 +70,6 @@ mod tests {
             assert_eq!(output.next(), Some(expected));
             assert_eq!(output.next(), Some(expected));
         });
-        assert!(output.take(2048).all(|sample| sample == 0.0));
+        (0..2048).for_each(|_| assert_eq!(output.next(), Some(0.0)));
     }
 }
