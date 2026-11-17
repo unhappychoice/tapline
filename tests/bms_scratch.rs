@@ -178,3 +178,108 @@ fn asymmetric_scratch_dp_compacts_each_side_before_merging() {
         );
     });
 }
+
+#[test]
+fn equal_totals_preserve_distinct_roles_and_player_boundaries() {
+    use tapline::chart::{LaneRole, Player};
+    let ordinary = load("#PLAYER 3\n#00118:01\n#00125:01", 12);
+    let scratch = load("#00116:01\n#00126:01", 12);
+    assert!(ordinary.lanes.iter().all(|lane| lane.role == LaneRole::Key));
+    assert_eq!(ordinary.lanes[6].player, Player::One);
+    assert_eq!(ordinary.lanes[7].player, Player::Two);
+    assert_eq!(
+        ordinary.keys.concat(),
+        "SDF JKLZXCNM".chars().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        ordinary.notes.iter().map(|n| n.lane).collect::<Vec<_>>(),
+        vec![5, 11]
+    );
+    assert_eq!(scratch.lanes[5].role, LaneRole::Scratch);
+    assert_eq!(scratch.lanes[6].player, Player::Two);
+    assert_eq!(scratch.lanes[11].role, LaneRole::Scratch);
+    assert_ne!(ordinary.lanes, scratch.lanes);
+}
+
+#[test]
+fn asymmetric_scratch_bindings_follow_the_actual_side_boundaries() {
+    use tapline::chart::{LaneRole, Player};
+    [
+        ("#00116:01\n#00129:01", 13, vec![(5, 'A')], 6),
+        ("#00119:01\n#00126:01", 13, vec![(12, ';')], 7),
+        ("#00116:01\n#00125:01", 11, vec![(5, 'A')], 6),
+        (
+            "#00119:01\n#00116:01\n#00126:01",
+            14,
+            vec![(7, 'A'), (13, ';')],
+            8,
+        ),
+    ]
+    .into_iter()
+    .for_each(|(channels, count, scratches, boundary)| {
+        let chart = load(channels, count);
+        assert_eq!(chart.lanes.len(), count);
+        chart.lanes.iter().enumerate().for_each(|(index, lane)| {
+            assert_eq!(
+                lane.player,
+                if index < boundary {
+                    Player::One
+                } else {
+                    Player::Two
+                }
+            );
+            assert_eq!(
+                lane.role == LaneRole::Scratch,
+                scratches.iter().any(|(lane, _)| *lane == index)
+            );
+        });
+        scratches
+            .into_iter()
+            .for_each(|(lane, key)| assert_eq!(lane_for_key(key, &chart.keys), Some(lane)));
+        chart.keys.iter().enumerate().for_each(|(lane, keys)| {
+            keys.iter()
+                .for_each(|key| assert_eq!(lane_for_key(*key, &chart.keys), Some(lane)));
+        });
+    });
+}
+
+#[test]
+fn built_in_and_pms_populate_only_ordinary_lanes() {
+    use tapline::chart::{Lane, LaneRole, Player};
+    let chart = tapline::chart::built_in(120.0, 0.0);
+    assert_eq!(chart.lanes, Lane::ordinary(4));
+    assert_eq!(chart.keys, Lane::bindings(&chart.lanes));
+    let path = std::env::temp_dir().join(format!("tapline-layout-{}.pms", std::process::id()));
+    std::fs::write(&path, "#BPM 120\n#00111:01\n#00125:01").unwrap();
+    let chart = bms::load(&path, 0.0).unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(chart.lanes.len(), 9);
+    assert!(chart
+        .lanes
+        .iter()
+        .all(|lane| lane.role == LaneRole::Key && lane.player == Player::One));
+    assert_eq!(chart.keys, keys_for(9));
+}
+
+#[test]
+fn sparse_undeclared_double_play_keeps_all_ordinary_keys_reachable() {
+    [
+        "#00111:01\n#00121:02",
+        "#00115:01\n#00121:02",
+        "#00111:01\n#00125:02",
+    ]
+    .into_iter()
+    .for_each(|channels| {
+        let count = if channels.contains("15") || channels.contains("25") {
+            9
+        } else {
+            8
+        };
+        let chart = load(channels, count);
+        assert_eq!(chart.lanes.len(), count);
+        chart.keys.iter().enumerate().for_each(|(lane, keys)| {
+            keys.iter()
+                .for_each(|key| assert_eq!(lane_for_key(*key, &chart.keys), Some(lane)));
+        });
+    });
+}

@@ -23,16 +23,12 @@ fn lane_key_color(game: &Game, lane: usize) -> Color {
     key_label_color(keys)
 }
 
-fn is_scratch_lane(lane_count: usize, lane: usize) -> bool {
-    match lane_count {
-        6 | 8 => lane == lane_count - 1,
-        12 | 16 => lane == lane_count / 2 - 1 || lane == lane_count - 1,
-        _ => false,
-    }
-}
-
 fn note_style(game: &Game, lane: usize, held: bool) -> (u16, u16, Color) {
-    let scratch = is_scratch_lane(game.chart.lane_count, lane);
+    let scratch = game
+        .chart
+        .lanes
+        .get(lane)
+        .is_some_and(|lane| lane.role == crate::chart::LaneRole::Scratch);
     let (offset, width) = if scratch { (1, 6) } else { (2, 4) };
     let color = match (held, scratch) {
         (true, _) => Color::Yellow,
@@ -894,6 +890,7 @@ mod tests {
             duration_ms: 30_000.0,
             lane_count,
             keys: keys_for(lane_count),
+            lanes: crate::chart::Lane::ordinary(lane_count),
             ..Chart::default()
         }
     }
@@ -906,10 +903,16 @@ mod tests {
             (12, vec![5, 11]),
             (16, vec![7, 15]),
         ] {
-            let game = Game::new(base_chart(count));
+            let mut chart = base_chart(count);
+            chart.lanes = crate::chart::Lane::sides(
+                if count >= 12 { count / 2 } else { count },
+                (count >= 12).then_some(count / 2),
+                true,
+                true,
+            );
+            let game = Game::new(chart);
             for lane in 0..count {
                 let scratch = scratches.contains(&lane);
-                assert_eq!(is_scratch_lane(count, lane), scratch);
                 let (offset, width, color) = note_style(&game, lane, false);
                 assert_eq!((offset, width), if scratch { (1, 6) } else { (2, 4) });
                 assert!(offset > 0 && offset + width <= LANE_WIDTH);
@@ -930,11 +933,42 @@ mod tests {
     }
 
     #[test]
+    fn loaded_asymmetric_layouts_style_only_actual_scratch_lanes() {
+        for (source, scratches) in [
+            ("#PLAYER 3\n#00118:01\n#00125:01", vec![]),
+            ("#00116:01\n#00126:01", vec![5, 11]),
+            ("#00116:01\n#00129:01", vec![5]),
+            ("#00119:01\n#00126:01", vec![12]),
+        ] {
+            let chart = crate::bms::load_bytes(
+                std::path::Path::new("layout.bms"),
+                source.as_bytes(),
+                0.0,
+                0,
+            )
+            .unwrap();
+            let game = Game::new(chart);
+            for lane in 0..game.chart.lane_count {
+                let scratch = scratches.contains(&lane);
+                let (offset, width, color) = note_style(&game, lane, false);
+                assert_eq!((offset, width), if scratch { (1, 6) } else { (2, 4) });
+                assert_eq!(
+                    color,
+                    if scratch {
+                        Color::Red
+                    } else {
+                        lane_key_color(&game, lane)
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
     fn ordinary_layouts_keep_key_colors_and_four_column_notes() {
         for count in [4, 5, 7, 9, 10, 11, 13, 14, 15] {
             let game = Game::new(base_chart(count));
             for lane in 0..count {
-                assert!(!is_scratch_lane(count, lane));
                 assert_eq!(
                     note_style(&game, lane, false),
                     (2, 4, lane_key_color(&game, lane))

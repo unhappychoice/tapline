@@ -5,7 +5,7 @@ mod timing;
 
 use crate::assets::AssetIndex;
 use crate::bms::ChartMeta;
-use crate::chart::{keys_for, BgaEvent, BgaLayer, BgmEvent, Chart, Note, SampleSlice};
+use crate::chart::{BgaEvent, BgaLayer, BgmEvent, Chart, Lane, Note, SampleSlice};
 use anyhow::{ensure, Context, Result};
 use model::{Bmson, SoundChannel};
 use std::path::{Component, Path, PathBuf};
@@ -25,6 +25,11 @@ pub(crate) fn load_bytes(path: &Path, bytes: &[u8], lead_in_ms: f64) -> Result<C
     let timeline = Timeline::new(&data, lead_in_ms)?;
     let meta = metadata::convert(path, &data.info)?;
     let mode = data.info.mode_hint.as_deref().unwrap_or("beat-7k");
+    let lanes = if meta.lane_count == 14 {
+        Lane::sides(7, Some(7), false, false)
+    } else {
+        Lane::ordinary(meta.lane_count)
+    };
     let mut chart = Chart {
         asset_dir: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
         title: meta.title,
@@ -38,7 +43,8 @@ pub(crate) fn load_bytes(path: &Path, bytes: &[u8], lead_in_ms: f64) -> Result<C
         playlevel: meta.playlevel,
         difficulty: meta.difficulty,
         lane_count: meta.lane_count,
-        keys: keys_for(meta.lane_count),
+        keys: Lane::bindings(&lanes),
+        lanes,
         ..Chart::default()
     };
     let dir = path.parent().unwrap_or(Path::new("."));

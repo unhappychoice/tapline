@@ -150,8 +150,8 @@ Scratch channels `16/26`, `56/66` (long notes), and `D6/E6` (landmines)
 are playable. Free-zone / pedal channels `17/27` and their long-note /
 landmine counterparts are ignored. Scratch is the last lane on each side.
 Channel-based inference uses populated channels; empty channels do not count.
-Asymmetric DP uses the layout for its total lane count, including the scratch
-layouts in the Keys section for totals of 8, 12, or 16 and the PMS layout for 9 lanes.
+Each side keeps its own ordinary-key width and optional scratch lane. Bindings
+and scratch styling follow those roles and player boundaries, including asymmetric DP.
 
 `#VOLWAV` scales sample and synth playback by a percentage (default 100).
 Channels `97` (BGM) and `98` (keysounds) set independent volume multipliers
@@ -319,7 +319,7 @@ whichever finger is closer.
 | 16    | `S D F SPACE J K L A / Z X C V B N M ;` | 7K+scratch per side; P1 scratch uses A, P2 uses ; |
 | 9     | `A S D F SPACE J K L ;`        | PMS buttons 1–9; spacebar is the center |
 | 10    | `S D F K L / Z X C N M` | five keys per side |
-| 11, 13, 15 | first N keys of `S D F SPACE J K L Z X C V B N M , A` | asymmetric DP |
+| asymmetric DP | P1: 5K or 7K keys; P2: `Z X C N M` (5K) or `Z X C V B N M` (7K) | each side keeps its own width; scratch uses A for P1 and ; for P2 (P2 5K with scratch uses ZXCVB) |
 | 14    | `S D F SPACE J K L / Z X C V B N M` | 7K SP layout on the home row for P1, ZXCVBNM below for P2 |
 
 ## Personal bests
