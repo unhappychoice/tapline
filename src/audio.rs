@@ -84,6 +84,12 @@ pub struct SampleBank {
 }
 
 impl SampleBank {
+    pub(crate) fn set_paused(&self, paused: bool) {
+        if let Some(bus) = &self.bus {
+            bus.set_paused(paused);
+        }
+    }
+
     pub fn new(wav_paths: &HashMap<u32, PathBuf>) -> Self {
         let (stream, bus) = silence_stderr(open_master_bus).unzip();
         let enabled = bus.is_some();

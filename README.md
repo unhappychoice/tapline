@@ -63,6 +63,11 @@ both conditions. The selector shows the active conditions and matching count.
 Empty results stop preview playback and cannot be played. Search and lane
 conditions persist when returning from play within the same session.
 
+Gameplay requires at least `7 × lane count + 1` columns and 13 rows (99×13
+for 14 lanes). If the terminal is too small, a size notice replaces the field.
+Chart time, judgments, and audio pause until the terminal fits again; Esc / Q
+still quits while paused.
+
 ### Fixing audio delay
 
 On high-latency backends (WSL2, PulseAudio) the per-hit beep can trail the

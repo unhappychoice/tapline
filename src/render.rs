@@ -73,7 +73,7 @@ impl PlayLayout {
         let x0 = cols.saturating_sub(field_width) / 2;
         let top = 5u16;
         let bottom = rows.saturating_sub(4);
-        if bottom < top + 4 {
+        if cols < field_width || bottom < top + 4 {
             return None;
         }
         Some(Self {
@@ -88,6 +88,23 @@ impl PlayLayout {
     fn judgment_row(&self) -> u16 {
         self.bottom - 1
     }
+}
+
+pub(crate) fn playfield_fits(cols: u16, rows: u16, lanes: usize) -> bool {
+    PlayLayout::compute(cols, rows, lanes).is_some()
+}
+
+pub(crate) fn draw_size_warning(out: &mut impl Write, lanes: usize) -> anyhow::Result<()> {
+    queue!(
+        out,
+        terminal::Clear(terminal::ClearType::All),
+        cursor::MoveTo(0, 0),
+        Print(format!(
+            "Paused: need {}x13",
+            LANE_WIDTH as usize * lanes + 1
+        ))
+    )?;
+    Ok(())
 }
 
 /// Vertical screen position for a note whose scroll distance from now is
@@ -1652,6 +1669,19 @@ mod tests {
         chart.bpm = 200.0;
         let g = Game::new(chart);
         assert_eq!(format_difficulty_badge(&g), "BPM 200  ·  7K");
+    }
+
+    #[test]
+    fn playfield_requires_every_lane_and_minimum_height() {
+        assert!(!playfield_fits(80, 24, 14));
+        assert!(!playfield_fits(98, 24, 14));
+        assert!(!playfield_fits(99, 12, 14));
+        assert!(playfield_fits(99, 13, 14));
+        let mut output = Vec::new();
+        draw_size_warning(&mut output, 14).unwrap();
+        assert!(String::from_utf8(output)
+            .unwrap()
+            .contains("Paused: need 99x13"));
     }
 
     // ---------- PlayLayout / note_screen_y ----------

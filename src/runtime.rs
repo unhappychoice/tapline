@@ -105,8 +105,9 @@ fn run_game(
     let mut state = LoopState::new(build_auto_notes(game, opts));
 
     while !state.quit {
-        let now = elapsed_ms(start);
-        if game.advance_completion(now) {
+        let (cols, rows) = terminal::size()?;
+        let now = state.update_size(bank, game, elapsed_ms(start), cols, rows);
+        if !state.paused && game.advance_completion(now) {
             break;
         }
         draw_frame(out, game, bank, opts, &mut state, &mut bga, now)?;
@@ -124,9 +125,32 @@ struct LoopState {
     prev_mode: u8,
     auto_notes: Vec<(f64, usize, Option<u32>)>,
     screen: Screen,
+    paused: bool,
+    clock_ms: f64,
+    last_wall_ms: f64,
 }
 
 impl LoopState {
+    fn update_size(
+        &mut self,
+        bank: &audio::SampleBank,
+        game: &game::Game,
+        wall_ms: f64,
+        cols: u16,
+        rows: u16,
+    ) -> f64 {
+        let paused = !render::playfield_fits(cols, rows, game.chart.lane_count);
+        if !self.paused && !paused {
+            self.clock_ms += wall_ms - self.last_wall_ms;
+        }
+        self.last_wall_ms = wall_ms;
+        if paused != self.paused {
+            bank.set_paused(paused);
+        }
+        self.paused = paused;
+        self.clock_ms
+    }
+
     fn new(auto_notes: Vec<(f64, usize, Option<u32>)>) -> Self {
         Self {
             quit: false,
@@ -136,6 +160,9 @@ impl LoopState {
             prev_mode: 0,
             auto_notes,
             screen: Screen::new(),
+            paused: false,
+            clock_ms: 0.0,
+            last_wall_ms: 0.0,
         }
     }
 }
@@ -163,7 +190,9 @@ fn draw_frame(
     bga: &mut crate::bga::Presentation,
     now: f64,
 ) -> Result<()> {
-    fire_scheduled_audio(bank, opts, state, game, now);
+    if !state.paused {
+        fire_scheduled_audio(bank, opts, state, game, now);
+    }
     let (cols, rows) = terminal::size()?;
     state.screen.resize(cols, rows);
     let mode: u8 = if now < opts.countdown_ms { 1 } else { 2 };
@@ -171,7 +200,12 @@ fn draw_frame(
         queue!(state.screen, terminal::Clear(terminal::ClearType::All))?;
         state.prev_mode = mode;
     }
-    draw_mode(&mut state.screen, game, bank, opts, bga, mode, now)?;
+    if state.paused {
+        render::draw_size_warning(&mut state.screen, game.chart.lane_count)?;
+        state.prev_mode = 0;
+    } else {
+        draw_mode(&mut state.screen, game, bank, opts, bga, mode, now)?;
+    }
     state.screen.present(out)?;
     Ok(())
 }
@@ -243,6 +277,8 @@ fn pump_input(
             return Ok(());
         }
         let input = event::read()?;
+        let (cols, rows) = terminal::size()?;
+        let now = state.update_size(bank, game, elapsed_ms(start), cols, rows);
         if matches!(input, Event::Resize(..)) {
             execute!(out, terminal::Clear(terminal::ClearType::All))?;
             state.screen.invalidate();
@@ -253,7 +289,7 @@ fn pump_input(
         if k.kind == KeyEventKind::Repeat {
             continue;
         }
-        if handle_key(k.code, k.kind, game, bank, opts, state, elapsed_ms(start)) {
+        if handle_key(k.code, k.kind, game, bank, opts, state, now) {
             return Ok(());
         }
         let _ = out;
@@ -275,7 +311,7 @@ fn handle_key(
             true
         }
         KeyCode::Char(c) => {
-            if now < opts.countdown_ms {
+            if state.paused || now < opts.countdown_ms {
                 return false;
             }
             let Some(lane) = lane_for_key(c, &game.chart.keys) else {
@@ -421,6 +457,61 @@ mod tests {
 
     use crate::chart::{Chart, Note};
     use crate::game::Game;
+
+    #[test]
+    fn insufficient_dimensions_freeze_startup_and_resize_judgments() {
+        let bank = SampleBank::silent();
+        let mut game = Game::new(base_chart(
+            14,
+            vec![Note {
+                time_ms: 3000.0,
+                lane: 13,
+                ..Note::default()
+            }],
+        ));
+        let mut state = LoopState::new(Vec::new());
+        [
+            (5000.0, 80, 24, 0.0),
+            (6000.0, 99, 24, 0.0),
+            (9000.0, 99, 24, 3000.0),
+            (9010.0, 80, 24, 3000.0),
+            (19000.0, 80, 24, 3000.0),
+            (20000.0, 99, 12, 3000.0),
+            (21000.0, 99, 24, 3000.0),
+        ]
+        .into_iter()
+        .for_each(|(wall, cols, rows, expected)| {
+            let now = state.update_size(&bank, &game, wall, cols, rows);
+            assert_eq!(now, expected);
+            if !state.paused {
+                game.check_misses(now);
+            }
+            if state.paused {
+                handle_key(
+                    KeyCode::Char('m'),
+                    KeyEventKind::Press,
+                    &mut game,
+                    &bank,
+                    &opts(false),
+                    &mut state,
+                    now,
+                );
+            }
+            assert_eq!((game.perfect, game.miss), (0, 0));
+            assert!(!game.chart.notes[0].hit);
+        });
+        let now = state.update_size(&bank, &game, 21010.0, 99, 24);
+        handle_key(
+            KeyCode::Char('m'),
+            KeyEventKind::Press,
+            &mut game,
+            &bank,
+            &opts(false),
+            &mut state,
+            now,
+        );
+        assert_eq!((game.perfect, game.miss), (1, 0));
+    }
 
     fn base_chart(lane_count: usize, notes: Vec<Note>) -> Chart {
         Chart {
