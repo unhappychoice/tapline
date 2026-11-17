@@ -55,3 +55,27 @@ fn master_bus_keeps_accepting_voices_after_silence_and_limits_the_mix() {
     bus.add(SamplesBuffer::new(CHANNELS, SAMPLE_RATE, vec![0.25; 8]));
     assert!(samples.take(8).all(|sample| sample > 0.0 && sample <= 0.25));
 }
+
+#[test]
+fn paused_master_preserves_voice_position_until_resume() {
+    let (output, mut samples) = mixer::mixer(CHANNELS, SAMPLE_RATE);
+    let bus = master_bus(&output);
+    bus.add(SamplesBuffer::new(
+        CHANNELS,
+        SAMPLE_RATE,
+        vec![0.25; 44_100],
+    ));
+    assert!(samples
+        .by_ref()
+        .skip(2048)
+        .take(2048)
+        .all(|sample| sample == 0.25));
+    bus.set_paused(true);
+    assert!(samples
+        .by_ref()
+        .skip(2048)
+        .take(44_100)
+        .all(|sample| sample == 0.0));
+    bus.set_paused(false);
+    assert!(samples.skip(2048).take(2048).all(|sample| sample == 0.25));
+}

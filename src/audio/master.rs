@@ -3,7 +3,24 @@ use rodio::source::Zero;
 use rodio::Source;
 use std::time::Duration;
 
-pub(crate) type MasterBus = Mixer;
+pub(crate) struct MasterBus {
+    mixer: Mixer,
+    player: rodio::Player,
+}
+
+impl MasterBus {
+    pub(crate) fn add(&self, source: impl Source<Item = f32> + Send + 'static) {
+        self.mixer.add(source);
+    }
+
+    pub(crate) fn set_paused(&self, paused: bool) {
+        if paused {
+            self.player.pause();
+        } else {
+            self.player.play();
+        }
+    }
+}
 
 const CHANNELS: rodio::ChannelCount = rodio::nz!(2);
 const SAMPLE_RATE: rodio::SampleRate = rodio::nz!(44_100);
@@ -16,8 +33,12 @@ pub(crate) fn master_bus(output: &Mixer) -> MasterBus {
     let (controller, mixer) = mixer::mixer(CHANNELS, SAMPLE_RATE);
     // The mixer ends once it has no sources; keep it alive with silence.
     controller.add(Zero::new(CHANNELS, SAMPLE_RATE));
-    output.add(Limiter::new(mixer));
-    controller
+    let player = rodio::Player::connect_new(output);
+    player.append(Limiter::new(mixer));
+    MasterBus {
+        mixer: controller,
+        player,
+    }
 }
 
 pub(crate) struct Limiter<S> {
