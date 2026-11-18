@@ -126,7 +126,7 @@ fn normalize_filename(name: &str) -> String {
 #[cfg(test)]
 thread_local! {
     static MATCHING_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static DIRECTORY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static DIRECTORY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
