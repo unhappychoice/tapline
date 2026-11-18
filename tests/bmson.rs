@@ -183,11 +183,11 @@ fn invalid_versions_timing_modes_and_paths_are_rejected() {
 }
 
 #[test]
-fn layered_notes_are_judged_once_and_keep_all_channel_slices() {
+fn layered_notes_are_judged_once_and_keep_distinct_slices_in_channel_order() {
     let mut data = base();
     data["sound_channels"] = json!([
-        {"name":"sound.wav","notes":[{"x":1,"y":0}, {"x":2,"y":0}]},
-        {"name":"sound.wav","notes":[{"x":1,"y":0}]},
+        {"name":"sound.wav","notes":[{"x":1,"y":0}, {"x":2,"y":0}, {"x":1,"y":0}]},
+        {"name":"sound.wav","notes":[{"x":1,"y":0}, {"x":1,"y":0}]},
         {"name":"third.wav","notes":[{"x":1,"y":0}]}
     ]);
     let chart = load_value(data).unwrap();

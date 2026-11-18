@@ -19,12 +19,13 @@ pub(super) fn merge(chart: &mut Chart) -> Result<()> {
             + chart.notes[index..]
                 .partition_point(|n| n.time_ms == note.time_ms && n.lane == note.lane);
         let mut sounds = Vec::new();
+        let mut seen = HashSet::new();
         for layer in &chart.notes[index..end] {
             ensure!(
                 layer.end_ms == note.end_ms,
                 "Layered notes have unequal lengths"
             );
-            if let Some(id) = layer.keysound.filter(|id| !sounds.contains(id)) {
+            if let Some(id) = layer.keysound.filter(|id| seen.insert(*id)) {
                 sounds.push(id);
             }
         }
