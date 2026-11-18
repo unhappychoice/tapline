@@ -120,6 +120,7 @@ fn run_game(
 struct LoopState {
     quit: bool,
     pressed_keys: HashSet<char>,
+    deferred_releases: Vec<usize>,
     bgm_cursor: usize,
     note_snd_cursor: usize,
     prev_mode: u8,
@@ -134,7 +135,7 @@ impl LoopState {
     fn update_size(
         &mut self,
         bank: &audio::SampleBank,
-        game: &game::Game,
+        game: &mut game::Game,
         wall_ms: f64,
         cols: u16,
         rows: u16,
@@ -147,6 +148,11 @@ impl LoopState {
         if paused != self.paused {
             bank.set_paused(paused);
         }
+        if self.paused && !paused {
+            self.deferred_releases
+                .drain(..)
+                .for_each(|lane| game.release(lane, self.clock_ms));
+        }
         self.paused = paused;
         self.clock_ms
     }
@@ -155,6 +161,7 @@ impl LoopState {
         Self {
             quit: false,
             pressed_keys: HashSet::new(),
+            deferred_releases: Vec::new(),
             bgm_cursor: 0,
             note_snd_cursor: 0,
             prev_mode: 0,
@@ -311,14 +318,14 @@ fn handle_key(
             true
         }
         KeyCode::Char(c) => {
-            if state.paused || now < opts.countdown_ms {
+            if now < opts.countdown_ms {
                 return false;
             }
             let Some(lane) = lane_for_key(c, &game.chart.keys) else {
                 return false;
             };
             match kind {
-                KeyEventKind::Press => {
+                KeyEventKind::Press if !state.paused => {
                     state.pressed_keys.insert(c.to_ascii_uppercase());
                     let ks = game.hit(lane, now);
                     if !opts.auto_ks {
@@ -333,7 +340,11 @@ fn handle_key(
                             .iter()
                             .any(|&key| lane_for_key(key, &game.chart.keys) == Some(lane)) =>
                 {
-                    game.release(lane, now);
+                    if state.paused {
+                        state.deferred_releases.push(lane);
+                    } else {
+                        game.release(lane, now);
+                    }
                 }
                 _ => {}
             }
@@ -481,7 +492,7 @@ mod tests {
         ]
         .into_iter()
         .for_each(|(wall, cols, rows, expected)| {
-            let now = state.update_size(&bank, &game, wall, cols, rows);
+            let now = state.update_size(&bank, &mut game, wall, cols, rows);
             assert_eq!(now, expected);
             if !state.paused {
                 game.check_misses(now);
@@ -500,7 +511,7 @@ mod tests {
             assert_eq!((game.perfect, game.miss), (0, 0));
             assert!(!game.chart.notes[0].hit);
         });
-        let now = state.update_size(&bank, &game, 21010.0, 99, 24);
+        let now = state.update_size(&bank, &mut game, 21010.0, 99, 24);
         handle_key(
             KeyCode::Char('m'),
             KeyEventKind::Press,
@@ -511,6 +522,64 @@ mod tests {
             now,
         );
         assert_eq!((game.perfect, game.miss), (1, 0));
+    }
+
+    #[test]
+    fn resize_pause_reconciles_only_lanes_that_lose_their_last_binding() {
+        let notes = [0, 1, 2].map(|lane| Note {
+            time_ms: 3000.0,
+            end_ms: Some(5000.0),
+            lane,
+            ..Note::default()
+        });
+        let mut game = Game::new(base_chart(5, notes.to_vec()));
+        let mut state = LoopState::new(Vec::new());
+        let bank = SampleBank::silent();
+        let options = opts(false);
+        let now = state.update_size(&bank, &mut game, 3000.0, 80, 24);
+        for key in ['s', 'd', 'f', 'j'] {
+            handle_key(
+                KeyCode::Char(key),
+                KeyEventKind::Press,
+                &mut game,
+                &bank,
+                &options,
+                &mut state,
+                now,
+            );
+        }
+
+        state.update_size(&bank, &mut game, 4000.0, 80, 24);
+        let now = state.update_size(&bank, &mut game, 7000.0, 20, 24);
+        for (key, kind) in [
+            ('S', KeyEventKind::Release),
+            ('F', KeyEventKind::Release),
+            ('s', KeyEventKind::Press),
+        ] {
+            handle_key(
+                KeyCode::Char(key),
+                kind,
+                &mut game,
+                &bank,
+                &options,
+                &mut state,
+                now,
+            );
+        }
+        assert_eq!((game.perfect, game.miss), (3, 0));
+        assert!(game.chart.notes.iter().all(|note| !note.hit));
+
+        let now = state.update_size(&bank, &mut game, 9000.0, 80, 24);
+        assert_eq!(now, 4000.0);
+        assert_eq!(game.flash.last_judgment_at, now);
+        assert_eq!((game.perfect, game.miss), (3, 1));
+        assert!(game.chart.notes[0].hit);
+        assert_eq!(game.chart.notes[1].held_since, Some(3000.0));
+        assert_eq!(game.chart.notes[2].held_since, Some(3000.0));
+
+        let now = state.update_size(&bank, &mut game, 10200.0, 80, 24);
+        game.advance_completion(now);
+        assert_eq!((game.perfect, game.miss), (5, 1));
     }
 
     fn base_chart(lane_count: usize, notes: Vec<Note>) -> Chart {
