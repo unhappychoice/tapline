@@ -180,7 +180,7 @@ fn is_video(path: &std::path::Path) -> bool {
         })
 }
 
-fn panel_width(left_margin: u16, height: u16) -> Option<u16> {
+pub(crate) fn panel_width(left_margin: u16, height: u16) -> Option<u16> {
     let width = left_margin
         .saturating_sub(2)
         .min(32)
