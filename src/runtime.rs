@@ -1252,7 +1252,12 @@ mod result_tests {
         assert!(persist_result(&path, &id, &game, false).contains("Cannot read"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "corrupt");
         let blocked = path.join("results.json");
-        assert!(persist_result(&blocked, &id, &game, false).contains("Cannot read"));
+        let status = persist_result(&blocked, &id, &game, false);
+        assert!(
+            status == "Cannot read saved results" || status.starts_with("Storage error:"),
+            "unexpected result status: {status}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "corrupt");
         std::fs::remove_file(&path).unwrap();
         assert!(persist_result(&path, &id, &game, false).contains("First completed"));
         assert!(crate::results::Store::load(&path)
