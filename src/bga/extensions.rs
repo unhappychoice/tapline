@@ -1,7 +1,7 @@
 use crate::chart::BgaLayer;
 use std::collections::HashMap;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Extensions {
     pub crops: HashMap<u32, Crop>,
     pub argb: HashMap<u32, [u8; 4]>,
@@ -10,11 +10,13 @@ pub struct Extensions {
     pub poor_mode: u8,
 }
 
+#[derive(Clone, Copy)]
 pub struct Crop {
     pub image: u32,
     pub rect: [i32; 6],
 }
 
+#[derive(Clone)]
 pub struct Switch {
     pub frame_ms: u32,
     pub duration_ms: u32,
@@ -25,11 +27,13 @@ pub struct Switch {
     pub pattern: Vec<u32>,
 }
 
+#[derive(Clone, Copy)]
 pub struct EffectEvent {
     pub time_ms: f64,
     pub effect: Effect,
 }
 
+#[derive(Clone, Copy)]
 pub enum Effect {
     Opacity(BgaLayer, u8),
     Color(BgaLayer, u32),
