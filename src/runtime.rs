@@ -513,7 +513,7 @@ mod tests {
         assert_eq!((game.perfect, game.miss), (1, 0));
     }
 
-    fn base_chart(lane_count: usize, notes: Vec<Note>) -> Chart {
+    pub(super) fn base_chart(lane_count: usize, notes: Vec<Note>) -> Chart {
         Chart {
             title: "t".into(),
             bpm: 120.0,
@@ -525,7 +525,7 @@ mod tests {
         }
     }
 
-    fn opts(auto_ks: bool) -> PlayOptions {
+    pub(super) fn opts(auto_ks: bool) -> PlayOptions {
         PlayOptions {
             countdown_ms: 2000.0,
             synth_mode: true,
@@ -1262,3 +1262,6 @@ mod result_tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[cfg(test)]
+mod video_tests;
