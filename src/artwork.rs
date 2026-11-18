@@ -1,4 +1,4 @@
-use crate::assets::AssetIndex;
+use crate::assets::{normalized_asset_path, AssetIndex};
 use crate::fs_guard;
 use crossterm::{
     cursor, queue,
@@ -14,7 +14,7 @@ use std::{
 };
 
 const THUMBNAIL_CACHE_CAPACITY: usize = 32;
-const MISSING_PATH_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 thread_local! {
     static CACHE: RefCell<ArtworkCache> = const { RefCell::new(ArtworkCache {
@@ -38,12 +38,15 @@ pub(crate) fn draw(
     if name.is_empty() || area.2 == 0 || area.3 == 0 {
         return Ok(());
     }
-    CACHE.with(
-        |cache| match cache.borrow_mut().pixels(dir, name, (area.2, area.3)) {
+    CACHE.with(|cache| {
+        match cache
+            .borrow_mut()
+            .pixels(dir, name, (area.2, area.3), Instant::now)
+        {
             Some(image) => draw_pixels(out, image, area),
             None => Ok(()),
-        },
-    )
+        }
+    })
 }
 
 struct ArtworkCache {
@@ -58,18 +61,23 @@ struct PathLookup {
 }
 
 enum LookupResult {
-    Found(PathBuf),
-    Missing { retry_at: Instant },
+    Found {
+        path: PathBuf,
+        retry_at: Option<Instant>,
+    },
+    Missing {
+        retry_at: Instant,
+    },
 }
 
 impl LookupResult {
     fn cached_source(&self, now: Instant) -> Option<Option<(PathBuf, SourceVersion)>> {
         match self {
-            Self::Found(path) => {
+            Self::Found { path, retry_at } if retry_at.is_none_or(|retry_at| now < retry_at) => {
                 SourceVersion::read(path).map(|source| Some((path.clone(), source)))
             }
             Self::Missing { retry_at } if now < *retry_at => Some(None),
-            Self::Missing { .. } => None,
+            _ => None,
         }
     }
 }
@@ -78,7 +86,7 @@ struct Thumbnail {
     path: PathBuf,
     size: (u16, u16),
     source: SourceVersion,
-    pixels: Option<RgbaImage>,
+    pixels: Result<RgbaImage, Instant>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -90,8 +98,14 @@ struct SourceVersion {
 }
 
 impl ArtworkCache {
-    fn pixels(&mut self, dir: &Path, name: &str, size: (u16, u16)) -> Option<&RgbaImage> {
-        let (path, source) = self.resolve(dir, name, Instant::now)?;
+    fn pixels(
+        &mut self,
+        dir: &Path,
+        name: &str,
+        size: (u16, u16),
+        now: impl Fn() -> Instant,
+    ) -> Option<&RgbaImage> {
+        let (path, source) = self.resolve(dir, name, &now)?;
         self.thumbnails
             .retain(|entry| entry.path != path || entry.source == source);
         let index = self
@@ -99,9 +113,11 @@ impl ArtworkCache {
             .iter()
             .position(|entry| entry.path == path && entry.size == size);
         let entry = match index.and_then(|index| self.thumbnails.remove(index)) {
-            Some(entry) => entry,
-            None => Thumbnail {
-                pixels: load_image(&path).map(|image| resize(&image, size)),
+            Some(entry) if !matches!(entry.pixels, Err(retry_at) if now() >= retry_at) => entry,
+            _ => Thumbnail {
+                pixels: load_image(&path)
+                    .map(|image| resize(&image, size))
+                    .ok_or_else(|| now() + RETRY_INTERVAL),
                 path,
                 size,
                 source,
@@ -109,7 +125,7 @@ impl ArtworkCache {
         };
         self.thumbnails.push_front(entry);
         self.thumbnails.truncate(THUMBNAIL_CACHE_CAPACITY);
-        self.thumbnails.front()?.pixels.as_ref()
+        self.thumbnails.front()?.pixels.as_ref().ok()
     }
 
     fn resolve(
@@ -132,9 +148,13 @@ impl ArtworkCache {
             .resolve_path(name, &[])
             .and_then(|path| SourceVersion::read(&path).map(|source| (path, source)));
         let result = match &source {
-            Some((path, _)) => LookupResult::Found(path.clone()),
+            Some((path, _)) => LookupResult::Found {
+                path: path.clone(),
+                retry_at: (path != &dir.join(normalized_asset_path(name)))
+                    .then(|| now() + RETRY_INTERVAL),
+            },
             None => LookupResult::Missing {
-                retry_at: now() + MISSING_PATH_RETRY_INTERVAL,
+                retry_at: now() + RETRY_INTERVAL,
             },
         };
         self.paths.push_front(PathLookup {
@@ -342,7 +362,7 @@ mod tests {
             |now| CACHE.with(|cache| cache.borrow_mut().resolve(&dir, "cover.png", || now));
         assert!(resolve(now).is_none());
         image.save(dir.join("Cover.png")).unwrap();
-        assert!(resolve(now + MISSING_PATH_RETRY_INTERVAL).is_some());
+        assert!(resolve(now + RETRY_INTERVAL).is_some());
         assert_eq!(render(), expected);
         assert_eq!(render(), expected);
         DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 3));
@@ -364,14 +384,81 @@ mod tests {
 
         let path = images.join("cover.png");
         DynamicImage::new_rgb8(2, 2).save(&path).unwrap();
-        assert!(resolve(now + MISSING_PATH_RETRY_INTERVAL / 2).is_none());
+        assert!(resolve(now + RETRY_INTERVAL / 2).is_none());
         DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 2));
 
-        assert_eq!(resolve(now + MISSING_PATH_RETRY_INTERVAL).unwrap().0, path);
+        assert_eq!(resolve(now + RETRY_INTERVAL).unwrap().0, path);
         let mut out = Vec::new();
         draw(&mut out, &dir, name, (0, 0, 2, 1)).unwrap();
         assert!(!out.is_empty());
         DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 4));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn prefers_a_new_exact_case_banner_after_the_interval() {
+        reset_cache();
+        let dir =
+            std::env::temp_dir().join(format!("tapline-artwork-fallback-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fallback = dir.join("images");
+        std::fs::create_dir_all(&fallback).unwrap();
+        DynamicImage::new_rgb8(2, 2)
+            .save(fallback.join("cover.png"))
+            .unwrap();
+        let exact = dir.join("Images");
+        if !exact.exists() {
+            let start = Instant::now();
+            let name = ".\\Images\\Cover.png";
+            let sample = |now| {
+                CACHE.with(|cache| {
+                    *cache
+                        .borrow_mut()
+                        .pixels(&dir, name, (2, 1), || now)
+                        .unwrap()
+                        .get_pixel(0, 0)
+                })
+            };
+            assert_eq!(sample(start).0, [0, 0, 0, 255]);
+            std::fs::create_dir(&exact).unwrap();
+            RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]))
+                .save(exact.join("Cover.png"))
+                .unwrap();
+            assert_eq!(sample(start + RETRY_INTERVAL / 2).0, [0, 0, 0, 255]);
+            assert_eq!(sample(start + RETRY_INTERVAL).0, [255, 0, 0, 255]);
+            assert_image_work(2);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retries_failed_image_loads_even_when_the_source_version_is_unchanged() {
+        reset_cache();
+        let dir =
+            std::env::temp_dir().join(format!("tapline-artwork-decode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cover.png");
+        std::fs::write(&path, b"invalid image").unwrap();
+        let start = Instant::now();
+        let has_pixels = |now| {
+            CACHE.with(|cache| {
+                cache
+                    .borrow_mut()
+                    .pixels(&dir, "cover.png", (2, 1), || now)
+                    .is_some()
+            })
+        };
+        assert!(!has_pixels(start));
+        assert!(!has_pixels(start + RETRY_INTERVAL / 2));
+        LOAD_COUNT.with(|count| assert_eq!(count.get(), 1));
+        assert!(!has_pixels(start + RETRY_INTERVAL));
+        LOAD_COUNT.with(|count| assert_eq!(count.get(), 2));
+        RESIZE_COUNT.with(|count| assert_eq!(count.get(), 0));
+
+        DynamicImage::new_rgb8(2, 2).save(path).unwrap();
+        assert!(has_pixels(start + RETRY_INTERVAL));
+        LOAD_COUNT.with(|count| assert_eq!(count.get(), 3));
+        RESIZE_COUNT.with(|count| assert_eq!(count.get(), 1));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -36,11 +36,7 @@ impl AssetIndex {
     }
 
     pub(crate) fn resolve_path(&self, name: &str, extensions: &[&str]) -> Option<PathBuf> {
-        let normalized = name.replace('\\', "/");
-        let path: PathBuf = Path::new(&normalized)
-            .components()
-            .filter(|component| *component != Component::CurDir)
-            .collect();
+        let path = normalized_asset_path(name);
         self.find(&path).or_else(|| {
             extensions
                 .iter()
@@ -115,6 +111,13 @@ impl AssetIndex {
             })
             .clone()
     }
+}
+
+pub(crate) fn normalized_asset_path(name: &str) -> PathBuf {
+    Path::new(&name.replace('\\', "/"))
+        .components()
+        .filter(|component| *component != Component::CurDir)
+        .collect()
 }
 
 fn normalize_filename(name: &str) -> String {
