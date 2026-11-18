@@ -435,19 +435,16 @@ fn format_gauge_status(game: &Game, clear: bool, show_bar: bool) -> String {
     )
 }
 
-pub fn prepare_bga(game: &Game, bga: &mut crate::bga::Presentation) -> anyhow::Result<()> {
-    let (cols, rows) = terminal::size()?;
-    if let Some(layout) = PlayLayout::compute(cols, rows, game.chart.lane_count) {
-        bga.prepare(&game.chart, layout.x0, layout.bottom - layout.top);
-    }
-    Ok(())
+pub(crate) fn bga_panel_visible(cols: u16, rows: u16, lanes: usize) -> bool {
+    PlayLayout::compute(cols, rows, lanes)
+        .is_some_and(|layout| crate::bga::panel_width(layout.x0, layout.lane_height).is_some())
 }
 
 /// Draw the play field using notes near the current time and active long notes.
 pub fn draw(
     out: &mut impl Write,
     game: &Game,
-    bga: &mut crate::bga::Presentation,
+    bga: &crate::bga::Presentation,
     now_ms: f64,
 ) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
@@ -496,7 +493,6 @@ pub fn draw(
         Print(gauge)
     )?;
 
-    bga.prepare(&game.chart, x0, bottom - top);
     if let Some(tag) = format_bga_badge(&bga.bank, &game.chart.bga, now_ms) {
         queue!(
             out,

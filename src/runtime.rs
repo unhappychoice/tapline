@@ -1,3 +1,4 @@
+use crate::bga::Presentation;
 use crate::chart::VolumeTarget;
 use crate::render::ResultDestination;
 use crate::screen::Screen;
@@ -110,8 +111,9 @@ fn run_game(
     bank: &audio::SampleBank,
     opts: &PlayOptions,
 ) -> Result<()> {
-    let mut bga = crate::bga::Presentation::new(&game.chart);
-    render::prepare_bga(game, &mut bga)?;
+    let (cols, rows) = terminal::size()?;
+    let visible = render::bga_panel_visible(cols, rows, game.chart.lane_count);
+    let mut bga = Presentation::new(&game.chart, visible);
     let start = Instant::now();
     let mut next_frame = Instant::now() + FRAME_DT;
     let mut state = LoopState::new(build_auto_notes(game, opts));
@@ -122,7 +124,9 @@ fn run_game(
         if state.advance_completion(game, now) {
             break;
         }
-        draw_frame(out, game, bank, opts, &mut state, &mut bga, now)?;
+        let visible = render::bga_panel_visible(cols, rows, game.chart.lane_count);
+        bga.prepare_deferred(&game.chart, visible, Presentation::load_assets);
+        draw_frame(out, game, bank, opts, &mut state, &bga, now)?;
         pump_input(out, game, bank, opts, &mut state, start, next_frame)?;
         next_frame = advance_deadline(next_frame);
     }
@@ -212,7 +216,7 @@ fn draw_frame(
     bank: &audio::SampleBank,
     opts: &PlayOptions,
     state: &mut LoopState,
-    bga: &mut crate::bga::Presentation,
+    bga: &Presentation,
     now: f64,
 ) -> Result<()> {
     if !state.paused {
@@ -240,7 +244,7 @@ fn draw_mode(
     game: &mut game::Game,
     bank: &audio::SampleBank,
     opts: &PlayOptions,
-    bga: &mut crate::bga::Presentation,
+    bga: &Presentation,
     mode: u8,
     now: f64,
 ) -> Result<()> {
@@ -637,6 +641,74 @@ mod tests {
     }
 
     #[test]
+    fn revealing_bga_keeps_audio_and_input_on_time_while_loading() {
+        use std::sync::mpsc;
+
+        let times = [3000.0, 3100.0];
+        let mut chart = base_chart(
+            4,
+            times
+                .into_iter()
+                .map(|time_ms| Note {
+                    time_ms,
+                    keysound: Some(1),
+                    ..Note::default()
+                })
+                .collect(),
+        );
+        chart.bgm = times
+            .into_iter()
+            .map(|time_ms| BgmEvent {
+                time_ms,
+                keysound: 1,
+            })
+            .collect();
+        let mut game = Game::new(chart);
+        let bank = SampleBank::silent();
+        let options = opts(true);
+        let mut state = LoopState::new(build_auto_notes(&game, &options));
+        let mut bga = Presentation::new(&game.chart, render::bga_panel_visible(40, 24, 4));
+        let now = state.update_size(&bank, &mut game, 2900.0, 40, 24);
+        assert_eq!(now, 2900.0);
+
+        let (started, loading) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let visible = render::bga_panel_visible(80, 24, 4);
+        bga.prepare_deferred(&game.chart, visible, move |chart| {
+            started.send(()).unwrap();
+            blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+            Presentation::load_assets(chart)
+        });
+        loading.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        // Keep the loader held while two separate audio events and key presses are due.
+        for (index, wall_ms) in times.into_iter().enumerate() {
+            bga.prepare_deferred(&game.chart, visible, Presentation::load_assets);
+            let now = state.update_size(&bank, &mut game, wall_ms - 1.0, 80, 24);
+            fire_scheduled_audio(&bank, &options, &mut state, &game, now);
+            assert_eq!((state.bgm_cursor, state.note_snd_cursor), (index, index));
+
+            let now = state.update_size(&bank, &mut game, wall_ms, 80, 24);
+            fire_scheduled_audio(&bank, &options, &mut state, &game, now);
+            assert_eq!(
+                (state.bgm_cursor, state.note_snd_cursor),
+                (index + 1, index + 1)
+            );
+            handle_key(
+                KeyCode::Char('s'),
+                KeyEventKind::Press,
+                &mut game,
+                &bank,
+                &options,
+                &mut state,
+                now,
+            );
+            assert_eq!((game.perfect, game.miss), (index as u32 + 1, 0));
+        }
+        release.send(()).unwrap();
+    }
+
+    #[test]
     fn resize_pause_reconciles_only_lanes_that_lose_their_last_binding() {
         let notes = [0, 1, 2].map(|lane| Note {
             time_ms: 3000.0,
@@ -984,10 +1056,8 @@ mod tests {
                 (2000.0, 3),
             ] {
                 // Rendering can fail without a terminal; audio must still be scheduled.
-                let mut bga = crate::bga::Presentation::new(&game.chart);
-                let _ = draw_frame(
-                    &mut out, &mut game, &bank, &options, &mut state, &mut bga, now,
-                );
+                let bga = Presentation::new(&game.chart, false);
+                let _ = draw_frame(&mut out, &mut game, &bank, &options, &mut state, &bga, now);
                 assert_eq!(state.bgm_cursor, expected, "BGM at {now} ms");
                 assert_eq!(
                     state.note_snd_cursor,

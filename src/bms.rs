@@ -39,8 +39,19 @@ pub fn read_meta_with_seed(path: &Path, seed: u64) -> Result<ChartMeta> {
 }
 
 pub(crate) fn read_meta_bytes(path: &Path, bytes: &[u8], seed: u64) -> Result<ChartMeta> {
-    let text = decode_text(bytes);
-    let text = resolve_control_flow(&text, seed);
+    let (mut meta, preview, _) = parse_meta(path, bytes, seed)?;
+    meta.preview = resolve_preview(path, preview.as_deref());
+    Ok(meta)
+}
+
+pub(crate) fn parse_meta(
+    path: &Path,
+    bytes: &[u8],
+    seed: u64,
+) -> Result<(ChartMeta, Option<String>, bool)> {
+    #[cfg(test)]
+    crate::select::count_metadata_parse();
+    let (text, draws_random) = resolve_branches(&decode_text(bytes), seed);
     let mut pass = HeaderPass::for_text(&text);
     let mut raw = Vec::new();
     for line in header_lines(&text) {
@@ -58,14 +69,8 @@ pub(crate) fn read_meta_bytes(path: &Path, bytes: &[u8], seed: u64) -> Result<Ch
         collect_lane_occupancy(&raw, &pass, P2_LANES)
     };
     let mode = detect_mode(path, pass.player, &raw, &acc, &p2_acc);
-    Ok(ChartMeta {
-        preview: pass
-            .preview
-            .filter(|name| !name.is_empty())
-            .and_then(|name| {
-                AssetIndex::new(path.parent().unwrap_or(Path::new(".")))
-                    .resolve_path(&name, AUDIO_EXTENSIONS)
-            }),
+    let meta = ChartMeta {
+        preview: None,
         path: path.to_path_buf(),
         random_seed: seed,
         title: pass.title,
@@ -79,7 +84,13 @@ pub(crate) fn read_meta_bytes(path: &Path, bytes: &[u8], seed: u64) -> Result<Ch
         playlevel: pass.playlevel,
         difficulty: pass.difficulty,
         lane_count: mode.playable_lane_count(&acc, &p2_acc),
-    })
+    };
+    Ok((meta, pass.preview, draws_random))
+}
+
+pub(crate) fn resolve_preview(path: &Path, preview: Option<&str>) -> Option<PathBuf> {
+    let name = preview.filter(|name| !name.is_empty())?;
+    AssetIndex::new(path.parent().unwrap_or(Path::new("."))).resolve_path(name, AUDIO_EXTENSIONS)
 }
 
 pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
@@ -1588,7 +1599,19 @@ pub(crate) fn random_seed() -> u64 {
         })
 }
 
+const RNG_OFFSET: u64 = 0x9E3779B97F4A7C15;
+
 fn resolve_control_flow(text: &str, seed: u64) -> String {
+    resolve_branches(text, seed).0
+}
+
+fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
+    let mut rng = seed.wrapping_add(RNG_OFFSET);
+    let mut draws_random = false;
+    let mut draw = |n| {
+        draws_random |= n > 1;
+        xorshift_pick(&mut rng, n)
+    };
     #[derive(Clone, Copy)]
     struct IfLevel {
         matched_yet: bool,
@@ -1602,7 +1625,6 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
         default: bool,
     }
     let mut switch_stack: Vec<SwitchLevel> = Vec::new();
-    let mut rng = seed.wrapping_add(0x9E3779B97F4A7C15);
     let mut random_stack: Vec<u32> = Vec::new();
     let mut if_stack: Vec<IfLevel> = Vec::new();
     let is_active = |ifs: &[IfLevel], switches: &[SwitchLevel]| {
@@ -1619,13 +1641,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                     let pick = rest.trim().parse::<u32>().ok().filter(|&n| n > 0);
                     let pick = pick.filter(|_| is_active(&if_stack, &switch_stack));
                     switch_stack.push(SwitchLevel {
-                        pick: pick.map(|n| {
-                            if up == "SWITCH" {
-                                xorshift_pick(&mut rng, n)
-                            } else {
-                                n
-                            }
-                        }),
+                        pick: pick.map(|n| if up == "SWITCH" { draw(n) } else { n }),
                         ..SwitchLevel::default()
                     });
                     continue;
@@ -1663,7 +1679,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
                     if is_active(&if_stack, &switch_stack) {
                         if let Ok(n) = rest.trim().parse::<u32>() {
                             if n > 0 {
-                                random_stack.push(xorshift_pick(&mut rng, n));
+                                random_stack.push(draw(n));
                             }
                         }
                     }
@@ -1726,7 +1742,7 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
             out.push('\n');
         }
     }
-    out
+    (out, draws_random)
 }
 
 fn xorshift_pick(state: &mut u64, n: u32) -> u32 {
@@ -3504,7 +3520,7 @@ Outer one
 #ENDIF
 ";
         (0u64..64).for_each(|seed| {
-            let mut rng = seed.wrapping_add(0x9E3779B97F4A7C15);
+            let mut rng = seed.wrapping_add(RNG_OFFSET);
             let expected = match xorshift_pick(&mut rng, 2) {
                 1 => "Inner\nOuter one\n",
                 _ => "Outer two\n",

@@ -89,6 +89,8 @@ pub fn read_meta(path: &Path) -> Result<ChartMeta> {
 }
 
 pub(crate) fn read_meta_bytes(path: &Path, bytes: &[u8]) -> Result<ChartMeta> {
+    #[cfg(test)]
+    crate::select::count_metadata_parse();
     let data = parse(path, bytes)?;
     Timeline::new(&data, 0.0)?;
     metadata::convert(path, &data.info)
