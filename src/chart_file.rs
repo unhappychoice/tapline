@@ -31,7 +31,31 @@ mod size_tests {
     use super::*;
     use crate::{cli, select};
     use clap::Parser;
-    use std::{fs, io};
+    use std::{ffi::OsStr, fs, io, path::PathBuf};
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn create() -> io::Result<Self> {
+            let parent = std::env::temp_dir();
+            let pid = std::process::id();
+            for suffix in 0_u64.. {
+                let path = parent.join(format!("tapline-chart-size-{pid}-{suffix}"));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Ok(Self(path)),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            unreachable!()
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn accepts_a_chart_at_the_size_limit() {
@@ -49,10 +73,9 @@ mod size_tests {
 
     #[test]
     fn discovery_skips_oversized_charts_and_direct_loading_reports_the_limit() {
-        let dir = std::env::temp_dir().join(format!("tapline-chart-size-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let valid = dir.join("valid.bms");
-        let oversized = dir.join("oversized.bms");
+        let dir = TestDir::create().unwrap();
+        let valid = dir.0.join("valid.bms");
+        let oversized = dir.0.join("oversized.bms");
         let chart = include_bytes!("../tests/fixtures/sample.bms");
         fs::write(&valid, chart).unwrap();
         fs::write(&oversized, chart).unwrap();
@@ -63,11 +86,14 @@ mod size_tests {
             .set_len(MAX_CHART_BYTES + 1)
             .unwrap();
 
-        let charts = select::scan(&dir);
-        let args = cli::Args::parse_from(["tapline", "--file", oversized.to_str().unwrap()]);
+        let charts = select::scan(&dir.0);
+        let args = cli::Args::parse_from([
+            OsStr::new("tapline"),
+            OsStr::new("--file"),
+            oversized.as_os_str(),
+        ]);
         let choice = cli::choose_chart(&mut io::stdout(), &args).unwrap();
         let result = cli::load_chart(&choice, &args);
-        fs::remove_dir_all(dir).unwrap();
 
         assert_eq!(charts.len(), 1);
         assert_eq!(charts[0].path, valid);
