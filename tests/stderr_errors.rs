@@ -2,7 +2,29 @@
 
 use std::fs::File;
 use std::os::fd::FromRawFd;
-use std::process::Command;
+use std::path::Path;
+use std::process::{Command, Output};
+
+#[test]
+fn missing_chart_reports_the_path_on_stderr() {
+    let dir = std::env::temp_dir().join(format!("tapline-missing-chart-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("missing.bmson");
+    let output = run_chart(&path);
+    std::fs::remove_dir(dir).unwrap();
+
+    assert_chart_error(output, &format!("cannot read chart {}", path.display()));
+}
+
+#[test]
+fn malformed_bmson_reports_the_path_on_stderr() {
+    let path = std::env::temp_dir().join(format!("tapline-malformed-{}.bmson", std::process::id()));
+    std::fs::write(&path, "{").unwrap();
+    let output = run_chart(&path);
+    std::fs::remove_file(&path).unwrap();
+
+    assert_chart_error(output, &format!("Invalid bmson: {}", path.display()));
+}
 
 #[test]
 fn unsupported_versions_are_sanitized_on_stderr() {
@@ -35,20 +57,33 @@ fn assert_sanitized_error(field: &str, diagnostic: &str) {
         std::process::id()
     ));
     std::fs::write(&path, chart.to_string()).unwrap();
-    let (_master, slave) = open_pty();
-    let output = Command::new(env!("CARGO_BIN_EXE_tapline"))
-        .arg("--file")
-        .arg(&path)
-        .arg("--no-audio")
-        .stdin(slave)
-        .output()
-        .unwrap();
+    let output = run_chart(&path);
     std::fs::remove_file(path).unwrap();
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
     let sanitized: String = payload.chars().filter(|c| !c.is_control()).collect();
     assert_eq!(stderr, format!("Error: {diagnostic}: {sanitized}\n"));
     assert!(!stderr.trim_end_matches('\n').chars().any(char::is_control));
+}
+
+fn assert_chart_error(output: Output, diagnostic: &str) {
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.starts_with(&format!("Error: {diagnostic}: ")),
+        "{stderr}"
+    );
+}
+
+fn run_chart(path: &Path) -> Output {
+    let (_master, slave) = open_pty();
+    Command::new(env!("CARGO_BIN_EXE_tapline"))
+        .arg("--file")
+        .arg(path)
+        .arg("--no-audio")
+        .stdin(slave)
+        .output()
+        .unwrap()
 }
 
 fn open_pty() -> (File, File) {
