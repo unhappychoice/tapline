@@ -141,17 +141,8 @@ fn metadata_rejects_invalid_format_mode_and_timing() {
 }
 
 #[test]
-fn gameplay_asset_and_layer_validation_is_deferred_until_selection() {
+fn gameplay_layer_validation_is_deferred_until_selection() {
     let mut data = base();
-    data["sound_channels"] = json!([{"name":"../outside.wav","notes":[]}]);
-    with_chart(&data, |path| {
-        assert!(read_meta(path).is_ok());
-        assert!(load(path, 0.0)
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("Invalid asset path"));
-    });
     data["sound_channels"] = json!([{"name":"missing.wav","notes":[
         {"x":1,"y":0}, {"x":1,"y":0,"l":240}
     ]}]);
@@ -216,7 +207,7 @@ fn audio_resolves_directory_filename_and_fallback_extension_case() {
 }
 
 #[test]
-fn assets_preserve_exact_matches_fallback_order_and_missing_paths() {
+fn assets_preserve_exact_matches_and_fallback_order_and_omit_missing_paths() {
     let mut data = base();
     data["sound_channels"] = json!([{"name":"kick.OGG","notes":[{"x":1,"y":0}]}]);
     data["bga"] = json!({"bga_header":[{"id":1,"name":"Cover.png"}]});
@@ -244,13 +235,14 @@ fn assets_preserve_exact_matches_fallback_order_and_missing_paths() {
             std::fs::remove_file(dir.join("cover.png")).unwrap();
         }
         let chart = load(path, 0.0).unwrap();
-        assert_eq!(chart.wav_paths[&0], dir.join("kick.OGG"));
-        assert_eq!(chart.bmp_paths[&1], dir.join("Cover.png"));
+        assert!(chart.wav_paths.is_empty());
+        assert!(chart.bmp_paths.is_empty());
+        assert_eq!(chart.notes[0].keysound, Some(0));
     });
 }
 
 #[test]
-fn audio_and_bga_reject_invalid_paths_before_resolution() {
+fn audio_and_bga_treat_invalid_paths_as_missing() {
     [
         "../outside.wav",
         "SUB\\..\\outside.wav",
@@ -265,14 +257,12 @@ fn audio_and_bga_reject_invalid_paths_before_resolution() {
             data[kind] = if *kind == "bga" {
                 json!({"bga_header":[{"id":1,"name":name}]})
             } else {
-                json!([{"name":name,"notes":[]}])
+                json!([{"name":name,"notes":[{"x":1,"y":0}]}])
             };
             with_chart(&data, |path| {
-                assert!(load(path, 0.0)
-                    .err()
-                    .unwrap()
-                    .to_string()
-                    .contains("Invalid asset path"));
+                let chart = load(path, 0.0).unwrap();
+                assert!(chart.wav_paths.is_empty());
+                assert!(chart.bmp_paths.is_empty());
             });
         });
     });
