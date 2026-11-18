@@ -44,6 +44,14 @@ struct SharedSamples {
     sample_rate: u32,
 }
 
+impl SharedSamples {
+    fn remaining_seconds(&self) -> f64 {
+        self.end.saturating_sub(self.pos) as f64
+            / f64::from(self.channels)
+            / f64::from(self.sample_rate)
+    }
+}
+
 impl Iterator for SharedSamples {
     type Item = f32;
     fn next(&mut self) -> Option<f32> {
@@ -67,7 +75,7 @@ impl Source for SharedSamples {
         rodio::SampleRate::new(self.sample_rate).unwrap()
     }
     fn total_duration(&self) -> Option<Duration> {
-        None
+        Some(Duration::from_secs_f64(self.remaining_seconds()))
     }
 }
 
@@ -188,10 +196,7 @@ impl SampleBank {
                         .map(|id| {
                             self.samples.get(id).map_or(fallback_end, |sample| {
                                 let source = sample_source(sample, self.slices.get(id));
-                                time + source.end.saturating_sub(source.pos) as f64 * 1000.0
-                                    / source.channels as f64
-                                    / source.sample_rate as f64
-                                    + 32.0
+                                time + source.remaining_seconds() * 1000.0 + 32.0
                             })
                         })
                         .reduce(f64::max)
@@ -244,9 +249,7 @@ impl SampleBank {
     }
 
     pub fn play_with_gain(&self, id: u32, gain: f32) {
-        self.sound_ids(&id)
-            .iter()
-            .for_each(|id| self.play_sample(*id, gain));
+        self.play_sound(id, gain);
     }
 
     pub fn play_synth(&self, freq: f32, duration_ms: u32) {
@@ -273,30 +276,46 @@ impl SampleBank {
         synth_mode: bool,
         gain: f32,
     ) {
+        self.start_hit(lane, keysound, synth_mode, gain);
+    }
+
+    pub(crate) fn start_hit(
+        &self,
+        lane: usize,
+        keysound: Option<u32>,
+        synth_mode: bool,
+        gain: f32,
+    ) -> Option<Duration> {
         match self.hit_sound(keysound, synth_mode) {
             HitSound::Synth => {
-                if let Some(bus) = &self.bus {
-                    bus.add(synth::hit_source(lane).amplify(gain));
-                }
+                let bus = self.bus.as_ref()?;
+                let source = synth::hit_source(lane);
+                let duration = source.total_duration();
+                bus.add(source.amplify(gain));
+                duration
             }
-            HitSound::Sample(id) => self.play_with_gain(id, gain),
-            HitSound::Silent => {}
+            HitSound::Sample(id) => self.play_sound(id, gain),
+            HitSound::Silent => None,
         }
+    }
+
+    fn play_sound(&self, id: u32, gain: f32) -> Option<Duration> {
+        let bus = self.bus.as_ref()?;
+        self.sound_ids(&id)
+            .iter()
+            .filter_map(|&id| {
+                let voice = self.start_voice(id, gain)?;
+                let duration = voice.total_duration();
+                bus.add(voice);
+                duration
+            })
+            .max()
     }
 
     fn sound_ids<'a>(&'a self, id: &'a u32) -> &'a [u32] {
         self.layers
             .get(id)
             .map_or(std::slice::from_ref(id), Vec::as_slice)
-    }
-
-    fn play_sample(&self, id: u32, gain: f32) {
-        let Some(bus) = &self.bus else {
-            return;
-        };
-        if let Some(voice) = self.start_voice(id, gain) {
-            bus.add(voice);
-        }
     }
 
     fn start_voice(&self, id: u32, gain: f32) -> Option<impl Source<Item = f32> + Send> {
@@ -518,6 +537,19 @@ where
 }
 
 #[cfg(test)]
+pub(crate) fn manual_playback_test_bank() -> SampleBank {
+    let (mixer, _output) = rodio::mixer::mixer(rodio::nz!(2), rodio::nz!(44_100));
+    let mut bank = tests::duration_bank_with_length(12_000);
+    let short = tests::duration_bank_with_length(80)
+        .samples
+        .remove(&1)
+        .unwrap();
+    bank.samples.insert(2, short);
+    bank.bus = Some(master::master_bus(&mixer));
+    bank
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -525,7 +557,7 @@ mod tests {
         duration_bank_with_length(10000)
     }
 
-    fn duration_bank_with_length(duration_ms: u32) -> SampleBank {
+    pub(super) fn duration_bank_with_length(duration_ms: u32) -> SampleBank {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
