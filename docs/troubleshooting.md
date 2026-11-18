@@ -34,5 +34,6 @@ For sounds that arrive late, see
 ## A chart's background video is missing
 
 Make sure `ffmpeg` is on `PATH` in the terminal where you run tapline and
-that the chart's video file is present and decodable. Widen the terminal to
-leave room to the left of the lanes for the background animation.
+that the chart's video file is present and decodable. Make the terminal at
+least 17 rows tall and wide enough to leave room to the left of the lanes
+for the background animation.
