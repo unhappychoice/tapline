@@ -757,13 +757,28 @@ pub fn format_progress(game: &Game, previous: Option<&crate::results::Record>) -
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResultDestination {
+    Selector,
+    Exit,
+}
+
 pub fn draw_result_with_progress(
     out: &mut Stdout,
     game: &Game,
     progress: &str,
 ) -> anyhow::Result<()> {
+    draw_result_with_destination(out, game, progress, ResultDestination::Exit)
+}
+
+pub fn draw_result_with_destination(
+    out: &mut Stdout,
+    game: &Game,
+    progress: &str,
+    destination: ResultDestination,
+) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
-    draw_result_content(out, game, cols, rows, progress)
+    draw_result_content(out, game, cols, rows, progress, destination)
 }
 
 pub fn draw_result(out: &mut Stdout, game: &Game) -> anyhow::Result<()> {
@@ -772,7 +787,7 @@ pub fn draw_result(out: &mut Stdout, game: &Game) -> anyhow::Result<()> {
 }
 
 fn draw_result_to<W: Write>(out: &mut W, game: &Game, cols: u16, rows: u16) -> anyhow::Result<()> {
-    draw_result_content(out, game, cols, rows, "")
+    draw_result_content(out, game, cols, rows, "", ResultDestination::Exit)
 }
 
 fn draw_result_content<W: Write>(
@@ -781,6 +796,7 @@ fn draw_result_content<W: Write>(
     cols: u16,
     rows: u16,
     progress: &str,
+    destination: ResultDestination,
 ) -> anyhow::Result<()> {
     queue!(out, terminal::BeginSynchronizedUpdate)?;
     let mut y = (rows / 2).saturating_sub(6);
@@ -844,7 +860,11 @@ fn draw_result_content<W: Write>(
         line(out, clipped, Color::Yellow, y)?;
     }
     y += 2;
-    line(out, "press any key to exit".to_string(), Color::DarkGrey, y)?;
+    let prompt = match destination {
+        ResultDestination::Selector => "press any key to return to the selector",
+        ResultDestination::Exit => "press any key to exit",
+    };
+    line(out, prompt.to_string(), Color::DarkGrey, y)?;
     queue!(out, terminal::EndSynchronizedUpdate)?;
     out.flush()?;
     Ok(())
@@ -878,7 +898,32 @@ mod tests {
         assert!(!rendered.contains("\x1b]52"));
         assert!(!rendered.contains("\x1b[2J"));
         assert!(rendered.contains("R E S U L T"));
-        assert!(rendered.contains("press any key to exit"));
+    }
+
+    #[test]
+    fn result_prompts_for_its_dismissal_destination() {
+        let game = Game::new(base_chart(4));
+        for (destination, prompt) in [
+            (
+                ResultDestination::Selector,
+                "press any key to return to the selector",
+            ),
+            (ResultDestination::Exit, "press any key to exit"),
+        ] {
+            let mut out = Vec::new();
+            draw_result_content(
+                &mut out,
+                &game,
+                120,
+                40,
+                "First completed play!",
+                destination,
+            )
+            .unwrap();
+            let rendered = String::from_utf8(out).unwrap();
+            assert!(rendered.contains(prompt));
+            assert_eq!(rendered.matches("press any key").count(), 1);
+        }
     }
 
     thread_local! {
@@ -1903,7 +1948,15 @@ mod progress_tests {
         game.completed = true;
         let progress = "vs best: score +100 | accuracy +1.00pp | combo +2";
         let mut output = Vec::new();
-        draw_result_content(&mut output, &game, 120, 40, progress).unwrap();
+        draw_result_content(
+            &mut output,
+            &game,
+            120,
+            40,
+            progress,
+            ResultDestination::Exit,
+        )
+        .unwrap();
         assert!(String::from_utf8(output).unwrap().contains(progress));
     }
 }

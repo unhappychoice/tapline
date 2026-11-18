@@ -27,11 +27,12 @@ pub struct Args {
     #[arg(long)]
     pub built_in: bool,
 
-    /// Disable audio even if a device is available.
+    /// Disable gameplay audio and selector previews.
     #[arg(long)]
     pub no_audio: bool,
 
-    /// Play a short beep at startup to verify audio, then exit.
+    /// Verify audio with a short sequence of beeps, then exit.
+    /// Uses its own audio path even with --no-audio.
     #[arg(long)]
     pub test_tone: bool,
 
