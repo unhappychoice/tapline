@@ -91,6 +91,7 @@ fn after_playback<T, R>(playback: T, show_result: impl FnOnce() -> R) -> R {
 }
 
 const FRAME_DT: Duration = Duration::from_millis(16);
+const MAX_INPUT_EVENTS_PER_FRAME: usize = 32;
 
 fn run_game(
     out: &mut Stdout,
@@ -268,32 +269,46 @@ fn pump_input(
     start: Instant,
     next_frame: Instant,
 ) -> Result<()> {
-    loop {
-        let inst = Instant::now();
-        if inst >= next_frame {
-            return Ok(());
-        }
-        if !event::poll(next_frame - inst)? {
-            return Ok(());
-        }
-        let input = event::read()?;
-        let (cols, rows) = terminal::size()?;
-        let now = state.update_size(bank, game, elapsed_ms(start), cols, rows);
-        if matches!(input, Event::Resize(..)) {
-            execute!(out, terminal::Clear(terminal::ClearType::All))?;
-            state.screen.invalidate();
-        }
-        let Event::Key(k) = input else {
-            continue;
+    process_frame_input(
+        next_frame,
+        |timeout| {
+            if event::poll(timeout)? {
+                Ok(Some(event::read()?))
+            } else {
+                Ok(None)
+            }
+        },
+        |input| {
+            let (cols, rows) = terminal::size()?;
+            let now = state.update_size(bank, game, elapsed_ms(start), cols, rows);
+            if matches!(input, Event::Resize(..)) {
+                execute!(out, terminal::Clear(terminal::ClearType::All))?;
+                state.screen.invalidate();
+            }
+            let Event::Key(k) = input else {
+                return Ok(false);
+            };
+            Ok(k.kind != KeyEventKind::Repeat
+                && handle_key(k.code, k.kind, game, bank, opts, state, now))
+        },
+    )
+}
+
+fn process_frame_input(
+    next_frame: Instant,
+    mut read_ready: impl FnMut(Duration) -> Result<Option<Event>>,
+    mut handle_event: impl FnMut(Event) -> Result<bool>,
+) -> Result<()> {
+    for _ in 0..MAX_INPUT_EVENTS_PER_FRAME {
+        let timeout = next_frame.saturating_duration_since(Instant::now());
+        let Some(input) = read_ready(timeout)? else {
+            break;
         };
-        if k.kind == KeyEventKind::Repeat {
-            continue;
+        if handle_event(input)? {
+            break;
         }
-        if handle_key(k.code, k.kind, game, bank, opts, state, now) {
-            return Ok(());
-        }
-        let _ = out;
     }
+    Ok(())
 }
 
 fn handle_key(
@@ -381,6 +396,78 @@ pub fn elapsed_ms(start: Instant) -> f64 {
 mod tests {
     use super::*;
     use crate::chart::keys_for;
+
+    #[test]
+    fn overdue_frames_process_lane_input_and_escape() {
+        let mut game = ready_game();
+        let mut state = LoopState::new(Vec::new());
+        let bank = SampleBank::silent();
+        let options = opts(false);
+        let mut keys = [KeyCode::Char('s'), KeyCode::Esc, KeyCode::Char('s')].into_iter();
+        let deadline = Instant::now() - Duration::from_millis(40);
+
+        process_frame_input(
+            deadline,
+            |timeout| {
+                assert_eq!(timeout, Duration::ZERO);
+                Ok(keys
+                    .next()
+                    .map(|code| Event::Key(event::KeyEvent::new(code, event::KeyModifiers::NONE))))
+            },
+            |input| {
+                let Event::Key(key) = input else {
+                    unreachable!();
+                };
+                Ok(handle_key(
+                    key.code, key.kind, &mut game, &bank, &options, &mut state, 3000.0,
+                ))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(game.perfect, 1);
+        assert!(state.quit);
+        assert_eq!(keys.next(), Some(KeyCode::Char('s')));
+    }
+
+    #[test]
+    fn busy_overdue_frames_bound_input_and_resume_on_the_next_frame() {
+        let deadline = Instant::now() - Duration::from_millis(40);
+        let mut handled = 0;
+        for frame in 1..=2 {
+            process_frame_input(
+                deadline,
+                |timeout| {
+                    assert_eq!(timeout, Duration::ZERO);
+                    Ok(Some(Event::FocusGained))
+                },
+                |_| {
+                    handled += 1;
+                    assert!(handled <= frame * MAX_INPUT_EVENTS_PER_FRAME);
+                    Ok(false)
+                },
+            )
+            .unwrap();
+            assert_eq!(handled, frame * MAX_INPUT_EVENTS_PER_FRAME);
+        }
+    }
+
+    #[test]
+    fn on_time_frames_wait_for_input_until_the_deadline() {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut polls = 0;
+        process_frame_input(
+            deadline,
+            |timeout| {
+                assert!(timeout > Duration::ZERO && timeout <= Duration::from_secs(60));
+                polls += 1;
+                Ok(None)
+            },
+            |_| unreachable!(),
+        )
+        .unwrap();
+        assert_eq!(polls, 1);
+    }
 
     #[test]
     fn lane_for_key_matches_case_insensitively() {
