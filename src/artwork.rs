@@ -10,10 +10,11 @@ use std::{
     collections::VecDeque,
     io::{BufReader, Write},
     path::{Path, PathBuf},
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
 
 const THUMBNAIL_CACHE_CAPACITY: usize = 32;
+const MISSING_PATH_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 thread_local! {
     static CACHE: RefCell<ArtworkCache> = const { RefCell::new(ArtworkCache {
@@ -47,13 +48,30 @@ pub(crate) fn draw(
 
 struct ArtworkCache {
     thumbnails: VecDeque<Thumbnail>,
-    paths: VecDeque<ResolvedPath>,
+    paths: VecDeque<PathLookup>,
 }
 
-struct ResolvedPath {
+struct PathLookup {
     dir: PathBuf,
     name: String,
-    path: PathBuf,
+    result: LookupResult,
+}
+
+enum LookupResult {
+    Found(PathBuf),
+    Missing { retry_at: Instant },
+}
+
+impl LookupResult {
+    fn cached_source(&self, now: Instant) -> Option<Option<(PathBuf, SourceVersion)>> {
+        match self {
+            Self::Found(path) => {
+                SourceVersion::read(path).map(|source| Some((path.clone(), source)))
+            }
+            Self::Missing { retry_at } if now < *retry_at => Some(None),
+            Self::Missing { .. } => None,
+        }
+    }
 }
 
 struct Thumbnail {
@@ -73,7 +91,7 @@ struct SourceVersion {
 
 impl ArtworkCache {
     fn pixels(&mut self, dir: &Path, name: &str, size: (u16, u16)) -> Option<&RgbaImage> {
-        let (path, source) = self.resolve(dir, name)?;
+        let (path, source) = self.resolve(dir, name, Instant::now)?;
         self.thumbnails
             .retain(|entry| entry.path != path || entry.source == source);
         let index = self
@@ -94,28 +112,38 @@ impl ArtworkCache {
         self.thumbnails.front()?.pixels.as_ref()
     }
 
-    fn resolve(&mut self, dir: &Path, name: &str) -> Option<(PathBuf, SourceVersion)> {
+    fn resolve(
+        &mut self,
+        dir: &Path,
+        name: &str,
+        now: impl Fn() -> Instant,
+    ) -> Option<(PathBuf, SourceVersion)> {
         let index = self
             .paths
             .iter()
             .position(|entry| entry.dir == dir && entry.name == name);
-        let cached = index
-            .and_then(|index| self.paths.remove(index))
-            .and_then(|entry| Some((SourceVersion::read(&entry.path)?, entry)));
-        if let Some((source, entry)) = cached {
-            let path = entry.path.clone();
-            self.paths.push_front(entry);
-            return Some((path, source));
+        if let Some(entry) = index.and_then(|index| self.paths.remove(index)) {
+            if let Some(source) = entry.result.cached_source(now()) {
+                self.paths.push_front(entry);
+                return source;
+            }
         }
-        let path = AssetIndex::new(dir).resolve_path(name, &[])?;
-        let source = SourceVersion::read(&path)?;
-        self.paths.push_front(ResolvedPath {
+        let source = AssetIndex::new(dir)
+            .resolve_path(name, &[])
+            .and_then(|path| SourceVersion::read(&path).map(|source| (path, source)));
+        let result = match &source {
+            Some((path, _)) => LookupResult::Found(path.clone()),
+            None => LookupResult::Missing {
+                retry_at: now() + MISSING_PATH_RETRY_INTERVAL,
+            },
+        };
+        self.paths.push_front(PathLookup {
             dir: dir.to_path_buf(),
             name: name.to_owned(),
-            path: path.clone(),
+            result,
         });
         self.paths.truncate(THUMBNAIL_CACHE_CAPACITY);
-        Some((path, source))
+        source
     }
 }
 
@@ -240,14 +268,13 @@ mod tests {
         });
         let mut missing = Vec::new();
         draw(&mut missing, &dir, "missing.png", (0, 0, 8, 3)).unwrap();
-        draw(&mut missing, &dir, "missing.png", (0, 0, 4, 1)).unwrap();
         assert!(missing.is_empty());
         assert_image_work(4);
         let mut restored = Vec::new();
         draw(&mut restored, &dir, "first.png", (0, 0, 8, 3)).unwrap();
         assert!(!restored.is_empty());
         assert_image_work(4);
-        DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 5));
+        DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 4));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -310,11 +337,41 @@ mod tests {
         let expected = render();
         assert!(!expected.is_empty());
         std::fs::remove_file(path).unwrap();
-        assert!(render().is_empty());
+        let now = Instant::now();
+        let resolve =
+            |now| CACHE.with(|cache| cache.borrow_mut().resolve(&dir, "cover.png", || now));
+        assert!(resolve(now).is_none());
         image.save(dir.join("Cover.png")).unwrap();
+        assert!(resolve(now + MISSING_PATH_RETRY_INTERVAL).is_some());
         assert_eq!(render(), expected);
         assert_eq!(render(), expected);
         DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 3));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retries_missing_banners_after_the_interval() {
+        reset_cache();
+        let dir =
+            std::env::temp_dir().join(format!("tapline-artwork-missing-{}", std::process::id()));
+        let images = dir.join("images");
+        std::fs::create_dir_all(&images).unwrap();
+        let now = Instant::now();
+        let name = "IMAGES\\COVER.PNG";
+        let resolve = |now| CACHE.with(|cache| cache.borrow_mut().resolve(&dir, name, || now));
+        assert!(resolve(now).is_none());
+        DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 2));
+
+        let path = images.join("cover.png");
+        DynamicImage::new_rgb8(2, 2).save(&path).unwrap();
+        assert!(resolve(now + MISSING_PATH_RETRY_INTERVAL / 2).is_none());
+        DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 2));
+
+        assert_eq!(resolve(now + MISSING_PATH_RETRY_INTERVAL).unwrap().0, path);
+        let mut out = Vec::new();
+        draw(&mut out, &dir, name, (0, 0, 2, 1)).unwrap();
+        assert!(!out.is_empty());
+        DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 4));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
