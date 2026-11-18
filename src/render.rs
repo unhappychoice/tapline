@@ -770,13 +770,28 @@ pub fn format_progress(game: &Game, previous: Option<&crate::results::Record>) -
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResultDestination {
+    Selector,
+    Exit,
+}
+
 pub fn draw_result_with_progress(
     out: &mut Stdout,
     game: &Game,
     progress: &str,
 ) -> anyhow::Result<()> {
+    draw_result_with_destination(out, game, progress, ResultDestination::Exit)
+}
+
+pub fn draw_result_with_destination(
+    out: &mut Stdout,
+    game: &Game,
+    progress: &str,
+    destination: ResultDestination,
+) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
-    draw_result_content(out, game, cols, rows, progress)
+    draw_result_content(out, game, cols, rows, progress, destination)
 }
 
 pub fn draw_result(out: &mut Stdout, game: &Game) -> anyhow::Result<()> {
@@ -785,7 +800,7 @@ pub fn draw_result(out: &mut Stdout, game: &Game) -> anyhow::Result<()> {
 }
 
 fn draw_result_to<W: Write>(out: &mut W, game: &Game, cols: u16, rows: u16) -> anyhow::Result<()> {
-    draw_result_content(out, game, cols, rows, "")
+    draw_result_content(out, game, cols, rows, "", ResultDestination::Exit)
 }
 
 fn draw_result_content<W: Write>(
@@ -794,9 +809,10 @@ fn draw_result_content<W: Write>(
     cols: u16,
     rows: u16,
     progress: &str,
+    destination: ResultDestination,
 ) -> anyhow::Result<()> {
     queue!(out, terminal::BeginSynchronizedUpdate)?;
-    let lines = result_lines(game, cols, progress);
+    let lines = result_lines(game, cols, progress, destination);
     let visible = lines.len().min(usize::from(rows));
     let start = (usize::from(rows) - visible) / 2;
     let skipped = lines.len() - visible;
@@ -817,7 +833,12 @@ fn draw_result_content<W: Write>(
     Ok(())
 }
 
-fn result_lines(game: &Game, cols: u16, progress: &str) -> Vec<(String, Color)> {
+fn result_lines(
+    game: &Game,
+    cols: u16,
+    progress: &str,
+    destination: ResultDestination,
+) -> Vec<(String, Color)> {
     let judgments = format!(
         "perfect {}   great {}   good {}   miss {}",
         game.perfect, game.great, game.good, game.miss
@@ -845,7 +866,15 @@ fn result_lines(game: &Game, cols: u16, progress: &str) -> Vec<(String, Color)> 
         lines.push((format!("chart by {}", game.chart.maker), Color::DarkGrey));
     }
     lines.extend(progress_lines(progress, cols).map(|line| (line, Color::Yellow)));
-    lines.push(("press any key to exit".into(), Color::DarkGrey));
+    let selector_prompt = "press any key to return to the selector";
+    let prompt = match destination {
+        ResultDestination::Selector if usize::from(cols) < selector_prompt.len() => {
+            "any key: return to selector"
+        }
+        ResultDestination::Selector => selector_prompt,
+        ResultDestination::Exit => "press any key to exit",
+    };
+    lines.push((prompt.into(), Color::DarkGrey));
     lines
 }
 
@@ -907,7 +936,32 @@ mod tests {
         assert!(!rendered.contains("\x1b]52"));
         assert!(!rendered.contains("\x1b[2J"));
         assert!(rendered.contains("R E S U L T"));
-        assert!(rendered.contains("press any key to exit"));
+    }
+
+    #[test]
+    fn result_prompts_for_its_dismissal_destination() {
+        let game = Game::new(base_chart(4));
+        for (destination, prompt) in [
+            (
+                ResultDestination::Selector,
+                "press any key to return to the selector",
+            ),
+            (ResultDestination::Exit, "press any key to exit"),
+        ] {
+            let mut out = Vec::new();
+            draw_result_content(
+                &mut out,
+                &game,
+                120,
+                40,
+                "First completed play!",
+                destination,
+            )
+            .unwrap();
+            let rendered = String::from_utf8(out).unwrap();
+            assert!(rendered.contains(prompt));
+            assert_eq!(rendered.matches("press any key").count(), 1);
+        }
     }
 
     thread_local! {
@@ -1932,7 +1986,15 @@ mod progress_tests {
         game.completed = true;
         let progress = "vs best: score +100 | accuracy +1.00pp | combo +2";
         let mut output = Vec::new();
-        draw_result_content(&mut output, &game, 120, 40, progress).unwrap();
+        draw_result_content(
+            &mut output,
+            &game,
+            120,
+            40,
+            progress,
+            ResultDestination::Exit,
+        )
+        .unwrap();
         assert!(String::from_utf8(output).unwrap().contains(progress));
     }
 
@@ -1956,24 +2018,34 @@ mod progress_tests {
         }
         let progress = format_progress(&game, store.get(&identity));
         let progress = format!("Storage error: result unsaved | {progress}");
-        let mut output = Vec::new();
-        draw_result_content(&mut output, &game, 29, 13, &progress).unwrap();
-        let rendered = String::from_utf8(output).unwrap();
-        for expected in [
-            "vs best: score +100",
-            "accuracy +100.00pp",
-            "combo +4294967295",
-            "NEW CLEAR!",
-            "Storage error: result unsaved",
-            "chart by Chart Author 日本語",
-            "press any key to exit",
+        for (destination, prompt, prompt_column) in [
+            (
+                ResultDestination::Selector,
+                "any key: return to selector",
+                2,
+            ),
+            (ResultDestination::Exit, "press any key to exit", 5),
         ] {
-            assert!(
-                rendered.contains(expected),
-                "missing {expected:?} in {rendered:?}"
-            );
+            let mut output = Vec::new();
+            draw_result_content(&mut output, &game, 29, 13, &progress, destination).unwrap();
+            let rendered = String::from_utf8(output).unwrap();
+            for expected in [
+                "vs best: score +100",
+                "accuracy +100.00pp",
+                "combo +4294967295",
+                "NEW CLEAR!",
+                "Storage error: result unsaved",
+                "chart by Chart Author 日本語",
+            ] {
+                assert!(
+                    rendered.contains(expected),
+                    "missing {expected:?} in {rendered:?}"
+                );
+            }
+            assert!(rendered
+                .rsplit_once(&format!("\x1b[13;{prompt_column}H"))
+                .is_some_and(|(_, last_row)| last_row.contains(prompt)));
+            assert!(!rendered.contains("\x1b[14;"));
         }
-        assert!(rendered.contains("\x1b[13;5H"));
-        assert!(!rendered.contains("\x1b[14;"));
     }
 }
