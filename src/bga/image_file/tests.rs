@@ -32,6 +32,46 @@ fn bmson_fifo_and_symlink_headers_without_events_do_not_block_initialization() {
 }
 
 #[test]
+fn chart_bga_skips_file_and_directory_links_to_other_directories() {
+    let root = std::env::temp_dir().join(format!("tapline-bga-links-{}", std::process::id()));
+    let song = root.join("song");
+    std::fs::create_dir_all(song.join("images")).unwrap();
+    let outside = root.join("cover.png");
+    image::RgbaImage::from_pixel(1, 1, image::Rgba([12, 34, 56, 255]))
+        .save(&outside)
+        .unwrap();
+    std::fs::copy(&outside, song.join("images/Cover.PNG")).unwrap();
+    symlink(&outside, song.join("cover.png")).unwrap();
+    symlink(&root, song.join("linked")).unwrap();
+
+    let bmson = song.join("chart.bmson");
+    let data = serde_json::json!({
+        "version": "1.0.0",
+        "info": {"title": "BGA test", "artist": "tapline", "init_bpm": 120},
+        "sound_channels": [],
+        "bga": {"bga_header": [
+            {"id": 1, "name": "cover.png"},
+            {"id": 2, "name": "linked/cover.png"},
+            {"id": 3, "name": "IMAGES/cover.png"}
+        ]}
+    });
+    std::fs::write(&bmson, data.to_string()).unwrap();
+    let bms = song.join("chart.bms");
+    std::fs::write(&bms, "#BPM 120\n#BMP01 cover.png\n#BMP02 linked/cover.png\n#BMP03 IMAGES/cover.png\n#00104:010203\n").unwrap();
+
+    for chart in [
+        crate::bmson::load(&bmson, 0.0).unwrap(),
+        crate::bms::load(&bms, 0.0).unwrap(),
+    ] {
+        let bank = crate::bga::tests::load_bank(&chart);
+        assert_eq!(chart.bmp_paths.len(), 1);
+        assert_eq!(bank.0.len(), 1);
+        assert!(bank.0.contains_key(&3));
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn crops_skip_special_files_and_preserve_regular_images() {
     with_fifo("crops", |fifo| {
         let dir = fifo.parent().unwrap();

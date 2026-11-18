@@ -581,7 +581,7 @@ mod tests {
             .with_slices(&chart.sample_slices);
         let sample = bank.samples[&1].clone();
         bank.samples = chart
-            .wav_paths
+            .sample_slices
             .keys()
             .map(|id| (*id, sample.clone()))
             .collect();

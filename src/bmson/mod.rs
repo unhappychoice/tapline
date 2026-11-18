@@ -8,7 +8,7 @@ use crate::bms::ChartMeta;
 use crate::chart::{BgaEvent, BgaLayer, BgmEvent, Chart, Lane, Note, SampleSlice};
 use anyhow::{ensure, Context, Result};
 use model::{Bmson, SoundChannel};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use timing::Timeline;
 
 pub fn is_bmson(path: &Path) -> bool {
@@ -50,13 +50,15 @@ pub(crate) fn load_bytes(path: &Path, bytes: &[u8], lead_in_ms: f64) -> Result<C
     let dir = path.parent().unwrap_or(Path::new("."));
     let assets = AssetIndex::new(dir);
     for channel in &data.sound_channels {
-        add_channel(&mut chart, channel, &timeline, dir, &assets, mode)?;
+        add_channel(&mut chart, channel, &timeline, &assets, mode)?;
     }
     layers::merge(&mut chart)?;
     for image in &data.bga.bga_header {
-        chart
-            .bmp_paths
-            .insert(image.id, asset_path(dir, &assets, &image.name, &[])?);
+        if let Some(path) = asset_path(&assets, &image.name, &[]) {
+            chart.bmp_paths.insert(image.id, path);
+        } else {
+            chart.bmp_paths.remove(&image.id);
+        }
     }
     for (events, layer) in [
         (&data.bga.bga_events, BgaLayer::Base),
@@ -109,13 +111,12 @@ fn add_channel(
     chart: &mut Chart,
     channel: &SoundChannel,
     timeline: &Timeline,
-    dir: &Path,
     assets: &AssetIndex,
     mode: &str,
 ) -> Result<()> {
     #[cfg(test)]
     tests::CHANNEL_BUILDS.with(|count| count.set(count.get() + 1));
-    let path = asset_path(dir, assets, &channel.name, &["wav", "ogg", "mp3"])?;
+    let path = asset_path(assets, &channel.name, &["wav", "ogg", "mp3"]);
     let mut notes: Vec<_> = channel.notes.iter().collect();
     notes.sort_by_key(|n| n.y);
     let mut restart = notes.first().map_or(0.0, |n| timeline.time(n.y.into()));
@@ -127,7 +128,9 @@ fn add_channel(
             restart = time;
         }
         let id = u32::try_from(chart.sample_slices.len()).context("Too many sound slices")?;
-        chart.wav_paths.insert(id, path.clone());
+        if let Some(path) = &path {
+            chart.wav_paths.insert(id, path.clone());
+        }
         chart.sample_slices.insert(
             id,
             SampleSlice {
@@ -168,21 +171,10 @@ fn lane(x: u32, count: usize, mode: &str) -> Option<usize> {
     }
 }
 
-fn asset_path(dir: &Path, assets: &AssetIndex, name: &str, extensions: &[&str]) -> Result<PathBuf> {
+fn asset_path(assets: &AssetIndex, name: &str, extensions: &[&str]) -> Option<PathBuf> {
     #[cfg(test)]
     tests::ASSET_RESOLUTIONS.with(|count| count.set(count.get() + 1));
-    let normalized = name.replace('\\', "/");
-    let path = Path::new(&normalized);
-    ensure!(
-        !normalized.contains([':', '\0'])
-            && path
-                .components()
-                .all(|c| matches!(c, Component::Normal(_) | Component::CurDir)),
-        "Invalid asset path"
-    );
-    Ok(assets
-        .resolve_path(name, extensions)
-        .unwrap_or_else(|| dir.join(path)))
+    assets.resolve_path(name, extensions)
 }
 
 #[cfg(test)]
