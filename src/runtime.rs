@@ -1,4 +1,5 @@
 use crate::chart::VolumeTarget;
+use crate::render::ResultDestination;
 use crate::screen::Screen;
 use crate::{audio, chart, cli::Args, game, render};
 use anyhow::Result;
@@ -31,8 +32,18 @@ impl PlayOptions {
 pub fn play_chart(
     out: &mut Stdout,
     args: &Args,
+    chart: chart::Chart,
+    identity: Option<crate::results::Identity>,
+) -> Result<()> {
+    play_chart_with_destination(out, args, chart, identity, ResultDestination::Exit)
+}
+
+pub fn play_chart_with_destination(
+    out: &mut Stdout,
+    args: &Args,
     mut chart: chart::Chart,
     identity: Option<crate::results::Identity>,
+    destination: ResultDestination,
 ) -> Result<()> {
     let opts = PlayOptions::from_args(args);
     let bank = if args.no_audio {
@@ -48,7 +59,7 @@ pub fn play_chart(
     execute!(out, terminal::Clear(terminal::ClearType::All))?;
     run_game(out, &mut game, &bank, &opts)?;
     let progress = save_result(identity.as_ref(), &game, args.auto_ks);
-    after_playback(bank, || show_result(out, &game, &progress))
+    after_playback(bank, || show_result(out, &game, &progress, destination))
 }
 
 fn save_result(
@@ -379,9 +390,14 @@ fn advance_deadline(next_frame: Instant) -> Instant {
     }
 }
 
-fn show_result(out: &mut Stdout, game: &game::Game, progress: &str) -> Result<()> {
+fn show_result(
+    out: &mut Stdout,
+    game: &game::Game,
+    progress: &str,
+    destination: ResultDestination,
+) -> Result<()> {
     execute!(out, terminal::Clear(terminal::ClearType::All))?;
-    render::draw_result_with_progress(out, game, progress)?;
+    render::draw_result_with_destination(out, game, progress, destination)?;
     loop {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(k) = event::read()? {
