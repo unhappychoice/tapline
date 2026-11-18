@@ -6,6 +6,8 @@ use crossterm::{
     terminal,
 };
 use std::io::{Stdout, Write};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 mod note_span;
 
@@ -835,18 +837,6 @@ fn result_lines(
     progress: &str,
     destination: ResultDestination,
 ) -> Vec<(String, Color)> {
-    let judgments = format!(
-        "perfect {}   great {}   good {}   miss {}",
-        game.perfect, game.great, game.good, game.miss
-    );
-    let judgments = if judgments.len() > usize::from(cols) {
-        format!(
-            "P {} Gr {} Gd {} M {}",
-            game.perfect, game.great, game.good, game.miss
-        )
-    } else {
-        judgments
-    };
     let mut lines = vec![
         ("R E S U L T".into(), Color::Magenta),
         (format!("score       {:>6}", game.score), Color::White),
@@ -856,8 +846,8 @@ fn result_lines(
             Color::Green,
         ),
         (format_result_gauge(game, cols), Color::Yellow),
-        (judgments, Color::DarkGrey),
     ];
+    lines.extend(judgment_lines(game, cols).map(|line| (line, Color::DarkGrey)));
     if !game.chart.maker.is_empty() {
         lines.push((format!("chart by {}", game.chart.maker), Color::DarkGrey));
     }
@@ -872,6 +862,24 @@ fn result_lines(
     };
     lines.push((prompt.into(), Color::DarkGrey));
     lines
+}
+
+fn judgment_lines(game: &Game, cols: u16) -> impl Iterator<Item = String> {
+    let full = format!(
+        "perfect {}   great {}   good {}   miss {}",
+        game.perfect, game.great, game.good, game.miss
+    );
+    let first = format!("P {} Gr {}", game.perfect, game.great);
+    let second = format!("Gd {} M {}", game.good, game.miss);
+    let cols = usize::from(cols);
+    let lines = if full.len() <= cols {
+        [Some(full), None]
+    } else if first.len() + 1 + second.len() <= cols {
+        [Some(format!("{first} {second}")), None]
+    } else {
+        [Some(first), Some(second)]
+    };
+    lines.into_iter().flatten()
 }
 
 fn progress_lines(progress: &str, cols: u16) -> impl Iterator<Item = String> {
@@ -889,18 +897,18 @@ fn progress_lines(progress: &str, cols: u16) -> impl Iterator<Item = String> {
 }
 
 fn fit_result_line(text: &str, cols: u16) -> (String, u16) {
+    let mut text = crate::terminal_text::sanitize(text);
     let mut width = 0;
-    let text = crate::terminal_text::sanitize(text)
-        .chars()
-        .take_while(|c| {
-            let next = width + unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
-            if next > usize::from(cols) {
-                return false;
-            }
-            width = next;
-            true
-        })
-        .collect();
+    let mut end = 0;
+    for grapheme in text.graphemes(true) {
+        let next = width + grapheme.width();
+        if next > usize::from(cols) {
+            break;
+        }
+        width = next;
+        end += grapheme.len();
+    }
+    text.truncate(end);
     (text, width as u16)
 }
 
@@ -932,6 +940,19 @@ mod tests {
         assert!(!rendered.contains("\x1b]52"));
         assert!(!rendered.contains("\x1b[2J"));
         assert!(rendered.contains("R E S U L T"));
+    }
+
+    #[test]
+    fn result_credit_fits_complete_emoji_within_the_terminal_width() {
+        let prefix = "chart by 123456789012345678";
+        for emoji in ["❤️", "1️⃣", "👩‍💻"] {
+            let credit = format!("{prefix}{emoji}!");
+            assert_eq!(fit_result_line(&credit, 28), (prefix.into(), 27));
+            assert_eq!(
+                fit_result_line(&credit, 29),
+                (format!("{prefix}{emoji}"), 29)
+            );
+        }
     }
 
     #[test]
@@ -1999,7 +2020,7 @@ mod progress_tests {
         use crate::results::{Identity, Store};
 
         let mut game = Game::new(crate::chart::built_in(120.0, 0.0));
-        game.chart.maker = "Chart Author 日本語日本語".into();
+        game.chart.maker = "Chart Author 日本語❤️".into();
         game.completed = true;
         let mut store = Store::default();
         let identity = Identity::built_in(120.0);
@@ -2007,8 +2028,10 @@ mod progress_tests {
         store.record(&identity, &game, false);
         game.score = 100;
         game.max_combo = u32::MAX;
-        game.perfect = 1;
-        game.miss = 0;
+        game.perfect = 100000;
+        game.great = 200000;
+        game.good = 300000;
+        game.miss = 400000;
         while !game.gauge.is_clear() {
             game.gauge.apply(crate::game::Judgment::Perfect);
         }
@@ -2027,9 +2050,11 @@ mod progress_tests {
             let rendered = String::from_utf8(output).unwrap();
             for expected in [
                 "vs best: score +100",
-                "accuracy +100.00pp",
+                "accuracy +32.00pp",
                 "combo +4294967295",
                 "NEW CLEAR!",
+                "P 100000 Gr 200000",
+                "Gd 300000 M 400000",
                 "Storage error: result unsaved",
                 "chart by Chart Author 日本語",
             ] {
@@ -2038,6 +2063,7 @@ mod progress_tests {
                     "missing {expected:?} in {rendered:?}"
                 );
             }
+            assert!(!rendered.contains("❤️"));
             assert!(rendered
                 .rsplit_once(&format!("\x1b[13;{prompt_column}H"))
                 .is_some_and(|(_, last_row)| last_row.contains(prompt)));
