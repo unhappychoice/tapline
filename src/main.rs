@@ -6,6 +6,7 @@ use std::io::{stdout, Stdout};
 use std::process::ExitCode;
 use std::time::Duration;
 use tapline::cli::Args;
+use tapline::render::ResultDestination;
 use tapline::{audio, cli, runtime};
 
 fn main() -> ExitCode {
@@ -38,7 +39,7 @@ fn run(out: &mut Stdout, args: &Args) -> Result<()> {
         out,
         args,
         |out, args| cli::choose_chart_with_selector(out, args, &mut selector),
-        runtime::play_chart,
+        runtime::play_chart_with_destination,
         terminal::show_load_error,
     )
 }
@@ -52,22 +53,27 @@ fn run_session(
         &Args,
         tapline::chart::Chart,
         Option<tapline::results::Identity>,
+        ResultDestination,
     ) -> Result<()>,
     mut report_error: impl FnMut(&mut Stdout, &anyhow::Error) -> Result<()>,
 ) -> Result<()> {
     loop {
         let choice = choose(out, args)?;
+        let destination = match choice {
+            cli::ChartChoice::Selected(_) => ResultDestination::Selector,
+            _ => ResultDestination::Exit,
+        };
         let (chart, identity) = match cli::load_session(&choice, args) {
             Ok(Some(chart)) => chart,
             Ok(None) => return Ok(()),
-            Err(error) if matches!(choice, cli::ChartChoice::Selected(_)) => {
+            Err(error) if destination == ResultDestination::Selector => {
                 report_error(out, &error)?;
                 continue;
             }
             Err(error) => return Err(error),
         };
-        play(out, args, chart, identity)?;
-        if !matches!(choice, cli::ChartChoice::Selected(_)) {
+        play(out, args, chart, identity, destination)?;
+        if destination == ResultDestination::Exit {
             return Ok(());
         }
     }
