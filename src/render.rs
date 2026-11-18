@@ -406,21 +406,30 @@ fn draw_song_text(
 }
 
 fn format_gauge(game: &Game) -> String {
-    format_gauge_status(game, game.gauge.is_clear())
+    format_gauge_status(game, game.gauge.is_clear(), true)
 }
 
-fn format_result_gauge(game: &Game) -> String {
-    format_gauge_status(game, game.completed && game.gauge.is_clear())
+fn format_result_gauge(game: &Game, cols: u16) -> String {
+    let clear = game.completed && game.gauge.is_clear();
+    let full = format_gauge_status(game, clear, true);
+    if full.len() <= usize::from(cols) {
+        full
+    } else {
+        format_gauge_status(game, clear, false)
+    }
 }
 
-fn format_gauge_status(game: &Game, clear: bool) -> String {
+fn format_gauge_status(game: &Game, clear: bool, show_bar: bool) -> String {
     let gauge = &game.gauge;
     let filled = (gauge.value() / 5.0).floor() as usize;
+    let bar = if show_bar {
+        format!(" [{}{}]", "=".repeat(filled), "-".repeat(20 - filled))
+    } else {
+        String::new()
+    };
     format!(
-        "{} [{}{}] {:>5.1}%  {:<6}",
+        "{}{bar} {:>5.1}%  {:<6}",
         gauge.label(),
-        "=".repeat(filled),
-        "-".repeat(20 - filled),
         (gauge.value() * 10.0).floor() / 10.0,
         if clear { "CLEAR" } else { "FAILED" }
     )
@@ -743,7 +752,7 @@ pub fn draw_intro_full(
 
 pub fn format_progress(game: &Game, previous: Option<&crate::results::Record>) -> String {
     if !game.completed {
-        return "Interrupted: result not saved".into();
+        return "Interrupted: not saved".into();
     }
     match previous {
         None => "First completed play!".into(),
@@ -787,71 +796,87 @@ fn draw_result_content<W: Write>(
     progress: &str,
 ) -> anyhow::Result<()> {
     queue!(out, terminal::BeginSynchronizedUpdate)?;
-    let mut y = (rows / 2).saturating_sub(6);
-    let line = |o: &mut W, text: String, color: Color, yy: u16| -> anyhow::Result<()> {
-        let text = crate::terminal_text::sanitize(&text);
-        queue!(
-            o,
-            cursor::MoveTo(cols.saturating_sub(text.chars().count() as u16) / 2, yy),
-            SetForegroundColor(color),
-            Print(text),
-            ResetColor
-        )?;
-        Ok(())
-    };
-    line(out, "R E S U L T".to_string(), Color::Magenta, y)?;
-    y += 2;
-    line(
-        out,
-        format!("score       {:>6}", game.score),
-        Color::White,
-        y,
-    )?;
-    y += 1;
-    line(
-        out,
-        format!("max combo   {:>6}", game.max_combo),
-        Color::Cyan,
-        y,
-    )?;
-    y += 1;
-    line(
-        out,
-        format!("accuracy    {:>5.1}%", game.accuracy()),
-        Color::Green,
-        y,
-    )?;
-    y += 1;
-    line(out, format_result_gauge(game), Color::Yellow, y)?;
-    y += 2;
-    line(
-        out,
-        format!(
-            "perfect {}   great {}   good {}   miss {}",
-            game.perfect, game.great, game.good, game.miss
-        ),
-        Color::DarkGrey,
-        y,
-    )?;
-    if !game.chart.maker.is_empty() {
-        y += 2;
-        line(
-            out,
-            format!("chart by {}", game.chart.maker),
-            Color::DarkGrey,
-            y,
-        )?;
+    let lines = result_lines(game, cols, progress);
+    let visible = lines.len().min(usize::from(rows));
+    let start = (usize::from(rows) - visible) / 2;
+    let skipped = lines.len() - visible;
+    for (y, (text, color)) in (start..).zip(lines.into_iter().skip(skipped)) {
+        let (text, width) = fit_result_line(&text, cols);
+        if !text.is_empty() {
+            queue!(
+                out,
+                cursor::MoveTo((cols - width) / 2, y as u16),
+                SetForegroundColor(color),
+                Print(text),
+                ResetColor
+            )?;
+        }
     }
-    if !progress.is_empty() {
-        y += 2;
-        let clipped: String = progress.chars().take(cols as usize).collect();
-        line(out, clipped, Color::Yellow, y)?;
-    }
-    y += 2;
-    line(out, "press any key to exit".to_string(), Color::DarkGrey, y)?;
     queue!(out, terminal::EndSynchronizedUpdate)?;
     out.flush()?;
     Ok(())
+}
+
+fn result_lines(game: &Game, cols: u16, progress: &str) -> Vec<(String, Color)> {
+    let judgments = format!(
+        "perfect {}   great {}   good {}   miss {}",
+        game.perfect, game.great, game.good, game.miss
+    );
+    let judgments = if judgments.len() > usize::from(cols) {
+        format!(
+            "P {} Gr {} Gd {} M {}",
+            game.perfect, game.great, game.good, game.miss
+        )
+    } else {
+        judgments
+    };
+    let mut lines = vec![
+        ("R E S U L T".into(), Color::Magenta),
+        (format!("score       {:>6}", game.score), Color::White),
+        (format!("max combo   {:>6}", game.max_combo), Color::Cyan),
+        (
+            format!("accuracy    {:>5.1}%", game.accuracy()),
+            Color::Green,
+        ),
+        (format_result_gauge(game, cols), Color::Yellow),
+        (judgments, Color::DarkGrey),
+    ];
+    if !game.chart.maker.is_empty() {
+        lines.push((format!("chart by {}", game.chart.maker), Color::DarkGrey));
+    }
+    lines.extend(progress_lines(progress, cols).map(|line| (line, Color::Yellow)));
+    lines.push(("press any key to exit".into(), Color::DarkGrey));
+    lines
+}
+
+fn progress_lines(progress: &str, cols: u16) -> impl Iterator<Item = String> {
+    let mut lines: Vec<String> = Vec::new();
+    for section in progress.split(" | ").filter(|section| !section.is_empty()) {
+        match lines.last_mut() {
+            Some(line) if line.len() + 3 + section.len() <= usize::from(cols) => {
+                line.push_str(" | ");
+                line.push_str(section);
+            }
+            _ => lines.push(section.into()),
+        }
+    }
+    lines.into_iter()
+}
+
+fn fit_result_line(text: &str, cols: u16) -> (String, u16) {
+    let mut width = 0;
+    let text = crate::terminal_text::sanitize(text)
+        .chars()
+        .take_while(|c| {
+            let next = width + unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+            if next > usize::from(cols) {
+                return false;
+            }
+            width = next;
+            true
+        })
+        .collect();
+    (text, width as u16)
 }
 
 #[cfg(test)]
@@ -1330,9 +1355,9 @@ mod tests {
         chart.total = Some(60.0);
         let mut game = Game::new(chart);
         game.hit(0, 1000.0);
-        assert!(format_result_gauge(&game).ends_with("FAILED"));
+        assert!(format_result_gauge(&game, 80).ends_with("FAILED"));
         assert!(game.advance_completion(game.chart.duration_ms.max(2000.0)));
-        assert!(format_result_gauge(&game).ends_with("CLEAR "));
+        assert!(format_result_gauge(&game, 80).ends_with("CLEAR "));
     }
 
     #[test]
@@ -1909,5 +1934,46 @@ mod progress_tests {
         let mut output = Vec::new();
         draw_result_content(&mut output, &game, 120, 40, progress).unwrap();
         assert!(String::from_utf8(output).unwrap().contains(progress));
+    }
+
+    #[test]
+    fn minimum_result_screen_fits_comparisons_clear_credit_and_dismissal() {
+        use crate::results::{Identity, Store};
+
+        let mut game = Game::new(crate::chart::built_in(120.0, 0.0));
+        game.chart.maker = "Chart Author 日本語日本語".into();
+        game.completed = true;
+        let mut store = Store::default();
+        let identity = Identity::built_in(120.0);
+        game.miss = 1;
+        store.record(&identity, &game, false);
+        game.score = 100;
+        game.max_combo = u32::MAX;
+        game.perfect = 1;
+        game.miss = 0;
+        while !game.gauge.is_clear() {
+            game.gauge.apply(crate::game::Judgment::Perfect);
+        }
+        let progress = format_progress(&game, store.get(&identity));
+        let progress = format!("Storage error: result unsaved | {progress}");
+        let mut output = Vec::new();
+        draw_result_content(&mut output, &game, 29, 13, &progress).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+        for expected in [
+            "vs best: score +100",
+            "accuracy +100.00pp",
+            "combo +4294967295",
+            "NEW CLEAR!",
+            "Storage error: result unsaved",
+            "chart by Chart Author 日本語",
+            "press any key to exit",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected:?} in {rendered:?}"
+            );
+        }
+        assert!(rendered.contains("\x1b[13;5H"));
+        assert!(!rendered.contains("\x1b[14;"));
     }
 }

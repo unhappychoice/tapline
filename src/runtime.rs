@@ -57,10 +57,10 @@ fn save_result(
     auto_ks: bool,
 ) -> String {
     let Some(identity) = identity else {
-        return "Results unavailable: chart identity unavailable".into();
+        return "No chart ID for saving".into();
     };
     let Some(path) = crate::results::data_path() else {
-        return "Results unavailable: no data directory".into();
+        return "No results directory".into();
     };
     persist_result(&path, identity, game, auto_ks)
 }
@@ -72,7 +72,7 @@ fn persist_result(
     auto_ks: bool,
 ) -> String {
     let Ok(mut store) = crate::results::Store::load(path) else {
-        return "Results unavailable: cannot read storage".into();
+        return "Cannot read saved results".into();
     };
     let progress = render::format_progress(game, store.get(identity));
     if !game.completed {
@@ -81,7 +81,7 @@ fn persist_result(
     store.record(identity, game, auto_ks);
     match store.save(path) {
         Ok(()) => progress,
-        Err(_) => format!("Result not saved: storage unavailable | {progress}"),
+        Err(_) => format!("Storage error: result unsaved | {progress}"),
     }
 }
 
@@ -1249,10 +1249,10 @@ mod result_tests {
         assert!(!path.exists());
         game.completed = true;
         std::fs::write(&path, "corrupt").unwrap();
-        assert!(persist_result(&path, &id, &game, false).contains("cannot read"));
+        assert!(persist_result(&path, &id, &game, false).contains("Cannot read"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "corrupt");
         let blocked = path.join("results.json");
-        assert!(persist_result(&blocked, &id, &game, false).contains("unavailable"));
+        assert!(persist_result(&blocked, &id, &game, false).contains("Cannot read"));
         std::fs::remove_file(&path).unwrap();
         assert!(persist_result(&path, &id, &game, false).contains("First completed"));
         assert!(crate::results::Store::load(&path)
