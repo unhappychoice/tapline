@@ -1,4 +1,4 @@
-use crate::assets::{normalized_asset_path, AssetIndex};
+use crate::assets::{is_link, normalized_asset_path, AssetIndex};
 use crate::fs_guard;
 use crossterm::{
     cursor, queue,
@@ -71,10 +71,10 @@ enum LookupResult {
 }
 
 impl LookupResult {
-    fn cached_source(&self, now: Instant) -> Option<Option<(PathBuf, SourceVersion)>> {
+    fn cached_source(&self, dir: &Path, now: Instant) -> Option<Option<(PathBuf, SourceVersion)>> {
         match self {
             Self::Found { path, retry_at } if retry_at.is_none_or(|retry_at| now < retry_at) => {
-                SourceVersion::read(path).map(|source| Some((path.clone(), source)))
+                SourceVersion::read(dir, path).map(|source| Some((path.clone(), source)))
             }
             Self::Missing { retry_at } if now < *retry_at => Some(None),
             _ => None,
@@ -139,19 +139,19 @@ impl ArtworkCache {
             .iter()
             .position(|entry| entry.dir == dir && entry.name == name);
         if let Some(entry) = index.and_then(|index| self.paths.remove(index)) {
-            if let Some(source) = entry.result.cached_source(now()) {
+            if let Some(source) = entry.result.cached_source(dir, now()) {
                 self.paths.push_front(entry);
                 return source;
             }
         }
+        let requested = normalized_asset_path(name)?;
         let source = AssetIndex::new(dir)
             .resolve_path(name, &[])
-            .and_then(|path| SourceVersion::read(&path).map(|source| (path, source)));
+            .and_then(|path| SourceVersion::read(dir, &path).map(|source| (path, source)));
         let result = match &source {
             Some((path, _)) => LookupResult::Found {
                 path: path.clone(),
-                retry_at: (path != &dir.join(normalized_asset_path(name)))
-                    .then(|| now() + RETRY_INTERVAL),
+                retry_at: (path != &dir.join(requested)).then(|| now() + RETRY_INTERVAL),
             },
             None => LookupResult::Missing {
                 retry_at: now() + RETRY_INTERVAL,
@@ -168,13 +168,22 @@ impl ArtworkCache {
 }
 
 impl SourceVersion {
-    fn read(path: &Path) -> Option<Self> {
+    fn read(dir: &Path, path: &Path) -> Option<Self> {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
 
-        let metadata = path.metadata().ok()?;
-        if !metadata.is_file() {
+        let metadata = path.symlink_metadata().ok()?;
+        if !metadata.is_file() || is_link(&metadata) {
             return None;
+        }
+        let relative = path.strip_prefix(dir).ok()?;
+        let mut parent = dir.to_path_buf();
+        for component in relative.parent()?.components() {
+            parent.push(component);
+            let metadata = parent.symlink_metadata().ok()?;
+            if !metadata.is_dir() || is_link(&metadata) {
+                return None;
+            }
         }
         Some(Self {
             modified: metadata.modified().ok()?,
@@ -366,6 +375,31 @@ mod tests {
         assert_eq!(render(), expected);
         assert_eq!(render(), expected);
         DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 3));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_cached_banner_after_its_directory_becomes_a_symlink() {
+        reset_cache();
+        let dir = std::env::temp_dir().join(format!("tapline-artwork-link-{}", std::process::id()));
+        let images = dir.join("images");
+        let moved = dir.join("moved");
+        std::fs::create_dir_all(&images).unwrap();
+        DynamicImage::new_rgb8(2, 2)
+            .save(images.join("cover.png"))
+            .unwrap();
+
+        let render = || {
+            let mut out = Vec::new();
+            draw(&mut out, &dir, "images/cover.png", (0, 0, 2, 1)).unwrap();
+            out
+        };
+        assert!(!render().is_empty());
+        std::fs::rename(&images, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &images).unwrap();
+        assert!(render().is_empty());
+        assert_image_work(1);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

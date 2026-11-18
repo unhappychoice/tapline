@@ -166,10 +166,21 @@ fn bmson_images_are_loaded_and_rendered_through_presentation() {
     )
     .unwrap();
     let game = Game::new(crate::bmson::load(&path, 1000.0).unwrap());
-    let mut presentation = Presentation::new(&game.chart);
-    presentation.prepare(&game.chart, 18, 16);
+    let presentation = Presentation::new(&game.chart, true);
     let bank = presentation.bank;
+
+    let mut deferred = Presentation::new(&game.chart, false);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while deferred.bank.0.is_empty() {
+        deferred.prepare_deferred(&game.chart, true, Presentation::load_assets);
+        assert!(std::time::Instant::now() < deadline, "BGA worker timed out");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
     std::fs::remove_dir_all(dir).unwrap();
+    assert_eq!(
+        deferred.bank.frame(&game, 1000.0),
+        bank.frame(&game, 1000.0)
+    );
     assert_eq!(bank.frame(&game, 999.0).get_pixel(0, 0).0, [0, 0, 0, 255]);
     assert_eq!(
         bank.frame(&game, 1000.0).get_pixel(0, 0).0,
@@ -509,20 +520,32 @@ fn headless_judgments_and_hidden_presentation_never_load_images() {
     assert_eq!((game.perfect, game.miss), (1, 1));
     assert_eq!(image_file::LOAD_CALLS.get(), 0);
 
-    let mut presentation = Presentation::new(&game.chart);
-    presentation.prepare(&game.chart, 17, 16);
-    presentation.prepare(&game.chart, 40, 7);
+    let mut presentation = Presentation::new(&game.chart, false);
+    for (cols, rows) in [(64, 24), (120, 16)] {
+        let visible = crate::render::bga_panel_visible(cols, rows, game.chart.lane_count);
+        assert!(!visible);
+        assert_no_deferred_load(&mut presentation, &game.chart, visible);
+    }
     assert_eq!(image_file::LOAD_CALLS.get(), 0);
-    presentation.prepare(&game.chart, 18, 16);
+
+    let visible = crate::render::bga_panel_visible(65, 24, game.chart.lane_count);
+    assert!(visible);
+    let mut presentation = Presentation::new(&game.chart, visible);
     assert_eq!(
         image_file::LOAD_CALLS.get(),
         2,
-        "ordinary image and crop source"
+        "ordinary image and crop source are loaded before playback"
     );
-    presentation.prepare(&game.chart, 18, 16);
-    assert_eq!(
-        image_file::LOAD_CALLS.get(),
-        2,
-        "assets are prepared only once"
-    );
+    assert_no_deferred_load(&mut presentation, &game.chart, visible);
+}
+
+fn assert_no_deferred_load(presentation: &mut Presentation, chart: &Chart, visible: bool) {
+    use std::sync::mpsc::{channel, TryRecvError};
+
+    let (started, attempts) = channel();
+    presentation.prepare_deferred(chart, visible, move |chart| {
+        started.send(()).unwrap();
+        Presentation::load_assets(chart)
+    });
+    assert_eq!(attempts.try_recv(), Err(TryRecvError::Disconnected));
 }

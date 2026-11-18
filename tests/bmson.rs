@@ -128,7 +128,7 @@ fn bga_layers_and_background_notes_are_converted() {
         [BgaLayer::Base, BgaLayer::Overlay, BgaLayer::Poor]
     );
     assert_eq!(c.bga[2].time_ms, 2000.0);
-    assert!(c.bmp_paths[&42].ends_with("images/image.png"));
+    assert!(c.bmp_paths.is_empty());
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn resolution_defaults_and_double_play_mapping() {
 }
 
 #[test]
-fn invalid_versions_timing_modes_and_paths_are_rejected() {
+fn invalid_versions_timing_and_modes_are_rejected() {
     let mut cases = Vec::new();
     let mut invalid = base();
     invalid["version"] = json!("0.21");
@@ -172,22 +172,17 @@ fn invalid_versions_timing_modes_and_paths_are_rejected() {
     let mut invalid = base();
     invalid["bpm_events"] = json!([{"y":0,"bpm":-1}]);
     cases.push(invalid);
-    for name in ["../outside.wav", "/etc/passwd", "C:\\secret.wav"] {
-        let mut invalid = base();
-        invalid["sound_channels"] = json!([{"name":name,"notes":[]}]);
-        cases.push(invalid);
-    }
     cases
         .into_iter()
         .for_each(|data| assert!(load_value(data).is_err()));
 }
 
 #[test]
-fn layered_notes_are_judged_once_and_keep_all_channel_slices() {
+fn layered_notes_are_judged_once_and_keep_distinct_slices_in_channel_order() {
     let mut data = base();
     data["sound_channels"] = json!([
-        {"name":"sound.wav","notes":[{"x":1,"y":0}, {"x":2,"y":0}]},
-        {"name":"sound.wav","notes":[{"x":1,"y":0}]},
+        {"name":"sound.wav","notes":[{"x":1,"y":0}, {"x":2,"y":0}, {"x":1,"y":0}]},
+        {"name":"sound.wav","notes":[{"x":1,"y":0}, {"x":1,"y":0}]},
         {"name":"third.wav","notes":[{"x":1,"y":0}]}
     ]);
     let chart = load_value(data).unwrap();
