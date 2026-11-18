@@ -6,6 +6,8 @@ use crossterm::{
     terminal,
 };
 use std::io::{Stdout, Write};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 mod note_span;
 
@@ -406,39 +408,45 @@ fn draw_song_text(
 }
 
 fn format_gauge(game: &Game) -> String {
-    format_gauge_status(game, game.gauge.is_clear())
+    format_gauge_status(game, game.gauge.is_clear(), true)
 }
 
-fn format_result_gauge(game: &Game) -> String {
-    format_gauge_status(game, game.completed && game.gauge.is_clear())
+fn format_result_gauge(game: &Game, cols: u16) -> String {
+    let clear = game.completed && game.gauge.is_clear();
+    let full = format_gauge_status(game, clear, true);
+    if full.len() <= usize::from(cols) {
+        full
+    } else {
+        format_gauge_status(game, clear, false)
+    }
 }
 
-fn format_gauge_status(game: &Game, clear: bool) -> String {
+fn format_gauge_status(game: &Game, clear: bool, show_bar: bool) -> String {
     let gauge = &game.gauge;
     let filled = (gauge.value() / 5.0).floor() as usize;
+    let bar = if show_bar {
+        format!(" [{}{}]", "=".repeat(filled), "-".repeat(20 - filled))
+    } else {
+        String::new()
+    };
     format!(
-        "{} [{}{}] {:>5.1}%  {:<6}",
+        "{}{bar} {:>5.1}%  {:<6}",
         gauge.label(),
-        "=".repeat(filled),
-        "-".repeat(20 - filled),
         (gauge.value() * 10.0).floor() / 10.0,
         if clear { "CLEAR" } else { "FAILED" }
     )
 }
 
-pub fn prepare_bga(game: &Game, bga: &mut crate::bga::Presentation) -> anyhow::Result<()> {
-    let (cols, rows) = terminal::size()?;
-    if let Some(layout) = PlayLayout::compute(cols, rows, game.chart.lane_count) {
-        bga.prepare(&game.chart, layout.x0, layout.bottom - layout.top);
-    }
-    Ok(())
+pub(crate) fn bga_panel_visible(cols: u16, rows: u16, lanes: usize) -> bool {
+    PlayLayout::compute(cols, rows, lanes)
+        .is_some_and(|layout| crate::bga::panel_width(layout.x0, layout.lane_height).is_some())
 }
 
 /// Draw the play field using notes near the current time and active long notes.
 pub fn draw(
     out: &mut impl Write,
     game: &Game,
-    bga: &mut crate::bga::Presentation,
+    bga: &crate::bga::Presentation,
     now_ms: f64,
 ) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
@@ -487,7 +495,6 @@ pub fn draw(
         Print(gauge)
     )?;
 
-    bga.prepare(&game.chart, x0, bottom - top);
     if let Some(tag) = format_bga_badge(&bga.bank, &game.chart.bga, now_ms) {
         queue!(
             out,
@@ -743,7 +750,7 @@ pub fn draw_intro_full(
 
 pub fn format_progress(game: &Game, previous: Option<&crate::results::Record>) -> String {
     if !game.completed {
-        return "Interrupted: result not saved".into();
+        return "Interrupted: not saved".into();
     }
     match previous {
         None => "First completed play!".into(),
@@ -761,13 +768,28 @@ pub fn format_progress(game: &Game, previous: Option<&crate::results::Record>) -
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResultDestination {
+    Selector,
+    Exit,
+}
+
 pub fn draw_result_with_progress(
     out: &mut Stdout,
     game: &Game,
     progress: &str,
 ) -> anyhow::Result<()> {
+    draw_result_with_destination(out, game, progress, ResultDestination::Exit)
+}
+
+pub fn draw_result_with_destination(
+    out: &mut Stdout,
+    game: &Game,
+    progress: &str,
+    destination: ResultDestination,
+) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
-    draw_result_content(out, game, cols, rows, progress)
+    draw_result_content(out, game, cols, rows, progress, destination)
 }
 
 pub fn draw_result(out: &mut Stdout, game: &Game) -> anyhow::Result<()> {
@@ -776,7 +798,7 @@ pub fn draw_result(out: &mut Stdout, game: &Game) -> anyhow::Result<()> {
 }
 
 fn draw_result_to<W: Write>(out: &mut W, game: &Game, cols: u16, rows: u16) -> anyhow::Result<()> {
-    draw_result_content(out, game, cols, rows, "")
+    draw_result_content(out, game, cols, rows, "", ResultDestination::Exit)
 }
 
 fn draw_result_content<W: Write>(
@@ -785,73 +807,109 @@ fn draw_result_content<W: Write>(
     cols: u16,
     rows: u16,
     progress: &str,
+    destination: ResultDestination,
 ) -> anyhow::Result<()> {
     queue!(out, terminal::BeginSynchronizedUpdate)?;
-    let mut y = (rows / 2).saturating_sub(6);
-    let line = |o: &mut W, text: String, color: Color, yy: u16| -> anyhow::Result<()> {
-        let text = crate::terminal_text::sanitize(&text);
-        queue!(
-            o,
-            cursor::MoveTo(cols.saturating_sub(text.chars().count() as u16) / 2, yy),
-            SetForegroundColor(color),
-            Print(text),
-            ResetColor
-        )?;
-        Ok(())
-    };
-    line(out, "R E S U L T".to_string(), Color::Magenta, y)?;
-    y += 2;
-    line(
-        out,
-        format!("score       {:>6}", game.score),
-        Color::White,
-        y,
-    )?;
-    y += 1;
-    line(
-        out,
-        format!("max combo   {:>6}", game.max_combo),
-        Color::Cyan,
-        y,
-    )?;
-    y += 1;
-    line(
-        out,
-        format!("accuracy    {:>5.1}%", game.accuracy()),
-        Color::Green,
-        y,
-    )?;
-    y += 1;
-    line(out, format_result_gauge(game), Color::Yellow, y)?;
-    y += 2;
-    line(
-        out,
-        format!(
-            "perfect {}   great {}   good {}   miss {}",
-            game.perfect, game.great, game.good, game.miss
-        ),
-        Color::DarkGrey,
-        y,
-    )?;
-    if !game.chart.maker.is_empty() {
-        y += 2;
-        line(
-            out,
-            format!("chart by {}", game.chart.maker),
-            Color::DarkGrey,
-            y,
-        )?;
+    let lines = result_lines(game, cols, progress, destination);
+    let visible = lines.len().min(usize::from(rows));
+    let start = (usize::from(rows) - visible) / 2;
+    let skipped = lines.len() - visible;
+    for (y, (text, color)) in (start..).zip(lines.into_iter().skip(skipped)) {
+        let (text, width) = fit_result_line(&text, cols);
+        if !text.is_empty() {
+            queue!(
+                out,
+                cursor::MoveTo((cols - width) / 2, y as u16),
+                SetForegroundColor(color),
+                Print(text),
+                ResetColor
+            )?;
+        }
     }
-    if !progress.is_empty() {
-        y += 2;
-        let clipped: String = progress.chars().take(cols as usize).collect();
-        line(out, clipped, Color::Yellow, y)?;
-    }
-    y += 2;
-    line(out, "press any key to exit".to_string(), Color::DarkGrey, y)?;
     queue!(out, terminal::EndSynchronizedUpdate)?;
     out.flush()?;
     Ok(())
+}
+
+fn result_lines(
+    game: &Game,
+    cols: u16,
+    progress: &str,
+    destination: ResultDestination,
+) -> Vec<(String, Color)> {
+    let mut lines = vec![
+        ("R E S U L T".into(), Color::Magenta),
+        (format!("score       {:>6}", game.score), Color::White),
+        (format!("max combo   {:>6}", game.max_combo), Color::Cyan),
+        (
+            format!("accuracy    {:>5.1}%", game.accuracy()),
+            Color::Green,
+        ),
+        (format_result_gauge(game, cols), Color::Yellow),
+    ];
+    lines.extend(judgment_lines(game, cols).map(|line| (line, Color::DarkGrey)));
+    if !game.chart.maker.is_empty() {
+        lines.push((format!("chart by {}", game.chart.maker), Color::DarkGrey));
+    }
+    lines.extend(progress_lines(progress, cols).map(|line| (line, Color::Yellow)));
+    let selector_prompt = "press any key to return to the selector";
+    let prompt = match destination {
+        ResultDestination::Selector if usize::from(cols) < selector_prompt.len() => {
+            "any key: return to selector"
+        }
+        ResultDestination::Selector => selector_prompt,
+        ResultDestination::Exit => "press any key to exit",
+    };
+    lines.push((prompt.into(), Color::DarkGrey));
+    lines
+}
+
+fn judgment_lines(game: &Game, cols: u16) -> impl Iterator<Item = String> {
+    let full = format!(
+        "perfect {}   great {}   good {}   miss {}",
+        game.perfect, game.great, game.good, game.miss
+    );
+    let first = format!("P {} Gr {}", game.perfect, game.great);
+    let second = format!("Gd {} M {}", game.good, game.miss);
+    let cols = usize::from(cols);
+    let lines = if full.len() <= cols {
+        [Some(full), None]
+    } else if first.len() + 1 + second.len() <= cols {
+        [Some(format!("{first} {second}")), None]
+    } else {
+        [Some(first), Some(second)]
+    };
+    lines.into_iter().flatten()
+}
+
+fn progress_lines(progress: &str, cols: u16) -> impl Iterator<Item = String> {
+    let mut lines: Vec<String> = Vec::new();
+    for section in progress.split(" | ").filter(|section| !section.is_empty()) {
+        match lines.last_mut() {
+            Some(line) if line.len() + 3 + section.len() <= usize::from(cols) => {
+                line.push_str(" | ");
+                line.push_str(section);
+            }
+            _ => lines.push(section.into()),
+        }
+    }
+    lines.into_iter()
+}
+
+fn fit_result_line(text: &str, cols: u16) -> (String, u16) {
+    let mut text = crate::terminal_text::sanitize(text);
+    let mut width = 0;
+    let mut end = 0;
+    for grapheme in text.graphemes(true) {
+        let next = width + grapheme.width();
+        if next > usize::from(cols) {
+            break;
+        }
+        width = next;
+        end += grapheme.len();
+    }
+    text.truncate(end);
+    (text, width as u16)
 }
 
 #[cfg(test)]
@@ -882,7 +940,45 @@ mod tests {
         assert!(!rendered.contains("\x1b]52"));
         assert!(!rendered.contains("\x1b[2J"));
         assert!(rendered.contains("R E S U L T"));
-        assert!(rendered.contains("press any key to exit"));
+    }
+
+    #[test]
+    fn result_credit_fits_complete_emoji_within_the_terminal_width() {
+        let prefix = "chart by 123456789012345678";
+        for emoji in ["❤️", "1️⃣", "👩‍💻"] {
+            let credit = format!("{prefix}{emoji}!");
+            assert_eq!(fit_result_line(&credit, 28), (prefix.into(), 27));
+            assert_eq!(
+                fit_result_line(&credit, 29),
+                (format!("{prefix}{emoji}"), 29)
+            );
+        }
+    }
+
+    #[test]
+    fn result_prompts_for_its_dismissal_destination() {
+        let game = Game::new(base_chart(4));
+        for (destination, prompt) in [
+            (
+                ResultDestination::Selector,
+                "press any key to return to the selector",
+            ),
+            (ResultDestination::Exit, "press any key to exit"),
+        ] {
+            let mut out = Vec::new();
+            draw_result_content(
+                &mut out,
+                &game,
+                120,
+                40,
+                "First completed play!",
+                destination,
+            )
+            .unwrap();
+            let rendered = String::from_utf8(out).unwrap();
+            assert!(rendered.contains(prompt));
+            assert_eq!(rendered.matches("press any key").count(), 1);
+        }
     }
 
     thread_local! {
@@ -1330,9 +1426,9 @@ mod tests {
         chart.total = Some(60.0);
         let mut game = Game::new(chart);
         game.hit(0, 1000.0);
-        assert!(format_result_gauge(&game).ends_with("FAILED"));
+        assert!(format_result_gauge(&game, 80).ends_with("FAILED"));
         assert!(game.advance_completion(game.chart.duration_ms.max(2000.0)));
-        assert!(format_result_gauge(&game).ends_with("CLEAR "));
+        assert!(format_result_gauge(&game, 80).ends_with("CLEAR "));
     }
 
     #[test]
@@ -1907,7 +2003,71 @@ mod progress_tests {
         game.completed = true;
         let progress = "vs best: score +100 | accuracy +1.00pp | combo +2";
         let mut output = Vec::new();
-        draw_result_content(&mut output, &game, 120, 40, progress).unwrap();
+        draw_result_content(
+            &mut output,
+            &game,
+            120,
+            40,
+            progress,
+            ResultDestination::Exit,
+        )
+        .unwrap();
         assert!(String::from_utf8(output).unwrap().contains(progress));
+    }
+
+    #[test]
+    fn minimum_result_screen_fits_comparisons_clear_credit_and_dismissal() {
+        use crate::results::{Identity, Store};
+
+        let mut game = Game::new(crate::chart::built_in(120.0, 0.0));
+        game.chart.maker = "Chart Author 日本語❤️".into();
+        game.completed = true;
+        let mut store = Store::default();
+        let identity = Identity::built_in(120.0);
+        game.miss = 1;
+        store.record(&identity, &game, false);
+        game.score = 100;
+        game.max_combo = u32::MAX;
+        game.perfect = 100000;
+        game.great = 200000;
+        game.good = 300000;
+        game.miss = 400000;
+        while !game.gauge.is_clear() {
+            game.gauge.apply(crate::game::Judgment::Perfect);
+        }
+        let progress = format_progress(&game, store.get(&identity));
+        let progress = format!("Storage error: result unsaved | {progress}");
+        for (destination, prompt, prompt_column) in [
+            (
+                ResultDestination::Selector,
+                "any key: return to selector",
+                2,
+            ),
+            (ResultDestination::Exit, "press any key to exit", 5),
+        ] {
+            let mut output = Vec::new();
+            draw_result_content(&mut output, &game, 29, 13, &progress, destination).unwrap();
+            let rendered = String::from_utf8(output).unwrap();
+            for expected in [
+                "vs best: score +100",
+                "accuracy +32.00pp",
+                "combo +4294967295",
+                "NEW CLEAR!",
+                "P 100000 Gr 200000",
+                "Gd 300000 M 400000",
+                "Storage error: result unsaved",
+                "chart by Chart Author 日本語",
+            ] {
+                assert!(
+                    rendered.contains(expected),
+                    "missing {expected:?} in {rendered:?}"
+                );
+            }
+            assert!(!rendered.contains("❤️"));
+            assert!(rendered
+                .rsplit_once(&format!("\x1b[13;{prompt_column}H"))
+                .is_some_and(|(_, last_row)| last_row.contains(prompt)));
+            assert!(!rendered.contains("\x1b[14;"));
+        }
     }
 }

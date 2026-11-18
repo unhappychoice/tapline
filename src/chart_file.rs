@@ -9,7 +9,10 @@ pub(crate) fn read(path: &Path) -> Result<Vec<u8>> {
 }
 
 fn read_regular(path: &Path) -> Result<Vec<u8>> {
-    read_bounded(fs_guard::open(path)?)
+    let file = fs_guard::open(path)?;
+    #[cfg(test)]
+    crate::select::count_content_read();
+    read_bounded(file)
 }
 
 fn read_bounded(reader: impl Read) -> Result<Vec<u8>> {

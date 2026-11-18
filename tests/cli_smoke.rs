@@ -61,6 +61,15 @@ fn help_flag_documents_every_public_flag() {
 }
 
 #[test]
+fn help_explains_the_test_tone_audio_exception() {
+    let (code, stdout, _) = run_with(&["--help"]);
+    assert_eq!(code, 0);
+    let help = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(help.contains("--no-audio Disable gameplay audio and selector previews"));
+    assert!(help.contains("Uses its own audio path even with --no-audio"));
+}
+
+#[test]
 fn help_short_form_is_wired() {
     let (code, stdout, _) = run_with(&["-h"]);
     assert_eq!(code, 0);

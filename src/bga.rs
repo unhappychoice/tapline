@@ -16,11 +16,13 @@ mod presentation;
 pub use presentation::Presentation;
 mod timeline;
 mod video;
+mod video_worker;
 
 #[derive(Default)]
 struct Playback {
     event: Option<usize>,
     video: Option<video::Video>,
+    worker: Option<video_worker::Worker>,
 }
 
 const SIZE: u32 = 64;
@@ -69,6 +71,18 @@ impl ImageBank {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_test_decoder<D>(
+        &mut self,
+        mut open: impl FnMut(&std::path::Path) -> Option<(D, [u8; 4])> + Send + 'static,
+    ) {
+        self.2.get_mut()[timeline::slot(BgaLayer::Base)].worker =
+            video_worker::Worker::start(move |path| {
+                let (decoder, color) = open(path)?;
+                Some((decoder, video::Video::test_frame(color)))
+            });
+    }
+
     pub fn prepare_crops(&mut self, chart: &crate::chart::Chart) {
         self.0.extend(crops::prepare(chart, |path| {
             image_file::load(path).map(|image| image.to_rgba8())
@@ -102,9 +116,20 @@ impl ImageBank {
         let index = event.map(|(index, _)| index);
         if state.event != index {
             state.event = index;
-            state.video = event
-                .and_then(|(_, event)| self.1.get(&event.bmp_id))
-                .and_then(|path| video::Video::open(path));
+            state.video = None;
+            let path = event.and_then(|(_, event)| self.1.get(&event.bmp_id));
+            if path.is_some() && state.worker.is_none() {
+                state.worker = video_worker::Worker::start(video::Video::open);
+            }
+            if let Some(worker) = &state.worker {
+                worker.request(path.cloned());
+            }
+        }
+        if state.video.is_none() {
+            state.video = state
+                .worker
+                .as_ref()
+                .and_then(video_worker::Worker::take_video);
         }
         let (_, event) = event?;
         self.0
@@ -180,7 +205,7 @@ fn is_video(path: &std::path::Path) -> bool {
         })
 }
 
-fn panel_width(left_margin: u16, height: u16) -> Option<u16> {
+pub(crate) fn panel_width(left_margin: u16, height: u16) -> Option<u16> {
     let width = left_margin
         .saturating_sub(2)
         .min(32)

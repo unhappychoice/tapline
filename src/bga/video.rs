@@ -11,20 +11,21 @@ use std::{
     },
 };
 
+pub(super) struct Decoder(Child);
+
 pub(super) struct Video {
-    child: Child,
     frames: Receiver<(u64, RgbaImage, bool)>,
     current: Option<(u64, RgbaImage, bool)>,
     target: Arc<AtomicU64>,
 }
 
 impl Video {
-    pub fn open(path: &Path) -> Option<Self> {
+    pub fn open(path: &Path) -> Option<(Decoder, Self)> {
         Self::with_decoder(path, Path::new("ffmpeg"))
     }
 
-    fn with_decoder(path: &Path, decoder: &Path) -> Option<Self> {
-        let mut child = Command::new(decoder)
+    fn with_decoder(path: &Path, decoder: &Path) -> Option<(Decoder, Self)> {
+        let mut child = Decoder(Command::new(decoder)
             .args(["-v", "error", "-nostdin", "-i"])
             .arg(path)
             .args([
@@ -36,38 +37,51 @@ impl Video {
             .stderr(Stdio::null())
             .stdout(Stdio::piped())
             .spawn()
-            .ok()?;
-        let mut stdout = child.stdout.take()?;
+            .ok()?);
+        let mut stdout = child.0.stdout.take()?;
         let (sender, frames) = sync_channel(2);
         let target = Arc::new(AtomicU64::new(0));
         let requested = Arc::clone(&target);
-        std::thread::spawn(move || {
-            let mut index = 0;
-            let mut last = None;
-            loop {
-                let mut bytes = vec![0; (SIZE * SIZE * 4) as usize];
-                if stdout.read_exact(&mut bytes).is_err() {
-                    if let Some((index, frame)) = last {
-                        let _ = sender.send((index, frame, true));
+        std::thread::Builder::new()
+            .spawn(move || {
+                let mut index = 0;
+                let mut last = None;
+                loop {
+                    let mut bytes = vec![0; (SIZE * SIZE * 4) as usize];
+                    if stdout.read_exact(&mut bytes).is_err() {
+                        if let Some((index, frame)) = last {
+                            let _ = sender.send((index, frame, true));
+                        }
+                        break;
                     }
-                    break;
+                    let frame = RgbaImage::from_raw(SIZE, SIZE, bytes).unwrap();
+                    if index >= requested.load(Ordering::Relaxed)
+                        && sender.send((index, frame.clone(), false)).is_err()
+                    {
+                        break;
+                    }
+                    last = Some((index, frame));
+                    index += 1;
                 }
-                let frame = RgbaImage::from_raw(SIZE, SIZE, bytes).unwrap();
-                if index >= requested.load(Ordering::Relaxed)
-                    && sender.send((index, frame.clone(), false)).is_err()
-                {
-                    break;
-                }
-                last = Some((index, frame));
-                index += 1;
-            }
-        });
-        Some(Self {
-            child,
+            })
+            .ok()?;
+        Some((child, Self::from_frames(frames, target)))
+    }
+
+    fn from_frames(frames: Receiver<(u64, RgbaImage, bool)>, target: Arc<AtomicU64>) -> Self {
+        Self {
             frames,
             current: None,
             target,
-        })
+        }
+    }
+
+    #[cfg(test)]
+    pub fn test_frame(color: [u8; 4]) -> Self {
+        let (sender, frames) = sync_channel(1);
+        let image = RgbaImage::from_pixel(SIZE, SIZE, image::Rgba(color));
+        sender.send((0, image, true)).unwrap();
+        Self::from_frames(frames, Arc::new(AtomicU64::new(0)))
     }
 
     pub fn frame(&mut self, elapsed_ms: f64) -> Option<RgbaImage> {
@@ -87,10 +101,10 @@ impl Video {
     }
 }
 
-impl Drop for Video {
+impl Drop for Decoder {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
@@ -104,6 +118,34 @@ mod tests {
             Video::with_decoder(Path::new("video.mp4"), Path::new("/missing/tapline-ffmpeg"))
                 .is_none()
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn worker_reaps_replaced_decoder_and_active_decoder_on_drop() {
+        use super::super::video_worker::Worker;
+        use std::{path::PathBuf, sync::mpsc::channel, time::Duration};
+
+        let (started, processes) = channel();
+        let worker = Worker::start(move |_| {
+            let child = Decoder(Command::new("sleep").arg("60").spawn().unwrap());
+            started.send(child.0.id()).unwrap();
+            Some((child, Video::test_frame([0, 0, 0, 255])))
+        })
+        .unwrap();
+        let request = || {
+            worker.request(Some(PathBuf::from("video.mp4")));
+            let pid = processes.recv_timeout(Duration::from_secs(5)).unwrap();
+            PathBuf::from(format!("/proc/{pid}"))
+        };
+
+        let first = request();
+        assert!(first.exists());
+        let second = request();
+        assert!(!first.exists());
+        assert!(second.exists());
+        drop(worker);
+        assert!(!second.exists());
     }
 
     #[test]
@@ -148,16 +190,6 @@ mod tests {
     }
 
     fn video_with_frames(frames: Receiver<(u64, RgbaImage, bool)>) -> Video {
-        let child = Command::new("rustc")
-            .arg("--version")
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap();
-        Video {
-            child,
-            frames,
-            current: None,
-            target: Arc::new(AtomicU64::new(0)),
-        }
+        Video::from_frames(frames, Arc::new(AtomicU64::new(0)))
     }
 }

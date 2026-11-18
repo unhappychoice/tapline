@@ -1,6 +1,6 @@
 use crate::results::Identity;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -8,7 +8,7 @@ use std::{
 #[derive(Default)]
 pub(super) struct Identities(HashMap<PathBuf, (Stamp, Identity)>);
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct Stamp {
     length: u64,
     modified: SystemTime,
@@ -21,12 +21,29 @@ impl Identities {
         self.get_with(path, || Identity::file(path, None))
     }
 
-    pub(super) fn discover(&mut self, path: &Path, bytes: &[u8], before: Option<Stamp>) {
-        if before.is_none() || before != stamp(path) {
+    pub(super) fn discover(
+        &mut self,
+        path: &Path,
+        bytes: &[u8],
+        before: Option<Stamp>,
+    ) -> Option<Stamp> {
+        let stable = before.filter(|before| Some(before) == stamp(path).as_ref());
+        if let Some(stamp) = &stable {
+            let entry = self
+                .0
+                .entry(path.to_path_buf())
+                .or_insert_with(|| (stamp.clone(), Identity::from_bytes(path, bytes, None)));
+            if entry.0 != *stamp {
+                *entry = (stamp.clone(), Identity::from_bytes(path, bytes, None));
+            }
+        } else {
             self.0.remove(path);
-            return;
         }
-        self.get_at(path, before, || Ok(Identity::from_bytes(path, bytes, None)));
+        stable
+    }
+
+    pub(super) fn retain(&mut self, paths: &HashSet<&Path>) {
+        self.0.retain(|path, _| paths.contains(path.as_path()));
     }
 
     fn get_with(

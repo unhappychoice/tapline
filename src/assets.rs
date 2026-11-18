@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
+    fs::{self, Metadata},
     path::{Component, Path, PathBuf},
     rc::Rc,
 };
@@ -37,10 +38,20 @@ impl AssetIndex {
 
     pub(crate) fn resolve_path(&self, name: &str, extensions: &[&str]) -> Option<PathBuf> {
         let normalized = name.replace('\\', "/");
+        if normalized.contains([':', '\0']) {
+            return None;
+        }
         let path: PathBuf = Path::new(&normalized)
             .components()
             .filter(|component| *component != Component::CurDir)
             .collect();
+        if path.as_os_str().is_empty()
+            || path
+                .components()
+                .any(|c| !matches!(c, Component::Normal(_)))
+        {
+            return None;
+        }
         self.find(&path).or_else(|| {
             extensions
                 .iter()
@@ -50,13 +61,6 @@ impl AssetIndex {
 
     fn find(&self, path: &Path) -> Option<PathBuf> {
         let components: Vec<_> = path.components().collect();
-        if components.is_empty()
-            || components
-                .iter()
-                .any(|c| !matches!(c, Component::Normal(_)))
-        {
-            return None;
-        }
         let mut candidates = vec![PathBuf::new()];
         for (index, component) in components.iter().enumerate() {
             let directory = index + 1 < components.len();
@@ -73,7 +77,7 @@ impl AssetIndex {
                             MATCHING_WORK.with(|count| count.set(count.get() + 1));
                         })
                         .filter(|entry| entry.directory == directory)
-                        .filter(|entry| directory || self.root.join(&entry.path).is_file())
+                        .filter(|entry| self.matches_type(entry, directory))
                         .map(|entry| entry.path.clone())
                         .collect::<Vec<_>>()
                 })
@@ -86,6 +90,18 @@ impl AssetIndex {
             .map(|path| self.root.join(path))
     }
 
+    fn matches_type(&self, entry: &Entry, directory: bool) -> bool {
+        // Recheck cached entries without following links.
+        fs::symlink_metadata(self.root.join(&entry.path)).is_ok_and(|metadata| {
+            !is_link(&metadata)
+                && if directory {
+                    metadata.is_dir()
+                } else {
+                    metadata.is_file()
+                }
+        })
+    }
+
     fn entries(&self, relative: &Path) -> Rc<DirectoryEntries> {
         self.directories
             .borrow_mut()
@@ -93,7 +109,13 @@ impl AssetIndex {
             .or_insert_with(|| {
                 #[cfg(test)]
                 DIRECTORY_VISITS.with(|count| count.set(count.get() + 1));
-                let mut entries: Vec<_> = std::fs::read_dir(self.root.join(relative))
+                let dir = self.root.join(relative);
+                let dir = if dir.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    &dir
+                };
+                let mut entries: Vec<_> = fs::read_dir(dir)
                     .into_iter()
                     .flatten()
                     .filter_map(Result::ok)
@@ -115,6 +137,18 @@ impl AssetIndex {
             })
             .clone()
     }
+}
+
+fn is_link(metadata: &Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // Reject reparse points, including directory junctions.
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    metadata.is_symlink()
 }
 
 fn normalize_filename(name: &str) -> String {

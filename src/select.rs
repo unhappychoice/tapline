@@ -1,5 +1,6 @@
+mod discovery;
 mod identities;
-use crate::bms::{self, ChartMeta};
+use crate::bms::ChartMeta;
 use crate::chart::difficulty_label;
 use anyhow::Result;
 use crossterm::{
@@ -12,70 +13,20 @@ use crossterm::{
 use std::io::{Stdout, Write};
 use std::path::Path;
 use std::time::Duration;
+use unicode_width::UnicodeWidthChar;
 
-const EXTS: [&str; 5] = ["bms", "bml", "bme", "pms", "bmson"];
+const CHART_ROW_LEFT: u16 = 2;
 
 pub fn scan(root: &Path) -> Vec<ChartMeta> {
-    scan_with_identities(root, &mut identities::Identities::default())
+    SelectorState::default().scan(root)
 }
 
-fn scan_with_identities(root: &Path, identities: &mut identities::Identities) -> Vec<ChartMeta> {
-    let mut out = Vec::new();
-    walk(root, 0, &mut out, identities);
-    out.sort_by(|a, b| {
-        a.title
-            .to_ascii_lowercase()
-            .cmp(&b.title.to_ascii_lowercase())
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    out
-}
-
-fn walk(
-    dir: &Path,
-    depth: usize,
-    out: &mut Vec<ChartMeta>,
-    identities: &mut identities::Identities,
-) {
-    if depth > 5 {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let ty = entry.file_type().ok();
-        if ty.map(|t| t.is_dir()).unwrap_or(false) {
-            walk(&path, depth + 1, out, identities);
-        } else if is_bms(&path) {
-            let before = identities::stamp(&path);
-            let Ok(bytes) = crate::chart_file::read(&path) else {
-                continue;
-            };
-            let meta = if crate::bmson::is_bmson(&path) {
-                crate::bmson::read_meta_bytes(&path, &bytes)
-            } else {
-                bms::read_meta_bytes(&path, &bytes, bms::random_seed())
-            };
-            if let Ok(meta) = meta {
-                identities.discover(&path, &bytes, before);
-                out.push(meta);
-            }
-        }
-    }
-}
-
-fn is_bms(p: &Path) -> bool {
-    p.extension()
-        .and_then(|s| s.to_str())
-        .map(|e| EXTS.iter().any(|x| x.eq_ignore_ascii_case(e)))
-        .unwrap_or(false)
-}
+#[cfg(test)]
+pub(crate) use discovery::{count_content_read, count_metadata_parse};
 
 #[derive(Default)]
 pub struct SelectorState {
-    identities: identities::Identities,
+    discovery: discovery::Discovery,
     query: String,
     lanes: Option<usize>,
     editing: bool,
@@ -91,7 +42,7 @@ pub struct SelectorState {
 impl SelectorState {
     pub fn scan(&mut self, root: &Path) -> Vec<ChartMeta> {
         self.lowercase_cache.clear();
-        scan_with_identities(root, &mut self.identities)
+        self.discovery.scan(root, &crate::bms::random_seed)
     }
 
     fn refresh(&mut self, charts: &[ChartMeta]) {
@@ -188,21 +139,12 @@ pub fn run_with_state(
     if charts.is_empty() {
         return Ok(None);
     }
-    let store =
-        crate::results::data_path().and_then(|path| crate::results::Store::load(&path).ok());
-    let progress: Vec<String> = charts
-        .iter()
-        .map(|chart| {
-            if store.is_none() {
-                return "[RECORDS UNAVAILABLE]".into();
-            }
-            let record = state
-                .identities
-                .get(&chart.path)
-                .and_then(|id| store.as_ref().and_then(|store| store.get(&id)).cloned());
-            format_progress(record.as_ref())
-        })
-        .collect();
+    let records_path = crate::results::data_path();
+    let progress = load_progress(
+        charts,
+        &mut state.discovery.identities,
+        records_path.as_deref(),
+    );
     state.editing = false;
     state.refresh(charts);
     let audio = crate::audio::preview_output(!no_audio);
@@ -233,6 +175,23 @@ pub fn run_with_state(
             }
         }
     }
+}
+
+fn load_progress(
+    charts: &[ChartMeta],
+    identities: &mut identities::Identities,
+    records_path: Option<&Path>,
+) -> Vec<String> {
+    let Some(store) = records_path.and_then(|path| crate::results::Store::load(path).ok()) else {
+        return vec!["[RECORDS UNAVAILABLE]".into(); charts.len()];
+    };
+    charts
+        .iter()
+        .map(|chart| {
+            let record = identities.get(&chart.path).and_then(|id| store.get(&id));
+            format_progress(record)
+        })
+        .collect()
 }
 
 fn draw(
@@ -326,15 +285,19 @@ fn draw_frame(
             progress[state.indices[i]],
             format_chart_row(m, arrow)
         );
-        let clipped: String = text.chars().take(cols as usize).collect();
+        let clipped = clip_to_width(&text, cols.saturating_sub(CHART_ROW_LEFT) as usize);
         let color = if selected { Color::White } else { Color::Grey };
-        queue!(out, cursor::MoveTo(2, y), SetForegroundColor(color))?;
+        queue!(
+            out,
+            cursor::MoveTo(CHART_ROW_LEFT, y),
+            SetForegroundColor(color)
+        )?;
         if selected {
             queue!(out, style::SetAttribute(style::Attribute::Bold))?;
         }
         queue!(
             out,
-            Print(&clipped),
+            Print(clipped),
             style::SetAttribute(style::Attribute::Reset),
             ResetColor
         )?;
@@ -369,6 +332,17 @@ fn draw_frame(
     queue!(out, terminal::EndSynchronizedUpdate)?;
     out.flush()?;
     Ok(())
+}
+
+fn clip_to_width(text: &str, mut remaining: usize) -> &str {
+    for (index, ch) in text.char_indices() {
+        let width = ch.width().unwrap_or(0);
+        if width > remaining {
+            return &text[..index];
+        }
+        remaining -= width;
+    }
+    text
 }
 
 fn draw_details(out: &mut impl Write, chart: &ChartMeta, cols: u16, top: u16) -> Result<()> {
@@ -428,6 +402,7 @@ fn format_badge(m: &ChartMeta) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::discovery::is_bms;
     use super::*;
     use std::path::PathBuf;
 
@@ -500,6 +475,33 @@ mod tests {
         let output = String::from_utf8(out).unwrap();
         assert!(state.scroll > 0);
         assert!(output.contains("[BEST 7.0% CLEAR] ▸ [5K NORMAL Lv3 BPM140]  Song 7"));
+    }
+
+    #[test]
+    fn chart_rows_use_only_the_display_columns_after_the_margin() {
+        let prefix = "[UNPLAYED] ▸ [5K NORMAL Lv3 BPM140]  ";
+        let ascii = "a".repeat(5);
+        for (title, visible) in [
+            ("a".repeat(100), ascii.as_str()),
+            ("日本語".repeat(30), "日本"),
+            ("日本a".into(), "日本a"),
+        ] {
+            let charts = [meta(&title)];
+            let mut state = SelectorState::default();
+            state.refresh(&charts);
+            let mut out = Vec::new();
+            let cols = 2 + prefix.chars().count() as u16 + 5;
+            draw_frame(
+                &mut out,
+                &charts,
+                &mut state,
+                &["[UNPLAYED]".into()],
+                (cols, 12),
+            )
+            .unwrap();
+            let output = String::from_utf8(out).unwrap();
+            assert!(output.contains(&format!("{prefix}{visible}\x1b[")));
+        }
     }
 
     #[test]
@@ -824,7 +826,7 @@ mod tests {
         assert_eq!(format_badge(&m), "[5K NORMAL Lv3 BPM174]");
     }
 
-    fn tempdir() -> PathBuf {
+    pub(super) fn tempdir() -> PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
