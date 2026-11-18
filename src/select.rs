@@ -12,8 +12,10 @@ use crossterm::{
 use std::io::{Stdout, Write};
 use std::path::Path;
 use std::time::Duration;
+use unicode_width::UnicodeWidthChar;
 
 const EXTS: [&str; 5] = ["bms", "bml", "bme", "pms", "bmson"];
+const CHART_ROW_LEFT: u16 = 2;
 
 pub fn scan(root: &Path) -> Vec<ChartMeta> {
     scan_with_identities(root, &mut identities::Identities::default())
@@ -326,15 +328,19 @@ fn draw_frame(
             progress[state.indices[i]],
             format_chart_row(m, arrow)
         );
-        let clipped: String = text.chars().take(cols as usize).collect();
+        let clipped = clip_to_width(&text, cols.saturating_sub(CHART_ROW_LEFT) as usize);
         let color = if selected { Color::White } else { Color::Grey };
-        queue!(out, cursor::MoveTo(2, y), SetForegroundColor(color))?;
+        queue!(
+            out,
+            cursor::MoveTo(CHART_ROW_LEFT, y),
+            SetForegroundColor(color)
+        )?;
         if selected {
             queue!(out, style::SetAttribute(style::Attribute::Bold))?;
         }
         queue!(
             out,
-            Print(&clipped),
+            Print(clipped),
             style::SetAttribute(style::Attribute::Reset),
             ResetColor
         )?;
@@ -369,6 +375,17 @@ fn draw_frame(
     queue!(out, terminal::EndSynchronizedUpdate)?;
     out.flush()?;
     Ok(())
+}
+
+fn clip_to_width(text: &str, mut remaining: usize) -> &str {
+    for (index, ch) in text.char_indices() {
+        let width = ch.width().unwrap_or(0);
+        if width > remaining {
+            return &text[..index];
+        }
+        remaining -= width;
+    }
+    text
 }
 
 fn draw_details(out: &mut impl Write, chart: &ChartMeta, cols: u16, top: u16) -> Result<()> {
@@ -500,6 +517,33 @@ mod tests {
         let output = String::from_utf8(out).unwrap();
         assert!(state.scroll > 0);
         assert!(output.contains("[BEST 7.0% CLEAR] ▸ [5K NORMAL Lv3 BPM140]  Song 7"));
+    }
+
+    #[test]
+    fn chart_rows_use_only_the_display_columns_after_the_margin() {
+        let prefix = "[UNPLAYED] ▸ [5K NORMAL Lv3 BPM140]  ";
+        let ascii = "a".repeat(5);
+        for (title, visible) in [
+            ("a".repeat(100), ascii.as_str()),
+            ("日本語".repeat(30), "日本"),
+            ("日本a".into(), "日本a"),
+        ] {
+            let charts = [meta(&title)];
+            let mut state = SelectorState::default();
+            state.refresh(&charts);
+            let mut out = Vec::new();
+            let cols = 2 + prefix.chars().count() as u16 + 5;
+            draw_frame(
+                &mut out,
+                &charts,
+                &mut state,
+                &["[UNPLAYED]".into()],
+                (cols, 12),
+            )
+            .unwrap();
+            let output = String::from_utf8(out).unwrap();
+            assert!(output.contains(&format!("{prefix}{visible}\x1b[")));
+        }
     }
 
     #[test]
