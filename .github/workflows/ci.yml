@@ -85,6 +85,9 @@ jobs:
     name: coverage
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
 
@@ -128,3 +131,4 @@ jobs:
         with:
           files: lcov.info
           fail_ci_if_error: false
+          use_oidc: ${{ github.event_name == 'push' }}
