@@ -1,9 +1,65 @@
 #![cfg(unix)]
 
 use std::fs::File;
+use std::io::Write;
 use std::os::fd::FromRawFd;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+#[test]
+fn quitting_the_chart_selector_exits_successfully() {
+    let songs = Path::new(env!("CARGO_MANIFEST_DIR")).join("songs");
+    let (mut master, slave) = open_pty();
+    master.write_all(b"q\n").unwrap();
+
+    let output = run_selector(&songs, slave);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("T A P L I N E"), "{stdout:?}");
+    assert!(stdout.contains("First Steps"), "{stdout:?}");
+    assert!(stdout.contains("\x1b[?1049l"), "{stdout:?}");
+}
+
+fn run_selector(songs: &Path, slave: File) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tapline"));
+    command
+        .arg("--dir")
+        .arg(songs)
+        .arg("--no-audio")
+        .env("TAPLINE_RANDOM_SEED", "1")
+        .env("TAPLINE_DATA_DIR", "/dev/null")
+        .stdin(slave)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Give terminal size queries a PTY while retaining separate output streams.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = command.spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!("chart selector did not exit: {output:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    child.wait_with_output().unwrap()
+}
 
 #[test]
 fn missing_chart_reports_the_path_on_stderr() {
@@ -88,13 +144,19 @@ fn run_chart(path: &Path) -> Output {
 
 fn open_pty() -> (File, File) {
     let (mut master, mut slave) = (-1, -1);
+    let mut size = libc::winsize {
+        ws_row: 24,
+        ws_col: 100,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
     let result = unsafe {
         libc::openpty(
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            std::ptr::null_mut(),
+            &raw mut size,
         )
     };
     assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
