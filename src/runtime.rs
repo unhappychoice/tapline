@@ -1,6 +1,6 @@
 use crate::bga::Presentation;
 use crate::chart::VolumeTarget;
-use crate::render::ResultDestination;
+use crate::render::{AudioMode, ResultDestination};
 use crate::screen::Screen;
 use crate::{audio, chart, cli::Args, game, render};
 use anyhow::Result;
@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 pub struct PlayOptions {
     pub countdown_ms: f64,
     pub synth_mode: bool,
+    pub no_audio: bool,
     pub auto_ks: bool,
     pub audio_lead_ms: f64,
 }
@@ -24,6 +25,7 @@ impl PlayOptions {
         Self {
             countdown_ms: args.countdown_ms,
             synth_mode: args.synth,
+            no_audio: args.no_audio,
             auto_ks: args.auto_ks,
             audio_lead_ms: args.audio_lead_ms,
         }
@@ -47,7 +49,7 @@ pub fn play_chart_with_destination(
     destination: ResultDestination,
 ) -> Result<()> {
     let opts = PlayOptions::from_args(args);
-    let bank = if args.no_audio {
+    let bank = if opts.no_audio {
         audio::SampleBank::silent()
     } else {
         audio::SampleBank::with_settings(&chart.wav_paths, &chart.sample_settings)
@@ -249,10 +251,16 @@ fn draw_mode(
     now: f64,
 ) -> Result<()> {
     if mode == 1 {
+        let audio_mode = match (opts.no_audio, opts.synth_mode) {
+            (true, _) => AudioMode::Silent,
+            (_, true) => AudioMode::Synth,
+            _ => AudioMode::Samples,
+        };
         return render::draw_intro_full(
             screen,
             game,
             opts.countdown_ms - now,
+            audio_mode,
             bank.enabled,
             bank.sample_count(),
             bank.decode_failures,
@@ -782,6 +790,7 @@ mod tests {
         PlayOptions {
             countdown_ms: 2000.0,
             synth_mode: true,
+            no_audio: false,
             auto_ks,
             audio_lead_ms: 0.0,
         }
