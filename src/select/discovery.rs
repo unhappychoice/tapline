@@ -1,5 +1,8 @@
 use super::identities::{self, Identities, Stamp};
-use crate::bms::{self, ChartMeta};
+use crate::{
+    bms::{self, ChartMeta},
+    chart_file,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -49,12 +52,17 @@ impl Discovery {
             if entry.file_type().is_ok_and(|ty| ty.is_dir()) {
                 self.walk(&path, depth + 1, out, seed);
             } else if is_bms(&path) {
-                out.extend(self.chart(&path, seed));
+                out.extend(self.chart(&path, seed, chart_file::read));
             }
         }
     }
 
-    fn chart(&mut self, path: &Path, seed: &impl Fn() -> u64) -> Option<ChartMeta> {
+    fn chart(
+        &mut self,
+        path: &Path,
+        seed: &impl Fn() -> u64,
+        read: impl FnOnce(&Path) -> anyhow::Result<Vec<u8>>,
+    ) -> Option<ChartMeta> {
         let before = identities::stamp(path);
         let is_bmson = crate::bmson::is_bmson(path);
         if let Some((stamp, cached)) = self.metadata.get(path) {
@@ -67,7 +75,7 @@ impl Discovery {
             }
         }
         self.metadata.remove(path);
-        let bytes = crate::chart_file::read(path).ok()?;
+        let bytes = read(path).ok()?;
         let (meta, preview, draws_random) = if is_bmson {
             (
                 crate::bmson::read_meta_bytes(path, &bytes).ok()?,

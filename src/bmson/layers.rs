@@ -1,43 +1,55 @@
-use crate::chart::Chart;
+use super::timing::Timeline;
+use crate::chart::{Chart, Note};
 use anyhow::{ensure, Context, Result};
 use std::collections::HashSet;
 
-pub(super) fn merge(chart: &mut Chart) -> Result<()> {
-    let playable: HashSet<_> = chart.notes.iter().filter_map(|n| n.keysound).collect();
+pub(super) struct PlayableLayer {
+    pub pulse: u32,
+    pub length: u32,
+    pub lane: usize,
+    pub keysound: u32,
+}
+
+pub(super) fn merge(
+    chart: &mut Chart,
+    mut layers: Vec<PlayableLayer>,
+    timeline: &Timeline,
+) -> Result<()> {
+    let playable: HashSet<_> = layers.iter().map(|layer| layer.keysound).collect();
     let mut background = HashSet::new();
     chart
         .bgm
         .retain(|e| !playable.contains(&e.keysound) && background.insert(e.keysound));
-    chart
-        .notes
-        .sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms).then(a.lane.cmp(&b.lane)));
-    let mut notes = Vec::new();
-    let mut index = 0;
-    while index < chart.notes.len() {
-        let mut note = chart.notes[index];
-        let end = index
-            + chart.notes[index..]
-                .partition_point(|n| n.time_ms == note.time_ms && n.lane == note.lane);
-        let mut sounds = Vec::new();
+
+    layers.sort_by_key(|layer| (layer.pulse, layer.lane));
+    for group in layers.chunk_by(|a, b| a.pulse == b.pulse && a.lane == b.lane) {
+        let first = &group[0];
+        ensure!(
+            group.iter().all(|layer| layer.length == first.length),
+            "Layered notes have unequal lengths"
+        );
         let mut seen = HashSet::new();
-        for layer in &chart.notes[index..end] {
-            ensure!(
-                layer.end_ms == note.end_ms,
-                "Layered notes have unequal lengths"
-            );
-            if let Some(id) = layer.keysound.filter(|id| seen.insert(*id)) {
-                sounds.push(id);
-            }
-        }
-        if sounds.len() > 1 {
+        let sounds: Vec<_> = group
+            .iter()
+            .map(|layer| layer.keysound)
+            .filter(|id| seen.insert(*id))
+            .collect();
+        let keysound = if sounds.len() > 1 {
             let id = u32::try_from(chart.sample_slices.len() + chart.sound_layers.len())
                 .context("Too many sound layers")?;
             chart.sound_layers.insert(id, sounds);
-            note.keysound = Some(id);
-        }
-        notes.push(note);
-        index = end;
+            id
+        } else {
+            first.keysound
+        };
+        let pulse = u64::from(first.pulse);
+        chart.notes.push(Note {
+            time_ms: timeline.time(pulse),
+            lane: first.lane,
+            keysound: Some(keysound),
+            end_ms: (first.length > 0).then(|| timeline.time(pulse + u64::from(first.length))),
+            ..Note::default()
+        });
     }
-    chart.notes = notes;
     Ok(())
 }
