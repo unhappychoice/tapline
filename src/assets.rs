@@ -37,21 +37,7 @@ impl AssetIndex {
     }
 
     pub(crate) fn resolve_path(&self, name: &str, extensions: &[&str]) -> Option<PathBuf> {
-        let normalized = name.replace('\\', "/");
-        if normalized.contains([':', '\0']) {
-            return None;
-        }
-        let path: PathBuf = Path::new(&normalized)
-            .components()
-            .filter(|component| *component != Component::CurDir)
-            .collect();
-        if path.as_os_str().is_empty()
-            || path
-                .components()
-                .any(|c| !matches!(c, Component::Normal(_)))
-        {
-            return None;
-        }
+        let path = normalized_asset_path(name)?;
         self.find(&path).or_else(|| {
             extensions
                 .iter()
@@ -139,7 +125,20 @@ impl AssetIndex {
     }
 }
 
-fn is_link(metadata: &Metadata) -> bool {
+pub(crate) fn normalized_asset_path(name: &str) -> Option<PathBuf> {
+    let normalized = name.replace('\\', "/");
+    if normalized.contains([':', '\0']) {
+        return None;
+    }
+    let path: PathBuf = Path::new(&normalized)
+        .components()
+        .filter(|component| *component != Component::CurDir)
+        .collect();
+    (!path.as_os_str().is_empty() && path.components().all(|c| matches!(c, Component::Normal(_))))
+        .then_some(path)
+}
+
+pub(crate) fn is_link(metadata: &Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -160,7 +159,7 @@ fn normalize_filename(name: &str) -> String {
 #[cfg(test)]
 thread_local! {
     static MATCHING_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static DIRECTORY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static DIRECTORY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
