@@ -70,4 +70,4 @@ prints `audio backend unavailable` to standard error and exits with status `1`.
 | `-V, --version` | Print the package version and exit. |
 
 For key bindings, chart-format support, random seeds, and personal-best storage
-settings, see the [README](../README.md).
+settings, see the [README](https://github.com/unhappychoice/tapline/blob/main/README.md).

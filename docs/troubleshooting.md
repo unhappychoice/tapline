@@ -29,7 +29,7 @@ If the test tone plays but your chart is missing its recorded sounds, check
 that its referenced audio files are present. Run your chart without
 `--no-audio` for sound and without `--synth` to hear recorded note sounds.
 For sounds that arrive late, see
-[Fixing audio delay](../README.md#fixing-audio-delay).
+[Fixing audio delay](https://github.com/unhappychoice/tapline/blob/main/README.md#fixing-audio-delay).
 
 ## A chart's background video is missing
 
