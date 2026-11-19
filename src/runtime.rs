@@ -1255,6 +1255,56 @@ mod tests {
     }
 
     #[test]
+    fn last_key_release_judges_both_overlapping_bms_long_notes() {
+        let mut chart = crate::bms::load_bytes(
+            std::path::Path::new("overlap.bms"),
+            b"#BPM 120\n#LNMODE 1\n#LNOBJ 03\n#00151:01000100\n#00111:00020003\n",
+            0.0,
+            0,
+        )
+        .unwrap();
+        chart.keys[0] = vec!['F', 'J'];
+        let mut game = Game::new(chart);
+        let mut state = LoopState::new(Vec::new());
+        let bank = SampleBank::silent();
+        let options = PlayOptions {
+            countdown_ms: 0.0,
+            ..opts(false)
+        };
+        let mut send_key = |game: &mut Game, key, kind, now| {
+            handle_key(
+                KeyCode::Char(key),
+                kind,
+                game,
+                &bank,
+                &options,
+                &mut state,
+                now,
+            );
+        };
+
+        send_key(&mut game, 'f', KeyEventKind::Press, 2000.0);
+        send_key(&mut game, 'j', KeyEventKind::Press, 2500.0);
+        send_key(&mut game, 'f', KeyEventKind::Release, 2600.0);
+        assert_eq!((game.perfect, game.miss), (2, 0));
+        assert!(game
+            .chart
+            .notes
+            .iter()
+            .all(|note| note.held_since.is_some()));
+
+        send_key(&mut game, 'j', KeyEventKind::Release, 2750.0);
+        assert_eq!((game.perfect, game.miss), (2, 2));
+        assert!(game
+            .chart
+            .notes
+            .iter()
+            .all(|note| note.hit && note.held_since.is_none()));
+        game.check_misses(3500.0);
+        assert_eq!((game.perfect, game.miss), (2, 2));
+    }
+
+    #[test]
     fn shared_lane_long_note_waits_for_the_last_key_release() {
         [
             (5, 2, 'f', 'j'),
