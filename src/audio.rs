@@ -681,7 +681,10 @@ mod tests {
             );
         });
         let short_id = chart.sound_layers.values().next().unwrap()[0];
-        bank.samples.get_mut(&short_id).unwrap().data = Arc::new(vec![0.0; 16000]);
+        let short_sample = DecodedSample::new(2, 8000, Arc::new(vec![0.0; 16000]));
+        bank.samples.insert(short_id, short_sample);
+        let short_source = sample_source(&bank.samples[&short_id], bank.slices.get(&short_id));
+        assert_eq!(short_source.remaining_seconds(), 1.0);
         [false, true].into_iter().for_each(|auto_ks| {
             assert_eq!(
                 bank.chart_duration_ms(&chart, auto_ks, false, 0.0),
