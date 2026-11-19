@@ -83,17 +83,16 @@ fn persist_result(
     game: &game::Game,
     auto_ks: bool,
 ) -> String {
-    let Ok(mut store) = crate::results::Store::load(path) else {
-        return "Cannot read saved results".into();
-    };
-    let progress = render::format_progress(game, store.get(identity));
-    if !game.completed {
-        return progress;
-    }
-    store.record(identity, game, auto_ks);
-    match store.save(path) {
-        Ok(()) => progress,
-        Err(_) => format!("Storage error: result unsaved | {progress}"),
+    use crate::results::{self, UpdateError};
+
+    match results::update(path, identity, game, auto_ks) {
+        Ok(previous) => render::format_progress(game, previous.as_ref()),
+        Err(UpdateError::Read) => "Cannot read saved results".into(),
+        Err(UpdateError::Lock) => "Storage error: result unsaved".into(),
+        Err(UpdateError::Write(previous)) => {
+            let progress = render::format_progress(game, previous.as_ref());
+            format!("Storage error: result unsaved | {progress}")
+        }
     }
 }
 
@@ -1569,7 +1568,10 @@ mod result_tests {
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "corrupt");
         std::fs::remove_file(&path).unwrap();
+        game.score = 100;
         assert!(persist_result(&path, &id, &game, false).contains("First completed"));
+        game.score = 200;
+        assert!(persist_result(&path, &id, &game, false).contains("score +100"));
         assert!(crate::results::Store::load(&path)
             .unwrap()
             .get(&id)
