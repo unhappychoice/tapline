@@ -362,6 +362,12 @@ fn handle_key(
             };
             match kind {
                 KeyEventKind::Press if !state.paused => {
+                    if now >= game.chart.duration_ms {
+                        game.check_misses(now);
+                        if game.gameplay_ended(now) {
+                            return false;
+                        }
+                    }
                     state.pressed_keys.insert(c.to_ascii_uppercase());
                     let ks = game.hit(lane, now);
                     if !opts.auto_ks {
@@ -894,11 +900,43 @@ mod tests {
             assert_eq!((game.perfect, game.miss), (1, 0));
             assert_eq!(state.advance_completion(&mut game, 6500.0), auto_ks);
             if !auto_ks {
+                let audio_end = state.manual_audio_end_ms;
+                for now in [6500.0, 7500.0, 8500.0, 16_399.0] {
+                    handle_key(
+                        KeyCode::Char('s'),
+                        KeyEventKind::Press,
+                        &mut game,
+                        &bank,
+                        &opts,
+                        &mut state,
+                        now,
+                    );
+                    assert_eq!(state.manual_audio_end_ms, audio_end);
+                    assert!(!game.completed);
+                }
                 assert!(!state.advance_completion(&mut game, 16_399.0));
                 assert!(!game.completed);
                 assert!(state.advance_completion(&mut game, 16_432.0));
             }
         }
+    }
+
+    #[test]
+    fn lane_presses_can_judge_pending_notes_at_chart_end() {
+        let mut game = ready_game();
+        game.chart.duration_ms = 3000.0;
+        let bank = SampleBank::silent();
+        let mut state = LoopState::new(Vec::new());
+        handle_key(
+            KeyCode::Char('s'),
+            KeyEventKind::Press,
+            &mut game,
+            &bank,
+            &opts(false),
+            &mut state,
+            3000.0,
+        );
+        assert_eq!(game.perfect, 1);
     }
 
     #[test]

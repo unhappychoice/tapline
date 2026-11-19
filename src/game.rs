@@ -204,10 +204,14 @@ impl Game {
     /// Finish only after the chart duration and all pending judgments have elapsed.
     pub fn advance_completion(&mut self, now_ms: f64) -> bool {
         self.check_misses(now_ms);
-        self.completed = now_ms >= self.chart.duration_ms
-            && self.next_miss == self.chart.notes.len()
-            && self.held_notes.is_empty();
+        self.completed = self.gameplay_ended(now_ms);
         self.completed
+    }
+
+    pub(crate) fn gameplay_ended(&self, now_ms: f64) -> bool {
+        now_ms >= self.chart.duration_ms
+            && self.next_miss == self.chart.notes.len()
+            && self.held_notes.is_empty()
     }
 
     /// Judge the nearest unhit note in the lane within the inclusive hit window.
