@@ -31,15 +31,30 @@ struct DecodedSample {
     channels: u16,
     sample_rate: u32,
     data: Arc<Vec<f32>>,
+    gains: Option<[f32; 2]>,
+    // Number of playable interleaved samples in the original channel layout.
+    sample_limit: usize,
 }
 
-/// Zero-copy source over a shared sample buffer. Cloning it (and thus the
-/// backing Arc) is O(1), which lets us stream the same keysound to the mixer
-/// many times per song without cloning the PCM data.
+impl DecodedSample {
+    fn new(channels: u16, sample_rate: u32, data: Arc<Vec<f32>>) -> Self {
+        Self {
+            channels,
+            sample_rate,
+            sample_limit: data.len(),
+            data,
+            gains: None,
+        }
+    }
+}
+
+/// Plays a shared PCM buffer with per-ID gain and channel mapping.
 struct SharedSamples {
     data: Arc<Vec<f32>>,
     pos: usize,
     end: usize,
+    gains: Option<[f32; 2]>,
+    channel_repeat: usize,
     channels: u16,
     sample_rate: u32,
 }
@@ -58,9 +73,15 @@ impl Iterator for SharedSamples {
         if self.pos >= self.end {
             return None;
         }
-        let s = *self.data.get(self.pos)?;
+        let pos = self.pos;
         self.pos += 1;
-        Some(s)
+        Some(match self.gains {
+            Some(gains) => {
+                let channel = pos % usize::from(self.channels);
+                self.data[pos / self.channel_repeat] * gains[channel % 2]
+            }
+            None => self.data[pos],
+        })
     }
 }
 
@@ -367,15 +388,20 @@ fn sample_source(s: &DecodedSample, slice: Option<&crate::chart::SampleSlice>) -
     let frame = |ms: f64| (ms / 1000.0 * s.sample_rate as f64).round() as usize;
     let start_frame = slice.map_or(0, |slice| frame(slice.start_ms));
     let end_frame = slice.and_then(|slice| slice.duration_ms.map(|d| frame(slice.start_ms + d)));
+    let channels = usize::from(s.channels);
+    let sample_offset = |frame: usize| frame.saturating_mul(channels).min(s.sample_limit);
+    let channel_repeat = if channels == 1 && s.gains.is_some() {
+        2
+    } else {
+        1
+    };
     SharedSamples {
         data: Arc::clone(&s.data),
-        pos: start_frame
-            .saturating_mul(s.channels as usize)
-            .min(s.data.len()),
-        end: end_frame.map_or(s.data.len(), |f| {
-            f.saturating_mul(s.channels as usize).min(s.data.len())
-        }),
-        channels: s.channels,
+        pos: sample_offset(start_frame) * channel_repeat,
+        end: end_frame.map_or(s.sample_limit, sample_offset) * channel_repeat,
+        gains: s.gains,
+        channel_repeat,
+        channels: s.channels * channel_repeat as u16,
         sample_rate: s.sample_rate,
     }
 }
@@ -421,31 +447,12 @@ fn apply_settings(sample: &mut DecodedSample, settings: &crate::sample_settings:
         * 2.0_f64.powf((settings.pitch.unwrap_or(60) as f64 - 60.0) / 12.0);
     sample.sample_rate = rate.round().clamp(1.0, u32::MAX as f64) as u32;
     let (left, right) = settings.gains();
-    if left != 1.0 || right != 1.0 {
-        let channels = sample.channels as usize;
-        let mut data = Vec::with_capacity(sample.data.len() * if channels == 1 { 2 } else { 1 });
-        sample.data.chunks(channels).for_each(|frame| {
-            if channels == 1 {
-                data.extend([frame[0] * left, frame[0] * right]);
-            } else {
-                data.extend(
-                    frame
-                        .iter()
-                        .enumerate()
-                        .map(|(i, value)| value * if i % 2 == 0 { left } else { right }),
-                );
-            }
-        });
-        sample.data = Arc::new(data);
-        sample.channels = sample.channels.max(2);
-    }
+    sample.gains = (left != 1.0 || right != 1.0).then_some([left, right]);
     if let Some(length) = settings.length.filter(|&length| length > 0) {
         // WAVCMD time units are half milliseconds; truncate only on frame boundaries.
         let frames = u64::from(sample.sample_rate) * u64::from(length) / 2000;
         let count = frames.saturating_mul(u64::from(sample.channels));
-        if count < sample.data.len() as u64 {
-            sample.data = Arc::new(sample.data[..count as usize].to_vec());
-        }
+        sample.sample_limit = count.min(sample.data.len() as u64) as usize;
     }
 }
 
@@ -485,11 +492,7 @@ fn decode_capped(path: &std::path::Path, max_samples: usize) -> anyhow::Result<D
     let channels = decoder.channels().get();
     let sample_rate = decoder.sample_rate().get();
     let data = collect_capped(decoder, max_samples)?;
-    Ok(DecodedSample {
-        channels,
-        sample_rate,
-        data: Arc::new(data),
-    })
+    Ok(DecodedSample::new(channels, sample_rate, Arc::new(data)))
 }
 
 /// `.take()` stops pulling further items from `samples` once the cap is
@@ -678,7 +681,10 @@ mod tests {
             );
         });
         let short_id = chart.sound_layers.values().next().unwrap()[0];
-        bank.samples.get_mut(&short_id).unwrap().data = Arc::new(vec![0.0; 16000]);
+        let short_sample = DecodedSample::new(2, 8000, Arc::new(vec![0.0; 16000]));
+        bank.samples.insert(short_id, short_sample);
+        let short_source = sample_source(&bank.samples[&short_id], bank.slices.get(&short_id));
+        assert_eq!(short_source.remaining_seconds(), 1.0);
         [false, true].into_iter().for_each(|auto_ks| {
             assert_eq!(
                 bank.chart_duration_ms(&chart, auto_ks, false, 0.0),
@@ -857,14 +863,8 @@ mod tests {
         chart.mines.clear();
         chart.bgm[0].time_ms = 1000.0;
         assert_eq!(bank.chart_duration_ms(&chart, true, false, 0.0), 11032.0);
-        bank.samples.insert(
-            2,
-            DecodedSample {
-                channels: 1,
-                sample_rate: 8000,
-                data: Arc::new(vec![0.0; 800]),
-            },
-        );
+        bank.samples
+            .insert(2, DecodedSample::new(1, 8000, Arc::new(vec![0.0; 800])));
         chart.notes[0].time_ms = 9000.0;
         chart.notes[0].keysound = Some(2);
         assert_eq!(bank.chart_duration_ms(&chart, true, false, 0.0), 11032.0);
@@ -1097,11 +1097,7 @@ mod tests {
 
     #[test]
     fn settings_apply_pan_volume_frequency_pitch_and_frame_aligned_length() {
-        let mut sample = DecodedSample {
-            channels: 1,
-            sample_rate: 1000,
-            data: Arc::new(vec![1.0; 20]),
-        };
+        let mut sample = DecodedSample::new(1, 1000, Arc::new(vec![1.0; 20]));
         let settings = crate::sample_settings::SampleSettings {
             pan: 10000,
             attenuation: -2000,
@@ -1111,10 +1107,13 @@ mod tests {
             length: Some(2),
         };
         apply_settings(&mut sample, &settings);
-        assert_eq!(sample.sample_rate, 4000);
-        assert_eq!(sample.channels, 2);
-        assert_eq!(sample.data.len(), 8);
-        sample.data.chunks(2).for_each(|frame| {
+        assert_eq!(sample.data.len(), 20);
+        let source = sample_source(&sample, None);
+        assert_eq!(source.sample_rate().get(), 4000);
+        assert_eq!(source.channels().get(), 2);
+        let output: Vec<_> = source.collect();
+        assert_eq!(output.len(), 8);
+        output.as_chunks::<2>().0.iter().for_each(|frame| {
             assert_eq!(frame[0], 0.0);
             assert!((frame[1] - 0.05).abs() < 1e-6);
         });
@@ -1146,35 +1145,30 @@ mod tests {
     #[test]
     fn stereo_pan_preserves_channels_and_does_not_modify_shared_original() {
         let original = Arc::new(vec![0.5, 0.25]);
-        let mut sample = DecodedSample {
-            channels: 2,
-            sample_rate: 44100,
-            data: original.clone(),
-        };
+        let mut sample = DecodedSample::new(2, 44100, original.clone());
         let settings = crate::sample_settings::SampleSettings {
             pan: -2000,
             ..Default::default()
         };
         apply_settings(&mut sample, &settings);
-        assert_eq!(sample.data[0], 0.5);
-        assert!((sample.data[1] - 0.025).abs() < 1e-6);
+        let mut source = sample_source(&sample, None);
+        assert_eq!(source.channels().get(), 2);
+        assert_eq!(source.next(), Some(0.5));
+        assert!((source.next().unwrap() - 0.025).abs() < 1e-6);
+        assert!(Arc::ptr_eq(&sample.data, &original));
         assert_eq!(*original, vec![0.5, 0.25]);
         let settings = crate::sample_settings::SampleSettings {
             attenuation: -10000,
             ..Default::default()
         };
         apply_settings(&mut sample, &settings);
-        assert_eq!(*sample.data, vec![0.0, 0.0]);
+        assert_eq!(sample_source(&sample, None).collect::<Vec<_>>(), [0.0, 0.0]);
     }
 
     #[test]
     fn processed_samples_use_updated_frames_when_sliced() {
         let original = Arc::new(vec![1.0; 20]);
-        let mut sample = DecodedSample {
-            channels: 1,
-            sample_rate: 1000,
-            data: original.clone(),
-        };
+        let mut sample = DecodedSample::new(1, 1000, original.clone());
         apply_settings(
             &mut sample,
             &crate::sample_settings::SampleSettings {
@@ -1295,11 +1289,7 @@ mod tests {
         [1, 2].into_iter().for_each(|id| {
             bank.samples.insert(
                 id,
-                DecodedSample {
-                    channels: 1,
-                    sample_rate: 1000,
-                    data: Arc::new(vec![0.0, 0.4, 0.8, 1.0]),
-                },
+                DecodedSample::new(1, 1000, Arc::new(vec![0.0, 0.4, 0.8, 1.0])),
             );
         });
         let output: Vec<Vec<f32>> = bank
@@ -1329,11 +1319,7 @@ mod tests {
 
     #[test]
     fn slice_source_preserves_stereo_frames_and_clamps_to_audio_length() {
-        let sample = DecodedSample {
-            channels: 2,
-            sample_rate: 1000,
-            data: Arc::new((0..20).map(|n| n as f32).collect()),
-        };
+        let sample = DecodedSample::new(2, 1000, Arc::new((0..20).map(|n| n as f32).collect()));
         let slice = crate::chart::SampleSlice {
             start_ms: 2.0,
             duration_ms: Some(3.0),
@@ -1432,11 +1418,7 @@ mod tests {
     }
 
     fn sustained_sample() -> DecodedSample {
-        DecodedSample {
-            channels: 1,
-            sample_rate: 44_100,
-            data: Arc::new(vec![0.5; 44_100]),
-        }
+        DecodedSample::new(1, 44_100, Arc::new(vec![0.5; 44_100]))
     }
 
     #[test]
@@ -1556,11 +1538,7 @@ mod tests {
         let (samples, failures) = decode_all_with(&paths, |path| {
             assert_eq!(path, &PathBuf::from("sample.wav"));
             calls.fetch_add(1, Ordering::Relaxed);
-            Ok(DecodedSample {
-                channels: 2,
-                sample_rate: 44_100,
-                data: Arc::new(vec![0.25, -0.25]),
-            })
+            Ok(DecodedSample::new(2, 44_100, Arc::new(vec![0.25, -0.25])))
         });
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
@@ -1569,16 +1547,52 @@ mod tests {
         (1..=10).for_each(|id| {
             let sample = &samples[&id];
             assert!(Arc::ptr_eq(&sample.data, &samples[&1].data));
-            let source = SharedSamples {
-                data: Arc::clone(&sample.data),
-                pos: 0,
-                end: usize::MAX,
-                channels: sample.channels,
-                sample_rate: sample.sample_rate,
-            };
+            let source = sample_source(sample, None);
             assert_eq!(source.channels().get(), 2);
             assert_eq!(source.sample_rate().get(), 44_100);
             assert_eq!(source.collect::<Vec<_>>(), vec![0.25, -0.25]);
+        });
+    }
+
+    #[test]
+    fn aliases_share_decoded_pcm_and_play_with_independent_gains_and_pan() {
+        let path = std::env::temp_dir().join(format!("tapline-aliases-{}.wav", std::process::id()));
+        let mut wav = silence_wav(2);
+        wav[44..46].copy_from_slice(&16384i16.to_le_bytes());
+        wav[46..48].copy_from_slice(&(-8192i16).to_le_bytes());
+        std::fs::write(&path, wav).unwrap();
+        let paths = (1..=64).map(|id| (id, path.clone())).collect();
+        let settings = (1..=64)
+            .map(|id| {
+                let pan = if id % 2 == 0 { 10000 } else { -10000 };
+                (
+                    id,
+                    crate::sample_settings::SampleSettings {
+                        pan,
+                        volume: Some(id),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+
+        let bank = SampleBank::with_settings(&paths, &settings);
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(bank.sample_count(), 64);
+        assert_eq!(bank.decode_failures, 0);
+        let shared_pcm = &bank.samples[&1].data;
+        assert_eq!(shared_pcm.as_slice(), [0.5, -0.25]);
+        (1..=64).for_each(|id| {
+            assert!(Arc::ptr_eq(&bank.samples[&id].data, shared_pcm));
+            let gain = id as f32 / 100.0 * 0.5;
+            let expected = if id % 2 == 0 {
+                [0.0, 0.5 * gain, 0.0, -0.25 * gain]
+            } else {
+                [0.5 * gain, 0.0, -0.25 * gain, 0.0]
+            };
+            let source = bank.sample_with_gain(id, 0.5).unwrap();
+            assert_eq!(source.channels().get(), 2);
+            assert_eq!(source.collect::<Vec<_>>(), expected);
         });
     }
 
@@ -1595,11 +1609,7 @@ mod tests {
         let (samples, failures) = decode_all_with(&paths, |path| {
             calls.fetch_add(1, Ordering::Relaxed);
             anyhow::ensure!(path == &PathBuf::from("valid.wav"), "missing sample");
-            Ok(DecodedSample {
-                channels: 1,
-                sample_rate: 44_100,
-                data: Arc::new(vec![0.5]),
-            })
+            Ok(DecodedSample::new(1, 44_100, Arc::new(vec![0.5])))
         });
 
         assert_eq!(calls.load(Ordering::Relaxed), 2);
