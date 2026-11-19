@@ -801,7 +801,7 @@ fn draw_result_to<W: Write>(out: &mut W, game: &Game, cols: u16, rows: u16) -> a
     draw_result_content(out, game, cols, rows, "", ResultDestination::Exit)
 }
 
-fn draw_result_content<W: Write>(
+pub(crate) fn draw_result_content<W: Write>(
     out: &mut W,
     game: &Game,
     cols: u16,

@@ -412,15 +412,23 @@ fn show_result(
     progress: &str,
     destination: ResultDestination,
 ) -> Result<()> {
-    execute!(out, terminal::Clear(terminal::ClearType::All))?;
-    render::draw_result_with_destination(out, game, progress, destination)?;
+    wait_for_result_dismissal(terminal::size()?, event::read, |cols, rows| {
+        queue!(out, terminal::Clear(terminal::ClearType::All))?;
+        render::draw_result_content(out, game, cols, rows, progress, destination)
+    })
+}
+
+fn wait_for_result_dismissal(
+    (cols, rows): (u16, u16),
+    mut read: impl FnMut() -> std::io::Result<Event>,
+    mut draw: impl FnMut(u16, u16) -> Result<()>,
+) -> Result<()> {
+    draw(cols, rows)?;
     loop {
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(k) = event::read()? {
-                if k.kind == KeyEventKind::Press {
-                    return Ok(());
-                }
-            }
+        match read()? {
+            Event::Resize(cols, rows) => draw(cols, rows)?,
+            Event::Key(key) if key.kind == KeyEventKind::Press => return Ok(()),
+            _ => {}
         }
     }
 }
@@ -1617,6 +1625,51 @@ mod tests {
 #[cfg(test)]
 mod result_tests {
     use super::*;
+
+    #[test]
+    fn result_redraws_at_each_size_until_a_key_press() {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+
+        let game = game::Game::new(chart::built_in(120.0, 0.0));
+        let mut events = [
+            Event::Resize(80, 24),
+            Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+                KeyEventKind::Release,
+            )),
+            Event::Resize(29, 5),
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Event::Resize(80, 24),
+        ]
+        .into_iter();
+        let mut frames = Vec::new();
+        wait_for_result_dismissal(
+            (80, 5),
+            || Ok(events.next().expect("expected a dismissal key press")),
+            |cols, rows| {
+                let mut frame = Vec::new();
+                render::draw_result_content(
+                    &mut frame,
+                    &game,
+                    cols,
+                    rows,
+                    "Interrupted",
+                    ResultDestination::Selector,
+                )?;
+                frames.push(String::from_utf8(frame)?);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(frames.len(), 3);
+        assert!(!frames[0].contains("score"));
+        assert!(frames[1].contains("score"));
+        assert!(!frames[2].contains("score"));
+        assert!(frames[2].contains("any key: return to selector"));
+        assert_eq!(events.next(), Some(Event::Resize(80, 24)));
+    }
 
     #[test]
     fn storage_failures_are_non_fatal_and_corrupt_records_are_preserved() {
