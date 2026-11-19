@@ -2,7 +2,7 @@ use crate::fs_guard;
 use anyhow::{ensure, Context, Result};
 use std::{io::Read, path::Path};
 
-const MAX_CHART_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_CHART_BYTES: u64 = 16 * 1024 * 1024;
 
 pub(crate) fn read(path: &Path) -> Result<Vec<u8>> {
     read_regular(path).with_context(|| format!("cannot read chart {}", path.display()))

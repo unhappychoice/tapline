@@ -76,6 +76,40 @@ fn visits_reuse_unchanged_metadata_and_refresh_library() {
 }
 
 #[test]
+#[cfg(unix)]
+fn rescan_skips_an_oversized_symlink_target_after_a_raced_read() {
+    use std::{fs, os::unix::fs::symlink};
+
+    let dir = super::super::tests::tempdir();
+    let chart = dir.join("linked.bms");
+    let small = dir.join("small.txt");
+    let large = dir.join("large.txt");
+    fs::write(&small, "#TITLE Linked chart").unwrap();
+    fs::File::create(&large)
+        .unwrap()
+        .set_len(chart_file::MAX_CHART_BYTES + 1)
+        .unwrap();
+    symlink(&large, &chart).unwrap();
+
+    let mut discovery = Discovery::default();
+    let seed = || 0;
+    let first = discovery.chart(&chart, &seed, |path| {
+        fs::remove_file(path)?;
+        symlink(&small, path)?;
+        let bytes = chart_file::read(path)?;
+        fs::remove_file(path)?;
+        symlink(&large, path)?;
+        Ok(bytes)
+    });
+
+    assert_eq!(first.unwrap().title, "Linked chart");
+    let was_cached = discovery.metadata.contains_key(&chart);
+    assert!(discovery.scan(&dir, &seed).is_empty());
+    assert!(!was_cached);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn seeded_branches_are_redrawn_and_match_gameplay_each_visit() {
     let dir = super::super::tests::tempdir();
     std::fs::write(
