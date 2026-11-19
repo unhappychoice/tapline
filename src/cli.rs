@@ -199,13 +199,15 @@ fn default_songs_dir() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let p = Path::new(&home).join(".tapline").join("songs");
-        if p.is_dir() {
-            return Some(p);
-        }
-    }
-    None
+    [
+        "HOME",
+        #[cfg(windows)]
+        "USERPROFILE",
+    ]
+    .into_iter()
+    .filter_map(std::env::var_os)
+    .map(|home| Path::new(&home).join(".tapline").join("songs"))
+    .find(|path| path.is_dir())
 }
 
 #[cfg(test)]
@@ -376,6 +378,7 @@ mod tests {
     struct EnvSnapshot {
         songs_dir: Option<std::ffi::OsString>,
         home: Option<std::ffi::OsString>,
+        user_profile: Option<std::ffi::OsString>,
         cwd: PathBuf,
     }
 
@@ -384,6 +387,7 @@ mod tests {
             Self {
                 songs_dir: std::env::var_os("TAPLINE_SONGS_DIR"),
                 home: std::env::var_os("HOME"),
+                user_profile: std::env::var_os("USERPROFILE"),
                 cwd: std::env::current_dir().unwrap(),
             }
         }
@@ -398,6 +402,10 @@ mod tests {
             match &self.home {
                 Some(v) => std::env::set_var("HOME", v),
                 None => std::env::remove_var("HOME"),
+            }
+            match &self.user_profile {
+                Some(v) => std::env::set_var("USERPROFILE", v),
+                None => std::env::remove_var("USERPROFILE"),
             }
             let _ = std::env::set_current_dir(&self.cwd);
         }
@@ -427,6 +435,7 @@ mod tests {
         let isolated = tempdir();
         std::env::set_current_dir(&isolated).unwrap();
         std::env::remove_var("HOME");
+        std::env::remove_var("USERPROFILE");
         assert!(
             default_songs_dir().is_none(),
             "env var pointing at a missing dir should not survive"
@@ -462,11 +471,42 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn default_songs_dir_falls_back_to_windows_profile_without_home() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _snapshot = EnvSnapshot::capture();
+        let workspace = tempdir();
+        let profile = tempdir();
+        let songs = profile.join(".tapline").join("songs");
+        std::fs::create_dir_all(&songs).unwrap();
+        std::fs::write(
+            songs.join("song.bms"),
+            "#TITLE Profile Song\n#BPM 120\n#00111:01\n",
+        )
+        .unwrap();
+        std::env::remove_var("TAPLINE_SONGS_DIR");
+        std::env::remove_var("HOME");
+        std::env::set_var("USERPROFILE", &profile);
+        std::env::set_current_dir(&workspace).unwrap();
+
+        assert_eq!(default_songs_dir().as_deref(), Some(songs.as_path()));
+        assert_eq!(select::SelectorState::default().scan(&songs).len(), 1);
+
+        for candidate in ["tests/fixtures", "songs"] {
+            std::fs::create_dir_all(workspace.join(candidate)).unwrap();
+            assert_eq!(default_songs_dir().as_deref(), Some(Path::new(candidate)));
+        }
+        std::env::set_var("TAPLINE_SONGS_DIR", &profile);
+        assert_eq!(default_songs_dir().as_deref(), Some(profile.as_path()));
+    }
+
+    #[test]
     fn default_songs_dir_gives_up_when_nothing_matches() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _snapshot = EnvSnapshot::capture();
         std::env::remove_var("TAPLINE_SONGS_DIR");
         std::env::remove_var("HOME");
+        std::env::remove_var("USERPROFILE");
         let isolated = tempdir();
         std::env::set_current_dir(&isolated).unwrap();
         assert!(default_songs_dir().is_none());

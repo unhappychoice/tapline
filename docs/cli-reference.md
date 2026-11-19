@@ -17,7 +17,9 @@ automatic directory discovery. These options can be combined, but only the
 highest-priority choice is used.
 
 Automatic discovery chooses the first existing directory from
-`$TAPLINE_SONGS_DIR`, `./songs`, `./tests/fixtures`, and `~/.tapline/songs`.
+`$TAPLINE_SONGS_DIR`, `./songs`, `./tests/fixtures`, and `$HOME/.tapline/songs`.
+On Windows, `%USERPROFILE%\.tapline\songs` is the final fallback if the
+`HOME` directory candidate is unavailable.
 If that directory contains no charts, the built-in chart plays; discovery does
 not continue to later directories. The same fallback applies to an empty or
 missing explicit `--dir`.

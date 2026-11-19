@@ -92,7 +92,7 @@ Without `--file` or `--built-in`, tapline scans the first directory it finds:
 1. `$TAPLINE_SONGS_DIR`
 2. `./songs`
 3. `./tests/fixtures`
-4. `~/.tapline/songs`
+4. `~/.tapline/songs`, with `%USERPROFILE%\.tapline\songs` as a Windows fallback
 
 If nothing is found, the built-in practice chart plays. Scanning is recursive
 (up to 5 levels deep) and picks up `.bms`, `.bml`, `.bme`, `.pms`, `.bmson`.
