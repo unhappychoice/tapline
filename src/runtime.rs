@@ -169,7 +169,8 @@ impl LoopState {
         if paused != self.paused {
             bank.set_paused(paused);
         }
-        if self.paused && !paused {
+        if self.paused && !paused && !self.deferred_releases.is_empty() {
+            game.check_misses(self.clock_ms);
             self.deferred_releases
                 .drain(..)
                 .for_each(|lane| game.release(lane, self.clock_ms));
@@ -362,6 +363,7 @@ fn handle_key(
             };
             match kind {
                 KeyEventKind::Press if !state.paused => {
+                    game.check_misses(now);
                     state.pressed_keys.insert(c.to_ascii_uppercase());
                     let ks = game.hit(lane, now);
                     if !opts.auto_ks {
@@ -382,6 +384,7 @@ fn handle_key(
                     if state.paused {
                         state.deferred_releases.push(lane);
                     } else {
+                        game.check_misses(now);
                         game.release(lane, now);
                     }
                 }
@@ -409,15 +412,23 @@ fn show_result(
     progress: &str,
     destination: ResultDestination,
 ) -> Result<()> {
-    execute!(out, terminal::Clear(terminal::ClearType::All))?;
-    render::draw_result_with_destination(out, game, progress, destination)?;
+    wait_for_result_dismissal(terminal::size()?, event::read, |cols, rows| {
+        queue!(out, terminal::Clear(terminal::ClearType::All))?;
+        render::draw_result_content(out, game, cols, rows, progress, destination)
+    })
+}
+
+fn wait_for_result_dismissal(
+    (cols, rows): (u16, u16),
+    mut read: impl FnMut() -> std::io::Result<Event>,
+    mut draw: impl FnMut(u16, u16) -> Result<()>,
+) -> Result<()> {
+    draw(cols, rows)?;
     loop {
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(k) = event::read()? {
-                if k.kind == KeyEventKind::Press {
-                    return Ok(());
-                }
-            }
+        match read()? {
+            Event::Resize(cols, rows) => draw(cols, rows)?,
+            Event::Key(key) if key.kind == KeyEventKind::Press => return Ok(()),
+            _ => {}
         }
     }
 }
@@ -1255,6 +1266,56 @@ mod tests {
     }
 
     #[test]
+    fn last_key_release_judges_both_overlapping_bms_long_notes() {
+        let mut chart = crate::bms::load_bytes(
+            std::path::Path::new("overlap.bms"),
+            b"#BPM 120\n#LNMODE 1\n#LNOBJ 03\n#00151:01000100\n#00111:00020003\n",
+            0.0,
+            0,
+        )
+        .unwrap();
+        chart.keys[0] = vec!['F', 'J'];
+        let mut game = Game::new(chart);
+        let mut state = LoopState::new(Vec::new());
+        let bank = SampleBank::silent();
+        let options = PlayOptions {
+            countdown_ms: 0.0,
+            ..opts(false)
+        };
+        let mut send_key = |game: &mut Game, key, kind, now| {
+            handle_key(
+                KeyCode::Char(key),
+                kind,
+                game,
+                &bank,
+                &options,
+                &mut state,
+                now,
+            );
+        };
+
+        send_key(&mut game, 'f', KeyEventKind::Press, 2000.0);
+        send_key(&mut game, 'j', KeyEventKind::Press, 2500.0);
+        send_key(&mut game, 'f', KeyEventKind::Release, 2600.0);
+        assert_eq!((game.perfect, game.miss), (2, 0));
+        assert!(game
+            .chart
+            .notes
+            .iter()
+            .all(|note| note.held_since.is_some()));
+
+        send_key(&mut game, 'j', KeyEventKind::Release, 2750.0);
+        assert_eq!((game.perfect, game.miss), (2, 2));
+        assert!(game
+            .chart
+            .notes
+            .iter()
+            .all(|note| note.hit && note.held_since.is_none()));
+        game.check_misses(3500.0);
+        assert_eq!((game.perfect, game.miss), (2, 2));
+    }
+
+    #[test]
     fn shared_lane_long_note_waits_for_the_last_key_release() {
         [
             (5, 2, 'f', 'j'),
@@ -1496,6 +1557,74 @@ mod tests {
     }
 
     #[test]
+    fn lane_press_applies_only_misses_strictly_past_the_deadline() {
+        for (now, misses, combo) in [(1160.0, 0, 2), (1162.0, 1, 1)] {
+            let notes = [(800.0, 0), (1000.0, 0), (1165.0, 1)].map(|(time_ms, lane)| Note {
+                time_ms,
+                lane,
+                ..Note::default()
+            });
+            let mut game = Game::new(base_chart(4, notes.to_vec()));
+            let mut state = LoopState::new(Vec::new());
+            let bank = SampleBank::silent();
+            let options = PlayOptions {
+                countdown_ms: 0.0,
+                ..opts(false)
+            };
+            game.hit(0, 800.0);
+            game.check_misses(1158.0);
+            let score = game.score;
+            handle_key(
+                KeyCode::Char('d'),
+                KeyEventKind::Press,
+                &mut game,
+                &bank,
+                &options,
+                &mut state,
+                now,
+            );
+            assert_eq!((game.perfect, game.miss, game.combo), (2, misses, combo));
+            assert_eq!(game.score - score, game::Judgment::Perfect.points() + combo);
+        }
+    }
+
+    #[test]
+    fn lane_release_applies_overdue_charge_note_tail_once() {
+        let note = Note {
+            time_ms: 3000.0,
+            end_ms: Some(5000.0),
+            ..Note::default()
+        };
+        let mut game = Game::new(base_chart(4, vec![note]));
+        let mut state = LoopState::new(Vec::new());
+        let bank = SampleBank::silent();
+        let options = opts(false);
+        handle_key(
+            KeyCode::Char('s'),
+            KeyEventKind::Press,
+            &mut game,
+            &bank,
+            &options,
+            &mut state,
+            3000.0,
+        );
+        game.check_misses(5160.0);
+        assert_eq!(game.perfect, 1);
+        handle_key(
+            KeyCode::Char('s'),
+            KeyEventKind::Release,
+            &mut game,
+            &bank,
+            &options,
+            &mut state,
+            5162.0,
+        );
+        game.check_misses(5170.0);
+        assert_eq!((game.perfect, game.miss, game.combo), (2, 0, 2));
+        assert!(game.chart.notes[0].hit);
+    }
+
+    #[test]
     fn handle_key_treats_unbound_letters_as_noops() {
         let mut g = ready_game();
         let mut s = LoopState::new(Vec::new());
@@ -1546,6 +1675,51 @@ mod tests {
 #[cfg(test)]
 mod result_tests {
     use super::*;
+
+    #[test]
+    fn result_redraws_at_each_size_until_a_key_press() {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+
+        let game = game::Game::new(chart::built_in(120.0, 0.0));
+        let mut events = [
+            Event::Resize(80, 24),
+            Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+                KeyEventKind::Release,
+            )),
+            Event::Resize(29, 5),
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Event::Resize(80, 24),
+        ]
+        .into_iter();
+        let mut frames = Vec::new();
+        wait_for_result_dismissal(
+            (80, 5),
+            || Ok(events.next().expect("expected a dismissal key press")),
+            |cols, rows| {
+                let mut frame = Vec::new();
+                render::draw_result_content(
+                    &mut frame,
+                    &game,
+                    cols,
+                    rows,
+                    "Interrupted",
+                    ResultDestination::Selector,
+                )?;
+                frames.push(String::from_utf8(frame)?);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(frames.len(), 3);
+        assert!(!frames[0].contains("score"));
+        assert!(frames[1].contains("score"));
+        assert!(!frames[2].contains("score"));
+        assert!(frames[2].contains("any key: return to selector"));
+        assert_eq!(events.next(), Some(Event::Resize(80, 24)));
+    }
 
     #[test]
     fn storage_failures_are_non_fatal_and_corrupt_records_are_preserved() {
