@@ -275,15 +275,32 @@ fn display_key(c: &char) -> String {
     }
 }
 
-pub fn format_audio_badge(audio_on: bool, samples: usize, failures: usize) -> String {
-    if !audio_on {
-        return "silent (audio backend unavailable)".to_string();
+pub enum AudioMode {
+    Silent,
+    Samples,
+    Synth,
+}
+
+pub fn format_audio_badge(
+    mode: AudioMode,
+    audio_on: bool,
+    samples: usize,
+    failures: usize,
+) -> String {
+    match mode {
+        AudioMode::Silent => return "silent (--no-audio)".to_string(),
+        _ if !audio_on => return "silent (audio backend unavailable)".to_string(),
+        _ => {}
     }
-    match (samples, failures) {
-        (0, 0) => "audio on · synth mode".to_string(),
-        (_, 0) => format!("audio on · {samples} samples"),
-        (_, _) => format!("audio on · {samples} samples · {failures} failed to decode"),
+    let mut badge = match (mode, samples, failures) {
+        (_, 0, 0) => "audio on · synth mode".to_string(),
+        (AudioMode::Synth, _, _) => format!("synth notes · {samples} samples"),
+        _ => format!("audio on · {samples} samples"),
+    };
+    if failures > 0 {
+        badge.push_str(&format!(" · {failures} failed to decode"));
     }
+    badge
 }
 
 /// Compact HUD tag summarising the base/overlay/poor BGA slots the way a
@@ -655,13 +672,14 @@ pub fn draw_intro(
     countdown_ms: f64,
     audio_on: bool,
 ) -> anyhow::Result<()> {
-    draw_intro_full(out, game, countdown_ms, audio_on, 0, 0)
+    draw_intro_full(out, game, countdown_ms, AudioMode::Samples, audio_on, 0, 0)
 }
 
 pub fn draw_intro_full(
     out: &mut impl Write,
     game: &Game,
     countdown_ms: f64,
+    mode: AudioMode,
     audio_on: bool,
     samples_loaded: usize,
     decode_failures: usize,
@@ -728,7 +746,7 @@ pub fn draw_intro_full(
         style::SetAttribute(style::Attribute::Reset),
         ResetColor
     )?;
-    let badge = format_audio_badge(audio_on, samples_loaded, decode_failures);
+    let badge = format_audio_badge(mode, audio_on, samples_loaded, decode_failures);
     queue!(
         out,
         cursor::MoveTo(
@@ -801,7 +819,7 @@ fn draw_result_to<W: Write>(out: &mut W, game: &Game, cols: u16, rows: u16) -> a
     draw_result_content(out, game, cols, rows, "", ResultDestination::Exit)
 }
 
-fn draw_result_content<W: Write>(
+pub(crate) fn draw_result_content<W: Write>(
     out: &mut W,
     game: &Game,
     cols: u16,
@@ -1587,24 +1605,58 @@ mod tests {
     #[test]
     fn audio_badge_reports_the_backend_being_missing() {
         assert_eq!(
-            format_audio_badge(false, 0, 0),
+            format_audio_badge(AudioMode::Samples, false, 0, 0),
             "silent (audio backend unavailable)"
         );
     }
 
     #[test]
     fn audio_badge_says_synth_when_no_samples_and_no_failures() {
-        assert_eq!(format_audio_badge(true, 0, 0), "audio on · synth mode");
+        assert_eq!(
+            format_audio_badge(AudioMode::Samples, true, 0, 0),
+            "audio on · synth mode"
+        );
     }
 
     #[test]
     fn audio_badge_reports_a_healthy_sample_bank() {
-        assert_eq!(format_audio_badge(true, 12, 0), "audio on · 12 samples");
+        assert_eq!(
+            format_audio_badge(AudioMode::Samples, true, 12, 0),
+            "audio on · 12 samples"
+        );
     }
 
     #[test]
     fn audio_badge_calls_out_decode_failures_when_present() {
-        assert!(format_audio_badge(true, 8, 3).contains("3 failed"));
+        assert!(format_audio_badge(AudioMode::Samples, true, 8, 3).contains("3 failed"));
+    }
+
+    #[test]
+    fn audio_badge_reports_intentional_silence() {
+        assert_eq!(
+            format_audio_badge(AudioMode::Silent, false, 0, 0),
+            "silent (--no-audio)"
+        );
+    }
+
+    #[test]
+    fn audio_badge_reports_backend_failure_in_synth_mode() {
+        assert_eq!(
+            format_audio_badge(AudioMode::Synth, false, 0, 0),
+            "silent (audio backend unavailable)"
+        );
+    }
+
+    #[test]
+    fn audio_badge_reports_synth_notes_alongside_decoded_samples() {
+        assert_eq!(
+            format_audio_badge(AudioMode::Synth, true, 12, 0),
+            "synth notes · 12 samples"
+        );
+        assert_eq!(
+            format_audio_badge(AudioMode::Synth, true, 8, 3),
+            "synth notes · 8 samples · 3 failed to decode"
+        );
     }
 
     #[test]

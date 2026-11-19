@@ -5,7 +5,7 @@ mod timing;
 
 use crate::assets::AssetIndex;
 use crate::bms::ChartMeta;
-use crate::chart::{BgaEvent, BgaLayer, BgmEvent, Chart, Lane, Note, SampleSlice};
+use crate::chart::{BgaEvent, BgaLayer, BgmEvent, Chart, Lane, SampleSlice};
 use anyhow::{ensure, Context, Result};
 use model::{Bmson, SoundChannel};
 use std::path::{Path, PathBuf};
@@ -49,10 +49,11 @@ pub(crate) fn load_bytes(path: &Path, bytes: &[u8], lead_in_ms: f64) -> Result<C
     };
     let dir = path.parent().unwrap_or(Path::new("."));
     let assets = AssetIndex::new(dir);
+    let mut playable = Vec::new();
     for channel in &data.sound_channels {
-        add_channel(&mut chart, channel, &timeline, &assets, mode)?;
+        add_channel(&mut chart, &mut playable, channel, &timeline, &assets, mode)?;
     }
-    layers::merge(&mut chart)?;
+    layers::merge(&mut chart, playable, &timeline)?;
     for image in &data.bga.bga_header {
         if let Some(path) = asset_path(&assets, &image.name, &[]) {
             chart.bmp_paths.insert(image.id, path);
@@ -111,6 +112,7 @@ fn parse(path: &Path, bytes: &[u8]) -> Result<Bmson> {
 
 fn add_channel(
     chart: &mut Chart,
+    playable: &mut Vec<layers::PlayableLayer>,
     channel: &SoundChannel,
     timeline: &Timeline,
     assets: &AssetIndex,
@@ -142,13 +144,11 @@ fn add_channel(
         );
         for note in &notes[index..end] {
             if let Some(lane) = lane(note.x.unwrap_or(0), chart.lane_count, mode) {
-                chart.notes.push(Note {
-                    time_ms: time,
+                playable.push(layers::PlayableLayer {
+                    pulse: note.y,
+                    length: note.l,
                     lane,
-                    keysound: Some(id),
-                    end_ms: (note.l > 0)
-                        .then(|| timeline.time(u64::from(note.y) + u64::from(note.l))),
-                    ..Note::default()
+                    keysound: id,
                 });
             } else {
                 chart.bgm.push(BgmEvent {

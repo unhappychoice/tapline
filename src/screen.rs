@@ -18,19 +18,22 @@ pub struct Screen {
     pending: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Cell {
     ch: char,
+    marks: String,
     style: Style,
 }
 
 const BLANK: Cell = Cell {
     ch: ' ',
+    marks: String::new(),
     style: Style::DEFAULT,
 };
 /// Never matches drawn content, forcing a cell to be re-sent.
 const UNKNOWN: Cell = Cell {
     ch: '\u{FFFF}',
+    marks: String::new(),
     style: Style::DEFAULT,
 };
 /// Right half of a double-width character.
@@ -77,8 +80,8 @@ impl Screen {
     }
 
     fn emit_cell(&self, i: usize, pen: &mut Pen, buf: &mut String) {
-        let cell = self.back[i];
-        if cell == self.front[i] || cell.ch == CONTINUATION {
+        let cell = &self.back[i];
+        if cell == &self.front[i] || cell.ch == CONTINUATION {
             return;
         }
         let pos = (
@@ -89,22 +92,38 @@ impl Screen {
     }
 
     fn put(&mut self, ch: char) {
-        let width = ch.width().unwrap_or(0) as u16;
+        let Some(width) = ch.width() else {
+            return;
+        };
+        let width = width as u16;
         let (x, y) = self.cursor;
-        if width == 0 || y >= self.rows || x + width > self.cols {
+        if width == 0 {
+            self.append_mark(x, y, ch);
+            return;
+        }
+        if y >= self.rows || width > self.cols.saturating_sub(x) {
             self.cursor.0 = x.saturating_add(width);
             return;
         }
         self.detach_wide(x, y);
         self.detach_wide(x + width - 1, y);
         let style = self.style;
-        self.set(x, y, Cell { ch, style });
+        self.set(
+            x,
+            y,
+            Cell {
+                ch,
+                marks: String::new(),
+                style,
+            },
+        );
         if width == 2 {
             self.set(
                 x + 1,
                 y,
                 Cell {
                     ch: CONTINUATION,
+                    marks: String::new(),
                     style,
                 },
             );
@@ -112,11 +131,19 @@ impl Screen {
         self.cursor.0 = x + width;
     }
 
+    fn append_mark(&mut self, x: u16, y: u16, mark: char) {
+        let Some(i) = x.checked_sub(1).and_then(|prev| self.index(prev, y)) else {
+            return;
+        };
+        let base = i - usize::from(self.back[i].ch == CONTINUATION);
+        self.back[base].marks.push(mark);
+    }
+
     /// Blanks the other half of a wide character about to be overwritten.
     fn detach_wide(&mut self, x: u16, y: u16) {
-        let partner = match self.cell(x, y).ch {
+        let partner = match self.char_at(x, y) {
             CONTINUATION => x.checked_sub(1),
-            _ if self.cell(x + 1, y).ch == CONTINUATION => Some(x + 1),
+            _ if self.char_at(x + 1, y) == CONTINUATION => Some(x + 1),
             _ => None,
         };
         if let Some(px) = partner {
@@ -124,8 +151,8 @@ impl Screen {
         }
     }
 
-    fn cell(&self, x: u16, y: u16) -> Cell {
-        self.index(x, y).map_or(BLANK, |i| self.back[i])
+    fn char_at(&self, x: u16, y: u16) -> char {
+        self.index(x, y).map_or(BLANK.ch, |i| self.back[i].ch)
     }
 
     fn set(&mut self, x: u16, y: u16, cell: Cell) {
@@ -175,7 +202,7 @@ struct Pen {
 }
 
 impl Pen {
-    fn draw(&mut self, (x, y): (u16, u16), cell: Cell, buf: &mut String) {
+    fn draw(&mut self, (x, y): (u16, u16), cell: &Cell, buf: &mut String) {
         if self.cursor != Some((x, y)) {
             buf.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
         }
@@ -184,6 +211,7 @@ impl Pen {
             self.style = Some(cell.style);
         }
         buf.push(cell.ch);
+        buf.push_str(&cell.marks);
         self.cursor = Some((x + cell.ch.width().unwrap_or(1) as u16, y));
     }
 }

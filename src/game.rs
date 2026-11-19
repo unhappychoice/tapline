@@ -284,7 +284,7 @@ impl Game {
         }
     }
 
-    /// Release the long note currently held on `lane` using the chart mode.
+    /// Release every long note currently held on `lane` using the chart mode.
     /// No-op if the lane isn't holding anything.
     pub fn release(&mut self, lane: usize, now_ms: f64) {
         if self
@@ -297,14 +297,18 @@ impl Game {
         if lane >= self.flash.last_lane_hit.len() {
             return;
         }
-        let Some(position) = self
-            .held_notes
-            .iter()
-            .position(|&i| self.chart.notes[i].lane == lane)
-        else {
-            return;
-        };
-        let i = self.held_notes.remove(position);
+        let mut held_notes = std::mem::take(&mut self.held_notes);
+        held_notes.retain(|&i| {
+            if self.chart.notes[i].lane != lane {
+                return true;
+            }
+            self.release_note(i, now_ms);
+            false
+        });
+        self.held_notes = held_notes;
+    }
+
+    fn release_note(&mut self, i: usize, now_ms: f64) {
         let Some(end_ms) = self.chart.notes[i].end_ms else {
             return;
         };
@@ -1156,6 +1160,32 @@ mod tests {
         assert_eq!(g.perfect, 2, "start + release both perfect");
         assert!(g.chart.notes[0].hit);
         assert!(g.chart.notes[0].held_since.is_none());
+    }
+
+    #[test]
+    fn release_judges_each_tail_by_its_end_time_and_leaves_other_lanes_held() {
+        for (mode, perfect, miss) in [(LnMode::Ln, 3, 2), (LnMode::Cn, 4, 1), (LnMode::Hcn, 4, 1)] {
+            let mut chart = chart_with(
+                vec![
+                    ln(1000.0, 2000.0, 0),
+                    ln(1500.0, 2500.0, 0),
+                    ln(1500.0, 2000.0, 1),
+                ],
+                4,
+            );
+            chart.ln_mode = mode;
+            let mut game = Game::new(chart);
+            game.hit(0, 1000.0);
+            game.hit(0, 1500.0);
+            game.hit(1, 1500.0);
+
+            game.release(0, 1990.0);
+
+            assert_eq!((game.perfect, game.miss), (perfect, miss), "{mode:?}");
+            assert_eq!(game.chart.notes[2].held_since, Some(1500.0));
+            game.check_misses(3000.0);
+            assert_eq!((game.perfect, game.miss), (perfect + 1, miss), "{mode:?}");
+        }
     }
 
     #[test]

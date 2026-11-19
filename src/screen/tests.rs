@@ -19,7 +19,7 @@ fn present(screen: &mut Screen) -> String {
 
 fn row_text(screen: &Screen, y: u16) -> String {
     (0..screen.cols)
-        .map(|x| screen.cell(x, y).ch)
+        .map(|x| screen.char_at(x, y))
         .filter(|&ch| ch != CONTINUATION)
         .collect()
 }
@@ -183,4 +183,27 @@ fn invalidate_resends_every_cell() {
     present(&mut s);
     s.invalidate();
     assert!(present(&mut s).contains("abc"));
+}
+
+#[test]
+fn presenting_combining_marks_and_replacing_them_with_a_plain_glyph() {
+    let mut s = screen(4, 1);
+    queue!(s, Print("Cafe\u{301}")).unwrap();
+    assert!(present(&mut s).contains("Cafe\u{301}"));
+
+    queue!(s, cursor::MoveTo(0, 0), Print("Cafe\u{301}")).unwrap();
+    assert_eq!(present(&mut s), "\x1b[?2026h\x1b[0m\x1b[?2026l");
+
+    queue!(s, cursor::MoveTo(0, 0), Print("Cafe")).unwrap();
+    assert_eq!(
+        present(&mut s),
+        "\x1b[?2026h\x1b[1;4H\x1b[0me\x1b[0m\x1b[?2026l"
+    );
+}
+
+#[test]
+fn combining_marks_follow_a_wide_glyph_without_advancing_the_cursor() {
+    let mut s = screen(3, 1);
+    queue!(s, Print("\u{301}日\u{301}\u{308}x")).unwrap();
+    assert!(present(&mut s).contains("日\u{301}\u{308}x"));
 }

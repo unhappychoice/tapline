@@ -75,7 +75,10 @@ impl Identities {
 }
 
 pub(super) fn stamp(path: &Path) -> Option<Stamp> {
-    let meta = path.metadata().ok().filter(|meta| meta.is_file())?;
+    let meta = path
+        .metadata()
+        .ok()
+        .filter(|meta| meta.is_file() && meta.len() <= crate::chart_file::MAX_CHART_BYTES)?;
     Some(Stamp {
         length: meta.len(),
         modified: meta.modified().ok()?,
