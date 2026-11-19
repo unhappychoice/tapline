@@ -42,6 +42,7 @@ fn game() -> (Game, ImageBank) {
         RefCell::default(),
         timeline::Timeline::new(&game.chart.bga),
         effect_timeline::Timeline::new(&game.chart.bga_extensions),
+        RefCell::default(),
     );
     bank.0
         .get_mut(&3)
@@ -70,6 +71,33 @@ fn active_bga_id_costs_logarithmic_work_for_large_charts() {
         assert_eq!(bank.active_bga_id(&events, BgaLayer::Overlay, 0.0), None);
         assert_eq!(bank.3.comparisons(), 0);
     }
+}
+
+#[test]
+fn reuses_static_pixels_across_frames_and_repeated_bitmap_events() {
+    let (mut game, mut bank) = game();
+    game.chart.bga.insert(
+        1,
+        BgaEvent {
+            time_ms: 50.0,
+            layer: BgaLayer::Base,
+            bmp_id: 1,
+        },
+    );
+    bank.3 = timeline::Timeline::new(&game.chart.bga);
+
+    let pixels = bank.rendered_frame(&game, 0.0, 16).as_ptr();
+    assert_eq!(bank.rendered_frame(&game, 16.0, 16).as_ptr(), pixels);
+    assert_eq!(bank.rendered_frame(&game, 50.0, 16).as_ptr(), pixels);
+
+    let resized = bank.rendered_frame(&game, 50.0, 32);
+    assert_ne!(resized.as_ptr(), pixels);
+    assert_eq!(resized.dimensions(), (32, 32));
+    assert_eq!(resized.get_pixel(16, 16).0, [255, 0, 0, 255]);
+    drop(resized);
+
+    let changed = bank.rendered_frame(&game, 100.0, 32);
+    assert_eq!(changed.get_pixel(16, 16).0, [0, 255, 0, 255]);
 }
 
 #[test]
