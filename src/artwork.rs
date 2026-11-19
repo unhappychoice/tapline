@@ -1,4 +1,4 @@
-use crate::assets::AssetIndex;
+use crate::assets::{is_link, normalized_asset_path, AssetIndex};
 use crate::fs_guard;
 use crossterm::{
     cursor, queue,
@@ -7,12 +7,22 @@ use crossterm::{
 use image::{DynamicImage, ImageReader, RgbaImage};
 use std::{
     cell::RefCell,
+    collections::VecDeque,
     io::{BufReader, Write},
     path::{Path, PathBuf},
+    time::{Duration, Instant, SystemTime},
 };
 
+const THUMBNAIL_CACHE_CAPACITY: usize = 32;
+const RETRY_INTERVAL: Duration = Duration::from_secs(1);
+
 thread_local! {
-    static CACHE: RefCell<Option<ArtworkCache>> = const { RefCell::new(None) };
+    static CACHE: RefCell<ArtworkCache> = const { RefCell::new(ArtworkCache {
+        thumbnails: VecDeque::new(),
+        paths: VecDeque::new(),
+    }) };
+    #[cfg(test)]
+    static LOAD_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     #[cfg(test)]
     static RESIZE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -28,22 +38,10 @@ pub(crate) fn draw(
     if name.is_empty() || area.2 == 0 || area.3 == 0 {
         return Ok(());
     }
-    let path = dir.join(name.replace('\\', "/"));
     CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.as_ref().map(|entry| &entry.path) != Some(&path) {
-            let image = AssetIndex::new(dir)
-                .resolve_path(name, &[])
-                .and_then(|path| load_image(&path));
-            *cache = Some(ArtworkCache {
-                path,
-                image,
-                resized: None,
-            });
-        }
         match cache
-            .as_mut()
-            .and_then(|entry| entry.pixels(area.2, area.3))
+            .borrow_mut()
+            .pixels(dir, name, (area.2, area.3), Instant::now)
         {
             Some(image) => draw_pixels(out, image, area),
             None => Ok(()),
@@ -52,27 +50,166 @@ pub(crate) fn draw(
 }
 
 struct ArtworkCache {
-    path: PathBuf,
-    image: Option<DynamicImage>,
-    resized: Option<((u16, u16), RgbaImage)>,
+    thumbnails: VecDeque<Thumbnail>,
+    paths: VecDeque<PathLookup>,
 }
 
-impl ArtworkCache {
-    fn pixels(&mut self, width: u16, height: u16) -> Option<&RgbaImage> {
-        let image = self.image.as_ref()?;
-        if self.resized.as_ref().map(|entry| entry.0) != Some((width, height)) {
-            let pixels = image
-                .thumbnail(u32::from(width), u32::from(height) * 2)
-                .to_rgba8();
-            #[cfg(test)]
-            RESIZE_COUNT.with(|count| count.set(count.get() + 1));
-            self.resized = Some(((width, height), pixels));
+struct PathLookup {
+    dir: PathBuf,
+    name: String,
+    result: LookupResult,
+}
+
+enum LookupResult {
+    Found {
+        path: PathBuf,
+        retry_at: Option<Instant>,
+    },
+    Missing {
+        retry_at: Instant,
+    },
+}
+
+impl LookupResult {
+    fn cached_source(&self, dir: &Path, now: Instant) -> Option<Option<(PathBuf, SourceVersion)>> {
+        match self {
+            Self::Found { path, retry_at } if retry_at.is_none_or(|retry_at| now < retry_at) => {
+                SourceVersion::read(dir, path).map(|source| Some((path.clone(), source)))
+            }
+            Self::Missing { retry_at } if now < *retry_at => Some(None),
+            _ => None,
         }
-        self.resized.as_ref().map(|entry| &entry.1)
     }
 }
 
+struct Thumbnail {
+    path: PathBuf,
+    size: (u16, u16),
+    source: SourceVersion,
+    pixels: Result<RgbaImage, Instant>,
+}
+
+#[derive(PartialEq, Eq)]
+struct SourceVersion {
+    modified: SystemTime,
+    len: u64,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64),
+}
+
+impl ArtworkCache {
+    fn pixels(
+        &mut self,
+        dir: &Path,
+        name: &str,
+        size: (u16, u16),
+        now: impl Fn() -> Instant,
+    ) -> Option<&RgbaImage> {
+        let (path, source) = self.resolve(dir, name, &now)?;
+        self.thumbnails
+            .retain(|entry| entry.path != path || entry.source == source);
+        let index = self
+            .thumbnails
+            .iter()
+            .position(|entry| entry.path == path && entry.size == size);
+        let entry = match index.and_then(|index| self.thumbnails.remove(index)) {
+            Some(entry) if !matches!(entry.pixels, Err(retry_at) if now() >= retry_at) => entry,
+            _ => Thumbnail {
+                pixels: load_image(&path)
+                    .map(|image| resize(&image, size))
+                    .ok_or_else(|| now() + RETRY_INTERVAL),
+                path,
+                size,
+                source,
+            },
+        };
+        self.thumbnails.push_front(entry);
+        self.thumbnails.truncate(THUMBNAIL_CACHE_CAPACITY);
+        self.thumbnails.front()?.pixels.as_ref().ok()
+    }
+
+    fn resolve(
+        &mut self,
+        dir: &Path,
+        name: &str,
+        now: impl Fn() -> Instant,
+    ) -> Option<(PathBuf, SourceVersion)> {
+        let index = self
+            .paths
+            .iter()
+            .position(|entry| entry.dir == dir && entry.name == name);
+        if let Some(entry) = index.and_then(|index| self.paths.remove(index)) {
+            if let Some(source) = entry.result.cached_source(dir, now()) {
+                self.paths.push_front(entry);
+                return source;
+            }
+        }
+        let requested = normalized_asset_path(name)?;
+        let source = AssetIndex::new(dir)
+            .resolve_path(name, &[])
+            .and_then(|path| SourceVersion::read(dir, &path).map(|source| (path, source)));
+        let result = match &source {
+            Some((path, _)) => LookupResult::Found {
+                path: path.clone(),
+                retry_at: (path != &dir.join(requested)).then(|| now() + RETRY_INTERVAL),
+            },
+            None => LookupResult::Missing {
+                retry_at: now() + RETRY_INTERVAL,
+            },
+        };
+        self.paths.push_front(PathLookup {
+            dir: dir.to_path_buf(),
+            name: name.to_owned(),
+            result,
+        });
+        self.paths.truncate(THUMBNAIL_CACHE_CAPACITY);
+        source
+    }
+}
+
+impl SourceVersion {
+    fn read(dir: &Path, path: &Path) -> Option<Self> {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = path.symlink_metadata().ok()?;
+        if !metadata.is_file() || is_link(&metadata) {
+            return None;
+        }
+        let relative = path.strip_prefix(dir).ok()?;
+        let mut parent = dir.to_path_buf();
+        for component in relative.parent()?.components() {
+            parent.push(component);
+            let metadata = parent.symlink_metadata().ok()?;
+            if !metadata.is_dir() || is_link(&metadata) {
+                return None;
+            }
+        }
+        Some(Self {
+            modified: metadata.modified().ok()?,
+            len: metadata.len(),
+            #[cfg(unix)]
+            identity: (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+            ),
+        })
+    }
+}
+
+fn resize(image: &DynamicImage, (width, height): (u16, u16)) -> RgbaImage {
+    #[cfg(test)]
+    RESIZE_COUNT.with(|count| count.set(count.get() + 1));
+    image
+        .thumbnail(u32::from(width), u32::from(height) * 2)
+        .to_rgba8()
+}
+
 fn load_image(path: &Path) -> Option<DynamicImage> {
+    #[cfg(test)]
+    LOAD_COUNT.with(|count| count.set(count.get() + 1));
     let file = fs_guard::open(path).ok()?;
     ImageReader::new(BufReader::new(file))
         .with_guessed_format()
@@ -119,12 +256,12 @@ fn color([r, g, b, a]: [u8; 4]) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::DIRECTORY_VISITS;
 
     #[test]
     fn reuses_resized_pixels_and_refreshes_for_image_and_area_changes() {
         crossterm::style::force_color_output(true);
-        CACHE.with(|cache| *cache.borrow_mut() = None);
-        RESIZE_COUNT.with(|count| count.set(0));
+        reset_cache();
         let dir =
             std::env::temp_dir().join(format!("tapline-artwork-cache-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -137,36 +274,275 @@ mod tests {
         first.save(dir.join("first.png")).unwrap();
         second.save(dir.join("second.png")).unwrap();
         let cases = [
-            ("first.png", &first, (0, 0, 8, 3), 1),
-            ("first.png", &first, (0, 0, 8, 3), 1),
-            ("first.png", &first, (5, 7, 8, 3), 1),
-            ("first.png", &first, (5, 7, 4, 3), 2),
-            ("first.png", &first, (5, 7, 4, 1), 3),
-            ("second.png", &second, (5, 7, 4, 1), 4),
-            ("second.png", &second, (5, 7, 4, 1), 4),
-            ("first.png", &first, (0, 0, 8, 3), 5),
+            ("first.png", &first, (0, 0, 8, 3), 1, 1),
+            ("first.png", &first, (0, 0, 8, 3), 1, 1),
+            ("first.png", &first, (5, 7, 8, 3), 1, 1),
+            ("first.png", &first, (5, 7, 4, 3), 2, 1),
+            ("first.png", &first, (5, 7, 4, 1), 3, 1),
+            ("second.png", &second, (5, 7, 4, 1), 4, 2),
+            ("second.png", &second, (5, 7, 4, 1), 4, 2),
+            ("first.png", &first, (0, 0, 8, 3), 4, 2),
+            ("./first.png", &first, (5, 7, 4, 1), 4, 3),
+            ("second.png", &second, (5, 7, 4, 1), 4, 3),
         ];
-        cases.iter().for_each(|(name, image, area, count)| {
+        cases.iter().for_each(|(name, image, area, count, visits)| {
             let mut actual = Vec::new();
             draw(&mut actual, &dir, name, *area).unwrap();
-            let pixels = image
-                .thumbnail(u32::from(area.2), u32::from(area.3) * 2)
-                .to_rgba8();
+            let pixels = resize_expected(image, (area.2, area.3));
             let mut expected = Vec::new();
             draw_pixels(&mut expected, &pixels, *area).unwrap();
             assert_eq!(actual, expected);
-            RESIZE_COUNT.with(|resizes| assert_eq!(resizes.get(), *count));
+            assert_image_work(*count);
+            DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), *visits));
         });
         let mut missing = Vec::new();
         draw(&mut missing, &dir, "missing.png", (0, 0, 8, 3)).unwrap();
-        draw(&mut missing, &dir, "missing.png", (0, 0, 4, 1)).unwrap();
         assert!(missing.is_empty());
-        RESIZE_COUNT.with(|count| assert_eq!(count.get(), 5));
+        assert_image_work(4);
         let mut restored = Vec::new();
         draw(&mut restored, &dir, "first.png", (0, 0, 8, 3)).unwrap();
         assert!(!restored.is_empty());
-        RESIZE_COUNT.with(|count| assert_eq!(count.get(), 6));
+        assert_image_work(4);
+        DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 4));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn refreshes_cached_sizes_when_a_banner_changes() {
+        reset_cache();
+        let dir =
+            std::env::temp_dir().join(format!("tapline-artwork-refresh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cover.bmp");
+        let first = DynamicImage::new_rgb8(8, 8);
+        let replacement =
+            DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([255, 0, 0])));
+        first.save(&path).unwrap();
+        let initial = path.metadata().unwrap();
+        let areas = [(0, 0, 8, 3), (0, 0, 4, 2)];
+        let assert_banner = |image, area: (u16, u16, u16, u16)| {
+            let mut actual = Vec::new();
+            draw(&mut actual, &dir, "cover.bmp", area).unwrap();
+            let mut expected = Vec::new();
+            draw_pixels(
+                &mut expected,
+                &resize_expected(image, (area.2, area.3)),
+                area,
+            )
+            .unwrap();
+            assert_eq!(actual, expected);
+        };
+        areas
+            .into_iter()
+            .for_each(|area| assert_banner(&first, area));
+        replacement.save(&path).unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(initial.modified().unwrap() - std::time::Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(file.metadata().unwrap().len(), initial.len());
+        drop(file);
+        areas
+            .into_iter()
+            .for_each(|area| assert_banner(&replacement, area));
+        assert_image_work(4);
+        DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 1));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn resolves_again_when_the_cached_path_disappears() {
+        reset_cache();
+        let dir =
+            std::env::temp_dir().join(format!("tapline-artwork-rename-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = DynamicImage::new_rgb8(2, 2);
+        let path = dir.join("cover.png");
+        image.save(&path).unwrap();
+        let render = || {
+            let mut out = Vec::new();
+            draw(&mut out, &dir, "cover.png", (0, 0, 2, 1)).unwrap();
+            out
+        };
+        let expected = render();
+        assert!(!expected.is_empty());
+        std::fs::remove_file(path).unwrap();
+        let now = Instant::now();
+        let resolve =
+            |now| CACHE.with(|cache| cache.borrow_mut().resolve(&dir, "cover.png", || now));
+        assert!(resolve(now).is_none());
+        image.save(dir.join("Cover.png")).unwrap();
+        assert!(resolve(now + RETRY_INTERVAL).is_some());
+        assert_eq!(render(), expected);
+        assert_eq!(render(), expected);
+        DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 3));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_cached_banner_after_its_directory_becomes_a_symlink() {
+        reset_cache();
+        let dir = std::env::temp_dir().join(format!("tapline-artwork-link-{}", std::process::id()));
+        let images = dir.join("images");
+        let moved = dir.join("moved");
+        std::fs::create_dir_all(&images).unwrap();
+        DynamicImage::new_rgb8(2, 2)
+            .save(images.join("cover.png"))
+            .unwrap();
+
+        let render = || {
+            let mut out = Vec::new();
+            draw(&mut out, &dir, "images/cover.png", (0, 0, 2, 1)).unwrap();
+            out
+        };
+        assert!(!render().is_empty());
+        std::fs::rename(&images, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &images).unwrap();
+        assert!(render().is_empty());
+        assert_image_work(1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retries_missing_banners_after_the_interval() {
+        reset_cache();
+        let dir =
+            std::env::temp_dir().join(format!("tapline-artwork-missing-{}", std::process::id()));
+        let images = dir.join("images");
+        std::fs::create_dir_all(&images).unwrap();
+        let now = Instant::now();
+        let name = "IMAGES\\COVER.PNG";
+        let resolve = |now| CACHE.with(|cache| cache.borrow_mut().resolve(&dir, name, || now));
+        assert!(resolve(now).is_none());
+        DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 2));
+
+        let path = images.join("cover.png");
+        DynamicImage::new_rgb8(2, 2).save(&path).unwrap();
+        assert!(resolve(now + RETRY_INTERVAL / 2).is_none());
+        DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 2));
+
+        assert_eq!(resolve(now + RETRY_INTERVAL).unwrap().0, path);
+        let mut out = Vec::new();
+        draw(&mut out, &dir, name, (0, 0, 2, 1)).unwrap();
+        assert!(!out.is_empty());
+        DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 4));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn prefers_a_new_exact_case_banner_after_the_interval() {
+        reset_cache();
+        let dir =
+            std::env::temp_dir().join(format!("tapline-artwork-fallback-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fallback = dir.join("images");
+        std::fs::create_dir_all(&fallback).unwrap();
+        DynamicImage::new_rgb8(2, 2)
+            .save(fallback.join("cover.png"))
+            .unwrap();
+        let exact = dir.join("Images");
+        if !exact.exists() {
+            let start = Instant::now();
+            let name = ".\\Images\\Cover.png";
+            let sample = |now| {
+                CACHE.with(|cache| {
+                    *cache
+                        .borrow_mut()
+                        .pixels(&dir, name, (2, 1), || now)
+                        .unwrap()
+                        .get_pixel(0, 0)
+                })
+            };
+            assert_eq!(sample(start).0, [0, 0, 0, 255]);
+            std::fs::create_dir(&exact).unwrap();
+            RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]))
+                .save(exact.join("Cover.png"))
+                .unwrap();
+            assert_eq!(sample(start + RETRY_INTERVAL / 2).0, [0, 0, 0, 255]);
+            assert_eq!(sample(start + RETRY_INTERVAL).0, [255, 0, 0, 255]);
+            assert_image_work(2);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retries_failed_image_loads_even_when_the_source_version_is_unchanged() {
+        reset_cache();
+        let dir =
+            std::env::temp_dir().join(format!("tapline-artwork-decode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cover.png");
+        std::fs::write(&path, b"invalid image").unwrap();
+        let start = Instant::now();
+        let has_pixels = |now| {
+            CACHE.with(|cache| {
+                cache
+                    .borrow_mut()
+                    .pixels(&dir, "cover.png", (2, 1), || now)
+                    .is_some()
+            })
+        };
+        assert!(!has_pixels(start));
+        assert!(!has_pixels(start + RETRY_INTERVAL / 2));
+        LOAD_COUNT.with(|count| assert_eq!(count.get(), 1));
+        assert!(!has_pixels(start + RETRY_INTERVAL));
+        LOAD_COUNT.with(|count| assert_eq!(count.get(), 2));
+        RESIZE_COUNT.with(|count| assert_eq!(count.get(), 0));
+
+        DynamicImage::new_rgb8(2, 2).save(path).unwrap();
+        assert!(has_pixels(start + RETRY_INTERVAL));
+        LOAD_COUNT.with(|count| assert_eq!(count.get(), 3));
+        RESIZE_COUNT.with(|count| assert_eq!(count.get(), 1));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn evicts_the_least_recently_used_thumbnail_at_capacity() {
+        reset_cache();
+        let dir =
+            std::env::temp_dir().join(format!("tapline-artwork-bound-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = DynamicImage::new_rgb8(2, 2);
+        for index in 0..=THUMBNAIL_CACHE_CAPACITY {
+            image.save(dir.join(format!("{index}.png"))).unwrap();
+        }
+        let draw_banner =
+            |index| draw(&mut Vec::new(), &dir, &format!("{index}.png"), (0, 0, 2, 1)).unwrap();
+        (0..THUMBNAIL_CACHE_CAPACITY).for_each(draw_banner);
+        draw_banner(0);
+        draw_banner(THUMBNAIL_CACHE_CAPACITY);
+        CACHE.with(|cache| {
+            let cache = cache.borrow();
+            assert_eq!(cache.thumbnails.len(), THUMBNAIL_CACHE_CAPACITY);
+            assert_eq!(cache.paths.len(), THUMBNAIL_CACHE_CAPACITY);
+        });
+        draw_banner(0);
+        assert_image_work(THUMBNAIL_CACHE_CAPACITY + 1);
+        draw_banner(1);
+        assert_image_work(THUMBNAIL_CACHE_CAPACITY + 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn reset_cache() {
+        CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            cache.thumbnails.clear();
+            cache.paths.clear();
+        });
+        LOAD_COUNT.with(|count| count.set(0));
+        RESIZE_COUNT.with(|count| count.set(0));
+        DIRECTORY_VISITS.with(|count| count.set(0));
+    }
+
+    fn assert_image_work(expected: usize) {
+        LOAD_COUNT.with(|count| assert_eq!(count.get(), expected));
+        RESIZE_COUNT.with(|count| assert_eq!(count.get(), expected));
+    }
+
+    fn resize_expected(image: &DynamicImage, (width, height): (u16, u16)) -> RgbaImage {
+        image
+            .thumbnail(u32::from(width), u32::from(height) * 2)
+            .to_rgba8()
     }
 
     #[test]
