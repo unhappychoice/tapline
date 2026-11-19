@@ -43,26 +43,33 @@ fn record_allocation(size: usize) {
 }
 
 #[test]
-fn gain_allocations_are_constant_for_short_and_three_minute_samples() {
+fn gain_settings_and_playback_do_not_allocate_pcm() {
     [1, 2, 3, 6].into_iter().for_each(|channels| {
-        [1, 44100 * 180].into_iter().for_each(|frames| {
-            let mut sample = DecodedSample {
+        [1, 44_100].into_iter().for_each(|frames| {
+            let mut sample = DecodedSample::new(
                 channels,
-                sample_rate: 44100,
-                data: Arc::new(vec![0.5; frames * channels as usize]),
-            };
+                44100,
+                Arc::new(vec![0.5; frames * channels as usize]),
+            );
             let settings = crate::sample_settings::SampleSettings {
                 attenuation: -2000,
                 ..Default::default()
             };
             ALLOCATIONS.with(|count| count.set(Some(0)));
             apply_settings(&mut sample, &settings);
+            let source = sample_source(&sample, None);
+            let output_channels = channels.max(2);
+            let actual_channels = source.channels().get();
+            let mut samples = 0;
+            source.for_each(|value| {
+                assert_eq!(value, 0.05);
+                samples += 1;
+            });
             let allocations = ALLOCATIONS.with(|count| count.replace(None).unwrap());
-            // One PCM buffer and one Arc, independent of frame count.
-            assert_eq!(allocations, 2, "channels={channels}, frames={frames}");
-            assert_eq!(sample.channels, channels.max(2));
-            assert_eq!(sample.data.len(), frames * channels.max(2) as usize);
-            assert!(sample.data.iter().all(|&value| value == 0.05));
+
+            assert_eq!(allocations, 0, "channels={channels}, frames={frames}");
+            assert_eq!(actual_channels, output_channels);
+            assert_eq!(samples, frames * usize::from(output_channels));
         });
     });
 }
@@ -71,11 +78,7 @@ fn gain_allocations_are_constant_for_short_and_three_minute_samples() {
 fn gains_preserve_pcm_and_restart_channel_parity_for_each_frame() {
     [1, 2, 3, 6].into_iter().for_each(|channels| {
         let original = Arc::new(vec![1.0, -0.5, 0.25, -1.0, 0.5, -0.25, 0.75]);
-        let mut sample = DecodedSample {
-            channels,
-            sample_rate: 44100,
-            data: original.clone(),
-        };
+        let mut sample = DecodedSample::new(channels, 44100, original.clone());
         let settings = crate::sample_settings::SampleSettings {
             pan: 2000,
             volume: Some(50),
@@ -97,9 +100,11 @@ fn gains_preserve_pcm_and_restart_channel_parity_for_each_frame() {
             })
             .collect();
         apply_settings(&mut sample, &settings);
-        assert_eq!(*sample.data, expected);
-        assert_eq!(sample.channels, channels.max(2));
-        assert_eq!(sample.sample_rate, 44100);
+        let source = sample_source(&sample, None);
+        assert!(Arc::ptr_eq(&source.data, &original));
+        assert_eq!(source.channels().get(), channels.max(2));
+        assert_eq!(source.sample_rate().get(), 44100);
+        assert_eq!(source.collect::<Vec<_>>(), expected);
         assert_eq!(*original, [1.0, -0.5, 0.25, -1.0, 0.5, -0.25, 0.75]);
     });
 }
