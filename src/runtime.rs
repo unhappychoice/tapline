@@ -50,9 +50,7 @@ pub fn play_chart_with_destination(
     let bank = if args.no_audio {
         audio::SampleBank::silent()
     } else {
-        audio::SampleBank::with_settings(&chart.wav_paths, &chart.sample_settings)
-            .with_slices(&chart.sample_slices)
-            .with_layers(&chart.sound_layers)
+        audio::SampleBank::for_chart(&chart)
     };
     chart.duration_ms =
         bank.chart_duration_ms(&chart, opts.auto_ks, opts.synth_mode, opts.audio_lead_ms);

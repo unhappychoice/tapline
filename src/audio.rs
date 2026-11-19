@@ -1,4 +1,3 @@
-#[cfg(test)]
 use crate::chart::Chart;
 #[cfg(test)]
 use crate::chart::VolumeTarget;
@@ -7,7 +6,7 @@ use rayon::prelude::*;
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Source};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -115,16 +114,21 @@ impl SampleBank {
         }
     }
 
+    pub(crate) fn for_chart(chart: &Chart) -> Self {
+        let (stream, bus) = silence_stderr(open_master_bus).unzip();
+        let mut bank = Self::load_chart_with(chart, |path| decode(path));
+        bank.enabled = bus.is_some();
+        bank._stream = stream;
+        bank.bus = bus;
+        bank
+    }
+
     pub fn with_settings(
         wav_paths: &HashMap<u32, PathBuf>,
         settings: &HashMap<u32, crate::sample_settings::SampleSettings>,
     ) -> Self {
         let mut bank = Self::new(wav_paths);
-        bank.samples.iter_mut().for_each(|(id, sample)| {
-            if let Some(settings) = settings.get(id) {
-                apply_settings(sample, settings);
-            }
-        });
+        bank.apply_sample_settings(settings);
         bank
     }
 
@@ -312,10 +316,35 @@ impl SampleBank {
             .max()
     }
 
+    fn load_chart_with(
+        chart: &Chart,
+        decode_sample: impl Fn(&PathBuf) -> anyhow::Result<DecodedSample> + Sync,
+    ) -> Self {
+        let (samples, decode_failures) = decode_all_with(gameplay_paths(chart), decode_sample);
+        let mut bank = Self {
+            samples,
+            decode_failures,
+            ..Self::silent()
+        }
+        .with_slices(&chart.sample_slices)
+        .with_layers(&chart.sound_layers);
+        bank.apply_sample_settings(&chart.sample_settings);
+        bank
+    }
+
+    fn apply_sample_settings(
+        &mut self,
+        settings: &HashMap<u32, crate::sample_settings::SampleSettings>,
+    ) {
+        self.samples.iter_mut().for_each(|(id, sample)| {
+            if let Some(settings) = settings.get(id) {
+                apply_settings(sample, settings);
+            }
+        });
+    }
+
     fn sound_ids<'a>(&'a self, id: &'a u32) -> &'a [u32] {
-        self.layers
-            .get(id)
-            .map_or(std::slice::from_ref(id), Vec::as_slice)
+        sound_ids(&self.layers, id)
     }
 
     fn start_voice(&self, id: u32, gain: f32) -> Option<impl Source<Item = f32> + Send> {
@@ -349,6 +378,26 @@ impl SampleBank {
             None => HitSound::Silent,
         }
     }
+}
+
+fn gameplay_paths(chart: &Chart) -> impl Iterator<Item = (&u32, &PathBuf)> {
+    let required: HashSet<_> = chart
+        .bgm
+        .iter()
+        .map(|event| &event.keysound)
+        .chain(chart.notes.iter().filter_map(|note| note.keysound.as_ref()))
+        .chain(chart.invisible_notes.iter().map(|note| &note.keysound))
+        .flat_map(|id| sound_ids(&chart.sound_layers, id))
+        .collect();
+    required
+        .into_iter()
+        .filter_map(|id| chart.wav_paths.get(id).map(|path| (id, path)))
+}
+
+fn sound_ids<'a>(layers: &'a HashMap<u32, Vec<u32>>, id: &'a u32) -> &'a [u32] {
+    layers
+        .get(id)
+        .map_or(std::slice::from_ref(id), Vec::as_slice)
 }
 
 fn open_output() -> Option<MixerDeviceSink> {
@@ -391,12 +440,12 @@ fn decode_all(wav_paths: &HashMap<u32, PathBuf>) -> (HashMap<u32, DecodedSample>
     decode_all_with(wav_paths, |path| decode(path))
 }
 
-fn decode_all_with(
-    wav_paths: &HashMap<u32, PathBuf>,
+fn decode_all_with<'a>(
+    wav_paths: impl IntoIterator<Item = (&'a u32, &'a PathBuf)>,
     decode_sample: impl Fn(&PathBuf) -> anyhow::Result<DecodedSample> + Sync,
 ) -> (HashMap<u32, DecodedSample>, usize) {
     let mut ids_by_path: HashMap<&PathBuf, Vec<u32>> = HashMap::new();
-    wav_paths.iter().for_each(|(&id, path)| {
+    wav_paths.into_iter().for_each(|(&id, path)| {
         ids_by_path.entry(path).or_default().push(id);
     });
     ids_by_path
@@ -1549,7 +1598,7 @@ mod tests {
     fn duplicate_paths_decode_once_and_share_pcm_across_all_ids() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let paths = (1..=10)
+        let paths: HashMap<_, _> = (1..=10)
             .map(|id| (id, PathBuf::from("sample.wav")))
             .collect();
         let calls = AtomicUsize::new(0);
