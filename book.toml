@@ -9,3 +9,4 @@ create-missing = false
 
 [output.html]
 git-repository-url = "https://github.com/unhappychoice/tapline"
+site-url = "/tapline/"
