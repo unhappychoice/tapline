@@ -1534,6 +1534,84 @@ mod tests {
     }
 
     #[test]
+    fn indexed_scroll_candidates_match_full_scan_screen_geometry() {
+        use crate::chart::ScrollEvent;
+
+        let layout = PlayLayout::compute(80, 24, 4).unwrap();
+        for (rate, speed) in [
+            (0.5, 1.0),
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (1.0, 0.5),
+            (1.0, -1.0),
+            (1.0, 0.0),
+        ] {
+            let mut chart = base_chart(4);
+            chart.scroll = vec![
+                ScrollEvent {
+                    time_ms: 2000.0,
+                    multiplier: rate,
+                },
+                ScrollEvent {
+                    time_ms: 4000.0,
+                    multiplier: -rate,
+                },
+            ];
+            chart.speed = vec![ScrollEvent {
+                time_ms: 0.0,
+                multiplier: speed,
+            }];
+            chart.notes = [
+                (0.0, 0, Some(6000.0)),
+                (1000.0, 1, None),
+                (1060.0, 1, None),
+                (2000.0, 2, Some(6000.0)),
+                (2000.0, 3, None),
+                (3500.0, 1, None),
+                (6000.0, 2, None),
+                (100_000.0, 3, Some(101_000.0)),
+            ]
+            .into_iter()
+            .map(|(time_ms, lane, end_ms)| Note {
+                time_ms,
+                lane,
+                end_ms,
+                ..Note::default()
+            })
+            .collect();
+            let mut game = Game::new(chart);
+            game.hit(0, 0.0);
+            for now in [0.0, 500.0, 1060.0, 2000.0, 3500.0, 4000.0, 5900.0, 6200.0] {
+                game.check_misses(now);
+                let scroll = game.scroll.frame(&game.chart, now);
+                let geometry = |note: &Note| {
+                    if note.hit {
+                        return None;
+                    }
+                    let span = match note.end_ms {
+                        Some(end) => long_note_scroll_span(&scroll, note.time_ms, end, &layout),
+                        None => {
+                            note_screen_pos(scroll.distance(note.time_ms), &layout).map(|y| (y, y))
+                        }
+                    }?;
+                    Some((
+                        note.time_ms,
+                        note.lane,
+                        note_bar(span),
+                        note.held_since.is_some(),
+                    ))
+                };
+                let expected: Vec<_> = game.chart.notes.iter().filter_map(geometry).collect();
+                let actual: Vec<_> = game
+                    .visible_notes(now, APPROACH_MS)
+                    .filter_map(geometry)
+                    .collect();
+                assert_eq!(actual, expected, "rate={rate}, speed={speed}, now={now}");
+            }
+        }
+    }
+
+    #[test]
     fn display_metadata_removes_terminal_controls_and_preserves_unicode() {
         let payload = "\x1b]52;c;VEVTVA==\x07\u{9b}2J\r\n\t\x7f";
         let unsafe_text = format!("日本語{payload}");
