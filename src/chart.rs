@@ -151,6 +151,25 @@ pub struct Chart {
 }
 
 impl Chart {
+    pub fn visual_deadline_ms(&self) -> f64 {
+        let layer_effects = self
+            .bga_extensions
+            .events
+            .iter()
+            .filter(|event| match event.effect {
+                crate::bga::Effect::Opacity(..) => true,
+                crate::bga::Effect::Color(_, id) => self.bga_extensions.argb.contains_key(&id),
+                crate::bga::Effect::Switch(_) => false,
+            });
+        self.bga
+            .iter()
+            .map(|event| event.time_ms)
+            .chain(self.text_events.iter().map(|event| event.time_ms))
+            .chain(layer_effects.map(|event| event.time_ms))
+            .map(|time_ms| time_ms + 2500.0)
+            .fold(0.0, f64::max)
+    }
+
     pub fn judgment_scale(&self, time_ms: f64) -> f64 {
         let index = self.exrank_events.partition_point(|e| e.time_ms <= time_ms);
         if index > 0 {

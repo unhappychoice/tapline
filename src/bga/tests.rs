@@ -118,6 +118,49 @@ fn narrow_panels_emit_nothing_and_wide_panels_use_half_blocks() {
 }
 
 #[test]
+fn trailing_layer_effects_render_before_completion_with_and_without_audio() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/effects.bms");
+    for (effect, expected_red) in [("#0050B:80", 128), ("#005A1:01", 0)] {
+        let source = format!(
+            "#BPM 120\n#WAV01 tone.wav\n#00001:01\n#00004:01\n#ARGB01 255,255,0,0\n{effect}\n#02011:00\n"
+        );
+        let chart = crate::bms::load_bytes(&path, source.as_bytes(), 0.0, 0).unwrap();
+        let parsed_duration = chart.duration_ms;
+        assert!(parsed_duration > 12500.0);
+        let mut audio = crate::audio::SampleBank::new(&chart.wav_paths);
+        assert_eq!(audio.sample_count(), 1);
+        audio.enabled = true;
+        let silent = crate::audio::SampleBank::silent();
+        let mut images = ImageBank::load(&chart.bmp_paths, &chart.bga, &chart.bga_extensions);
+        assert_eq!(chart.bga.len(), 1);
+        images.0.insert(
+            chart.bga[0].bmp_id,
+            RgbaImage::from_pixel(SIZE, SIZE, Rgba([255, 0, 0, 255])),
+        );
+        let durations = [
+            (audio.chart_duration_ms(&chart, false, false, 0.0), 12500.0),
+            (
+                silent.chart_duration_ms(&chart, false, false, 0.0),
+                parsed_duration,
+            ),
+        ];
+        let mut game = Game::new(chart);
+        for (duration, expected_duration) in durations {
+            game.chart.duration_ms = duration;
+            assert!(!game.advance_completion(9984.0));
+            assert_eq!(images.frame(&game, 9984.0).get_pixel(0, 0)[0], 255);
+            assert!(!game.advance_completion(10000.0));
+            assert_eq!(
+                images.frame(&game, 10000.0).get_pixel(0, 0)[0],
+                expected_red
+            );
+            assert_eq!(duration, expected_duration);
+            assert!(game.advance_completion(duration));
+        }
+    }
+}
+
+#[test]
 fn preloaded_images_survive_deleted_files_and_bad_files_are_skipped() {
     let path = std::env::temp_dir().join(format!("tapline-bga-{}.png", std::process::id()));
     RgbaImage::from_pixel(2, 1, Rgba([255, 0, 0, 255]))
