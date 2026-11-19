@@ -169,7 +169,8 @@ impl LoopState {
         if paused != self.paused {
             bank.set_paused(paused);
         }
-        if self.paused && !paused {
+        if self.paused && !paused && !self.deferred_releases.is_empty() {
+            game.check_misses(self.clock_ms);
             self.deferred_releases
                 .drain(..)
                 .for_each(|lane| game.release(lane, self.clock_ms));
@@ -362,6 +363,7 @@ fn handle_key(
             };
             match kind {
                 KeyEventKind::Press if !state.paused => {
+                    game.check_misses(now);
                     state.pressed_keys.insert(c.to_ascii_uppercase());
                     let ks = game.hit(lane, now);
                     if !opts.auto_ks {
@@ -382,6 +384,7 @@ fn handle_key(
                     if state.paused {
                         state.deferred_releases.push(lane);
                     } else {
+                        game.check_misses(now);
                         game.release(lane, now);
                     }
                 }
@@ -1493,6 +1496,74 @@ mod tests {
         assert!(!handled, "note hits should not exit the loop");
         assert_eq!(g.perfect, 1);
         assert_eq!(g.combo, 1);
+    }
+
+    #[test]
+    fn lane_press_applies_only_misses_strictly_past_the_deadline() {
+        for (now, misses, combo) in [(1160.0, 0, 2), (1162.0, 1, 1)] {
+            let notes = [(800.0, 0), (1000.0, 0), (1165.0, 1)].map(|(time_ms, lane)| Note {
+                time_ms,
+                lane,
+                ..Note::default()
+            });
+            let mut game = Game::new(base_chart(4, notes.to_vec()));
+            let mut state = LoopState::new(Vec::new());
+            let bank = SampleBank::silent();
+            let options = PlayOptions {
+                countdown_ms: 0.0,
+                ..opts(false)
+            };
+            game.hit(0, 800.0);
+            game.check_misses(1158.0);
+            let score = game.score;
+            handle_key(
+                KeyCode::Char('d'),
+                KeyEventKind::Press,
+                &mut game,
+                &bank,
+                &options,
+                &mut state,
+                now,
+            );
+            assert_eq!((game.perfect, game.miss, game.combo), (2, misses, combo));
+            assert_eq!(game.score - score, game::Judgment::Perfect.points() + combo);
+        }
+    }
+
+    #[test]
+    fn lane_release_applies_overdue_charge_note_tail_once() {
+        let note = Note {
+            time_ms: 3000.0,
+            end_ms: Some(5000.0),
+            ..Note::default()
+        };
+        let mut game = Game::new(base_chart(4, vec![note]));
+        let mut state = LoopState::new(Vec::new());
+        let bank = SampleBank::silent();
+        let options = opts(false);
+        handle_key(
+            KeyCode::Char('s'),
+            KeyEventKind::Press,
+            &mut game,
+            &bank,
+            &options,
+            &mut state,
+            3000.0,
+        );
+        game.check_misses(5160.0);
+        assert_eq!(game.perfect, 1);
+        handle_key(
+            KeyCode::Char('s'),
+            KeyEventKind::Release,
+            &mut game,
+            &bank,
+            &options,
+            &mut state,
+            5162.0,
+        );
+        game.check_misses(5170.0);
+        assert_eq!((game.perfect, game.miss, game.combo), (2, 0, 2));
+        assert!(game.chart.notes[0].hit);
     }
 
     #[test]
