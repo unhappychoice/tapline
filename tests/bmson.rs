@@ -8,6 +8,10 @@ fn fixture() -> &'static Path {
 }
 
 fn load_value(value: Value) -> anyhow::Result<tapline::chart::Chart> {
+    load_with_lead_in(value, 1000.0)
+}
+
+fn load_with_lead_in(value: Value, lead_in_ms: f64) -> anyhow::Result<tapline::chart::Chart> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static COUNT: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -18,7 +22,7 @@ fn load_value(value: Value) -> anyhow::Result<tapline::chart::Chart> {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("test.bmson");
     std::fs::write(&path, value.to_string()).unwrap();
-    let result = bmson::load(&path, 1000.0);
+    let result = bmson::load(&path, lead_in_ms);
     std::fs::remove_dir_all(dir).unwrap();
     result
 }
@@ -242,4 +246,38 @@ fn layered_long_notes_merge_and_unequal_lengths_are_rejected() {
             );
         }
     }
+}
+
+fn chart_with_rounded_timestamps() -> Value {
+    let mut data = base();
+    data["info"]["init_bpm"] = json!(1e20);
+    data["info"]["resolution"] = json!(240);
+    data["info"]["mode_hint"] = json!("generic-4keys");
+    data
+}
+
+#[test]
+fn distinct_pulses_with_equal_timestamps_keep_separate_judgments() {
+    let mut data = chart_with_rounded_timestamps();
+    data["sound_channels"] = json!([
+        {"name":"sound.wav","notes":[{"x":1,"y":0}, {"x":1,"y":1}]}
+    ]);
+    let chart = load_with_lead_in(data, 2000.0).unwrap();
+    assert_eq!(chart.notes.len(), 2);
+    assert!(chart.notes.iter().all(|note| note.time_ms == 2000.0));
+    let mut game = Game::new(chart);
+    game.hit(0, 2000.0);
+    game.hit(0, 2000.0);
+    assert_eq!(game.perfect, 2);
+}
+
+#[test]
+fn unequal_source_lengths_with_equal_end_timestamps_are_rejected() {
+    let mut data = chart_with_rounded_timestamps();
+    data["sound_channels"] = json!([
+        {"name":"first.wav","notes":[{"x":1,"y":0,"l":1}]},
+        {"name":"second.wav","notes":[{"x":1,"y":0,"l":2}]}
+    ]);
+    let error = load_with_lead_in(data, 2000.0).err().unwrap();
+    assert!(error.to_string().contains("unequal lengths"));
 }
