@@ -24,7 +24,7 @@ pub struct ChartMeta {
     pub banner: String,
     pub comment: String,
     pub bpm: f64,
-    pub playlevel: Option<u8>,
+    pub playlevel: Option<u32>,
     pub difficulty: Option<u8>,
     pub lane_count: usize,
 }
@@ -81,7 +81,7 @@ pub(crate) fn parse_meta(
         banner: pass.banner,
         comment: pass.comment,
         bpm: pass.bpm,
-        playlevel: pass.playlevel,
+        playlevel: pass.playlevel.map(u32::from),
         difficulty: pass.difficulty,
         lane_count: mode.playable_lane_count(&acc, &p2_acc),
     };
@@ -307,7 +307,7 @@ fn build_chart(
         asset_dir: dir.clone(),
         maker: pass.maker,
         bpm: pass.bpm,
-        playlevel: pass.playlevel,
+        playlevel: pass.playlevel.map(u32::from),
         difficulty: pass.difficulty,
         rank: pass.rank,
         def_exrank: pass.def_exrank,

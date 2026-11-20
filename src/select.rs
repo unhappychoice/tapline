@@ -820,6 +820,32 @@ mod tests {
     }
 
     #[test]
+    fn bmson_levels_survive_discovery_and_loading_and_display_in_badges() {
+        let dir = tempdir();
+        let path = dir.join("chart.bmson");
+        let fixture = include_str!("../tests/fixtures/minimal.bmson");
+        for (level, badge) in [
+            (Some(256), "[4K Lv256 BPM120]"),
+            (Some(u32::MAX), "[4K Lv4294967295 BPM120]"),
+            (None, "[4K BPM120]"),
+        ] {
+            let mut data: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            let info = data["info"].as_object_mut().unwrap();
+            match level {
+                Some(level) => info.insert("level".into(), level.into()),
+                None => info.remove("level"),
+            };
+            std::fs::write(&path, data.to_string()).unwrap();
+            let charts = scan(&dir);
+            assert_eq!(charts.len(), 1);
+            assert_eq!(charts[0].playlevel, level);
+            assert_eq!(format_badge(&charts[0]), badge);
+            assert_eq!(crate::bmson::load(&path, 0.0).unwrap().playlevel, level);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn format_badge_rounds_bpm_to_the_nearest_integer() {
         let mut m = meta("A");
         m.bpm = 173.6;
