@@ -130,7 +130,7 @@ case-insensitive base 36; `#BASE 62` enables case-sensitive base-62 IDs.
 | channels      | `01` (BGM auto-play), `02` (measure-length change), `03`/`08` (BPM change), `04`/`06`/`07` (BGA base/poor/overlay), `0A` (second BGA overlay), `0B–0E` (BGA opacity), `A1–A4` (BGA transparent color), `A5` (key-bound BGA), `09` (STOP), `SC` (scroll factor), `SP` (spacing factor), `97`/`98` (BGM/keysound volume), `99` (song text), `A0` (judgment-width change), `11–19` (P1 visible notes), `21–29` (P2 visible notes), `31–39` / `41–49` (P1/P2 invisible keysound changes), `51–59` (P1 long notes), `61–69` (P2 long notes), `D1–D9` (P1 landmines), `E1–E9` (P2 landmines) |
 | lane modes    | 4K, 5K (`11–15`), 7K (`11–15 + 18/19`), 9K PMS (`.pms`: `11–15 + 22–25`); 10K, 14K, and asymmetric double-play (`#PLAYER 3` or playable P2 channels); scratch (`16` / `26`) adds a lane on each populated side |
 | audio formats | WAV / OGG / MP3 (extension fallback on lookup)              |
-| polyphony     | multiple `#00101` lines mix concurrently                    |
+| polyphony     | Overlapping BGM events (for example, from multiple `#00101` lines) mix when they use distinct WAV IDs. Retriggering the same WAV ID restarts its voice from the beginning. |
 | control flow  | `#RANDOM`, `#SETRANDOM`, `#ENDRANDOM`, `#IF`, `#ELSEIF`, `#ELSE`, `#ENDIF`, `#SWITCH`, `#SETSWITCH`, `#CASE`, `#SKIP`, `#DEF`, `#ENDSW` (nesting and switch fallthrough supported) |
 
 PMS mode is selected by the `.pms` extension (case-insensitive) and always uses

@@ -4487,6 +4487,21 @@ Always
     }
 
     #[test]
+    fn load_preserves_coincident_bgm_events_with_repeated_and_distinct_wav_ids() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(&path, "#BPM 60\n#00101:01\n#00101:01\n#00101:02\n").unwrap();
+
+        let chart = load(&path, 0.0).unwrap();
+        let events: Vec<_> = chart
+            .bgm
+            .iter()
+            .map(|event| (event.time_ms, event.keysound))
+            .collect();
+        assert_eq!(events, [(4000.0, 1), (4000.0, 1), (4000.0, 2)]);
+    }
+
+    #[test]
     fn load_drops_notes_that_exceed_the_detected_lane_count() {
         let dir = tempdir();
         let path = dir.join("song.bms");
