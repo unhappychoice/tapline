@@ -1,27 +1,26 @@
-use super::identities::{self, Identities, Stamp};
-use crate::bms::{self, ChartMeta};
+use super::ChartEntry;
+use crate::{bms, chart_file, results::Identity};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 #[derive(Default)]
 pub(super) struct Discovery {
-    pub(super) identities: Identities,
     metadata: HashMap<PathBuf, (Stamp, CachedMeta)>,
 }
 
 struct CachedMeta {
-    meta: ChartMeta,
+    entry: ChartEntry,
     preview: Option<String>,
 }
 
 impl Discovery {
-    pub(super) fn scan(&mut self, root: &Path, seed: &impl Fn() -> u64) -> Vec<ChartMeta> {
+    pub(super) fn scan(&mut self, root: &Path, seed: &impl Fn() -> u64) -> Vec<ChartEntry> {
         let mut charts = Vec::new();
         self.walk(root, 0, &mut charts, seed);
         let paths: HashSet<_> = charts.iter().map(|chart| chart.path.as_path()).collect();
         self.metadata
             .retain(|path, _| paths.contains(path.as_path()));
-        self.identities.retain(&paths);
         charts.sort_by(|a, b| {
             a.title
                 .to_ascii_lowercase()
@@ -31,11 +30,15 @@ impl Discovery {
         charts
     }
 
+    pub(super) fn invalidate(&mut self, path: &Path) {
+        self.metadata.remove(path);
+    }
+
     fn walk(
         &mut self,
         dir: &Path,
         depth: usize,
-        out: &mut Vec<ChartMeta>,
+        out: &mut Vec<ChartEntry>,
         seed: &impl Fn() -> u64,
     ) {
         if depth > 5 {
@@ -49,25 +52,32 @@ impl Discovery {
             if entry.file_type().is_ok_and(|ty| ty.is_dir()) {
                 self.walk(&path, depth + 1, out, seed);
             } else if is_bms(&path) {
-                out.extend(self.chart(&path, seed));
+                out.extend(self.chart(&path, seed, chart_file::read));
             }
         }
     }
 
-    fn chart(&mut self, path: &Path, seed: &impl Fn() -> u64) -> Option<ChartMeta> {
-        let before = identities::stamp(path);
+    fn chart(
+        &mut self,
+        path: &Path,
+        seed: &impl Fn() -> u64,
+        read: impl FnOnce(&Path) -> anyhow::Result<Vec<u8>>,
+    ) -> Option<ChartEntry> {
+        let before = stamp(path);
         let is_bmson = crate::bmson::is_bmson(path);
         if let Some((stamp, cached)) = self.metadata.get(path) {
             if before.as_ref() == Some(stamp) {
-                let mut meta = cached.for_visit();
+                let mut entry = cached.for_visit();
                 if !is_bmson {
-                    meta.random_seed = seed();
+                    let seed = seed();
+                    entry.meta.random_seed = seed;
+                    entry.identity.random_seed = Some(seed);
                 }
-                return Some(meta);
+                return Some(entry);
             }
         }
         self.metadata.remove(path);
-        let bytes = crate::chart_file::read(path).ok()?;
+        let bytes = read(path).ok()?;
         let (meta, preview, draws_random) = if is_bmson {
             (
                 crate::bmson::read_meta_bytes(path, &bytes).ok()?,
@@ -77,22 +87,51 @@ impl Discovery {
         } else {
             bms::parse_meta(path, &bytes, seed()).ok()?
         };
-        let cached = CachedMeta { meta, preview };
-        let meta = cached.for_visit();
-        let stable_stamp = self.identities.discover(path, &bytes, before);
-        if let Some(stamp) = stable_stamp.filter(|_| !draws_random) {
+        let identity = Identity::from_bytes(path, &bytes, (!is_bmson).then_some(meta.random_seed));
+        let cached = CachedMeta {
+            entry: ChartEntry { meta, identity },
+            preview,
+        };
+        let entry = cached.for_visit();
+        if let Some(stamp) =
+            before.filter(|before| !draws_random && Some(before) == stamp(path).as_ref())
+        {
             self.metadata.insert(path.to_path_buf(), (stamp, cached));
         }
-        Some(meta)
+        Some(entry)
     }
 }
 
 impl CachedMeta {
-    fn for_visit(&self) -> ChartMeta {
-        let mut meta = self.meta.clone();
-        meta.preview = bms::resolve_preview(&meta.path, self.preview.as_deref());
-        meta
+    fn for_visit(&self) -> ChartEntry {
+        let mut entry = self.entry.clone();
+        entry.meta.preview = bms::resolve_preview(&entry.path, self.preview.as_deref());
+        entry
     }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct Stamp {
+    length: u64,
+    modified: SystemTime,
+    #[cfg(unix)]
+    changed: (i64, i64, u64, u64),
+}
+
+fn stamp(path: &Path) -> Option<Stamp> {
+    let meta = path
+        .metadata()
+        .ok()
+        .filter(|meta| meta.is_file() && meta.len() <= crate::chart_file::MAX_CHART_BYTES)?;
+    Some(Stamp {
+        length: meta.len(),
+        modified: meta.modified().ok()?,
+        #[cfg(unix)]
+        changed: {
+            use std::os::unix::fs::MetadataExt;
+            (meta.ctime(), meta.ctime_nsec(), meta.dev(), meta.ino())
+        },
+    })
 }
 
 const EXTS: [&str; 5] = ["bms", "bml", "bme", "pms", "bmson"];

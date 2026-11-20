@@ -8,10 +8,12 @@ pub(super) fn hit_source(lane: usize) -> SharedSamples {
 }
 
 static HIT_SAMPLES: LazyLock<[DecodedSample; LANE_PITCHES.len()]> = LazyLock::new(|| {
-    LANE_PITCHES.map(|freq| DecodedSample {
-        channels: 1,
-        sample_rate: 44_100,
-        data: Arc::new(synth_ping(freq, HIT_SYNTH_DURATION_MS, 44_100)),
+    LANE_PITCHES.map(|freq| {
+        DecodedSample::new(
+            1,
+            44_100,
+            Arc::new(synth_ping(freq, HIT_SYNTH_DURATION_MS, 44_100)),
+        )
     })
 });
 

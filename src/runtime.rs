@@ -1,6 +1,6 @@
 use crate::bga::Presentation;
 use crate::chart::VolumeTarget;
-use crate::render::ResultDestination;
+use crate::render::{AudioMode, ResultDestination};
 use crate::screen::Screen;
 use crate::{audio, chart, cli::Args, game, render};
 use anyhow::Result;
@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 pub struct PlayOptions {
     pub countdown_ms: f64,
     pub synth_mode: bool,
+    pub no_audio: bool,
     pub auto_ks: bool,
     pub audio_lead_ms: f64,
 }
@@ -24,6 +25,7 @@ impl PlayOptions {
         Self {
             countdown_ms: args.countdown_ms,
             synth_mode: args.synth,
+            no_audio: args.no_audio,
             auto_ks: args.auto_ks,
             audio_lead_ms: args.audio_lead_ms,
         }
@@ -47,12 +49,10 @@ pub fn play_chart_with_destination(
     destination: ResultDestination,
 ) -> Result<()> {
     let opts = PlayOptions::from_args(args);
-    let bank = if args.no_audio {
+    let bank = if opts.no_audio {
         audio::SampleBank::silent()
     } else {
-        audio::SampleBank::with_settings(&chart.wav_paths, &chart.sample_settings)
-            .with_slices(&chart.sample_slices)
-            .with_layers(&chart.sound_layers)
+        audio::SampleBank::for_chart(&chart)
     };
     chart.duration_ms =
         bank.chart_duration_ms(&chart, opts.auto_ks, opts.synth_mode, opts.audio_lead_ms);
@@ -83,17 +83,16 @@ fn persist_result(
     game: &game::Game,
     auto_ks: bool,
 ) -> String {
-    let Ok(mut store) = crate::results::Store::load(path) else {
-        return "Cannot read saved results".into();
-    };
-    let progress = render::format_progress(game, store.get(identity));
-    if !game.completed {
-        return progress;
-    }
-    store.record(identity, game, auto_ks);
-    match store.save(path) {
-        Ok(()) => progress,
-        Err(_) => format!("Storage error: result unsaved | {progress}"),
+    use crate::results::{self, UpdateError};
+
+    match results::update(path, identity, game, auto_ks) {
+        Ok(previous) => render::format_progress(game, previous.as_ref()),
+        Err(UpdateError::Read) => "Cannot read saved results".into(),
+        Err(UpdateError::Lock) => "Storage error: result unsaved".into(),
+        Err(UpdateError::Write(previous)) => {
+            let progress = render::format_progress(game, previous.as_ref());
+            format!("Storage error: result unsaved | {progress}")
+        }
     }
 }
 
@@ -121,7 +120,7 @@ fn run_game(
     while !state.quit {
         let (cols, rows) = terminal::size()?;
         let now = state.update_size(bank, game, elapsed_ms(start), cols, rows);
-        if state.advance_completion(game, now) {
+        if advance_frame(game, bank, opts, &mut state, now) {
             break;
         }
         let visible = render::bga_panel_visible(cols, rows, game.chart.lane_count);
@@ -142,15 +141,23 @@ struct LoopState {
     prev_mode: u8,
     auto_notes: Vec<(f64, usize, Option<u32>)>,
     screen: Screen,
+    intro_artwork: render::IntroArtwork,
     paused: bool,
     clock_ms: f64,
     last_wall_ms: f64,
-    manual_audio_end_ms: f64,
+    audio_end_ms: f64,
 }
 
 impl LoopState {
     fn advance_completion(&self, game: &mut game::Game, now: f64) -> bool {
-        !self.paused && now >= self.manual_audio_end_ms && game.advance_completion(now)
+        !self.paused && now >= self.audio_end_ms && game.advance_completion(now)
+    }
+
+    fn track_playback(&mut self, now: f64, duration: Option<Duration>) {
+        if let Some(duration) = duration {
+            let end = now + duration.as_secs_f64() * 1000.0 + 32.0;
+            self.audio_end_ms = self.audio_end_ms.max(end);
+        }
     }
 
     fn update_size(
@@ -169,7 +176,8 @@ impl LoopState {
         if paused != self.paused {
             bank.set_paused(paused);
         }
-        if self.paused && !paused {
+        if self.paused && !paused && !self.deferred_releases.is_empty() {
+            game.check_misses(self.clock_ms);
             self.deferred_releases
                 .drain(..)
                 .for_each(|lane| game.release(lane, self.clock_ms));
@@ -188,10 +196,11 @@ impl LoopState {
             prev_mode: 0,
             auto_notes,
             screen: Screen::new(),
+            intro_artwork: render::IntroArtwork::default(),
             paused: false,
             clock_ms: 0.0,
             last_wall_ms: 0.0,
-            manual_audio_end_ms: 0.0,
+            audio_end_ms: 0.0,
         }
     }
 }
@@ -210,6 +219,19 @@ fn build_auto_notes(game: &game::Game, opts: &PlayOptions) -> Vec<(f64, usize, O
     v
 }
 
+fn advance_frame(
+    game: &mut game::Game,
+    bank: &audio::SampleBank,
+    opts: &PlayOptions,
+    state: &mut LoopState,
+    now: f64,
+) -> bool {
+    if !state.paused {
+        fire_scheduled_audio(bank, opts, state, game, now);
+    }
+    state.advance_completion(game, now)
+}
+
 fn draw_frame(
     out: &mut Stdout,
     game: &mut game::Game,
@@ -219,47 +241,55 @@ fn draw_frame(
     bga: &Presentation,
     now: f64,
 ) -> Result<()> {
-    if !state.paused {
-        fire_scheduled_audio(bank, opts, state, game, now);
-    }
     let (cols, rows) = terminal::size()?;
     state.screen.resize(cols, rows);
     let mode: u8 = if now < opts.countdown_ms { 1 } else { 2 };
     if mode != state.prev_mode {
+        if mode == 2 {
+            state.intro_artwork = render::IntroArtwork::default();
+        }
         queue!(state.screen, terminal::Clear(terminal::ClearType::All))?;
         state.prev_mode = mode;
     }
     if state.paused {
+        state.intro_artwork = render::IntroArtwork::default();
         render::draw_size_warning(&mut state.screen, game.chart.lane_count)?;
         state.prev_mode = 0;
     } else {
-        draw_mode(&mut state.screen, game, bank, opts, bga, mode, now)?;
+        draw_mode(state, game, bank, opts, bga, (cols, rows), now)?;
     }
     state.screen.present(out)?;
     Ok(())
 }
 
 fn draw_mode(
-    screen: &mut Screen,
+    state: &mut LoopState,
     game: &mut game::Game,
     bank: &audio::SampleBank,
     opts: &PlayOptions,
     bga: &Presentation,
-    mode: u8,
+    size: (u16, u16),
     now: f64,
 ) -> Result<()> {
-    if mode == 1 {
-        return render::draw_intro_full(
-            screen,
+    if now < opts.countdown_ms {
+        let audio_mode = match (opts.no_audio, opts.synth_mode) {
+            (true, _) => AudioMode::Silent,
+            (_, true) => AudioMode::Synth,
+            _ => AudioMode::Samples,
+        };
+        state.intro_artwork.prepare(&game.chart, size);
+        return render::draw_prepared_intro(
+            &mut state.screen,
             game,
             opts.countdown_ms - now,
+            audio_mode,
             bank.enabled,
-            bank.sample_count(),
-            bank.decode_failures,
+            (bank.sample_count(), bank.decode_failures),
+            &state.intro_artwork,
         );
     }
     game.check_misses(now);
-    render::draw(screen, game, bga, now)
+    render::draw(&mut state.screen, game, bga, now)
 }
 
 fn fire_scheduled_audio(
@@ -275,7 +305,7 @@ fn fire_scheduled_audio(
     {
         let event = &game.chart.bgm[state.bgm_cursor];
         let gain = game.volume.gain(VolumeTarget::Bgm, event.time_ms);
-        bank.play_with_gain(event.keysound, gain);
+        state.track_playback(now, bank.start_sound(event.keysound, gain));
         state.bgm_cursor += 1;
     }
     while state.note_snd_cursor < state.auto_notes.len()
@@ -283,7 +313,7 @@ fn fire_scheduled_audio(
     {
         let (time_ms, lane, ks) = state.auto_notes[state.note_snd_cursor];
         let gain = game.volume.gain(VolumeTarget::Key, time_ms);
-        bank.play_hit_with_gain(lane, ks, opts.synth_mode, gain);
+        state.track_playback(now, bank.start_hit(lane, ks, opts.synth_mode, gain));
         state.note_snd_cursor += 1;
     }
 }
@@ -362,14 +392,15 @@ fn handle_key(
             };
             match kind {
                 KeyEventKind::Press if !state.paused => {
+                    game.check_misses(now);
+                    if game.gameplay_ended(now) {
+                        return false;
+                    }
                     state.pressed_keys.insert(c.to_ascii_uppercase());
                     let ks = game.hit(lane, now);
                     if !opts.auto_ks {
                         let gain = game.volume.gain(VolumeTarget::Key, now);
-                        if let Some(duration) = bank.start_hit(lane, ks, opts.synth_mode, gain) {
-                            let end = now + duration.as_secs_f64() * 1000.0 + 32.0;
-                            state.manual_audio_end_ms = state.manual_audio_end_ms.max(end);
-                        }
+                        state.track_playback(now, bank.start_hit(lane, ks, opts.synth_mode, gain));
                     }
                 }
                 KeyEventKind::Release
@@ -382,6 +413,7 @@ fn handle_key(
                     if state.paused {
                         state.deferred_releases.push(lane);
                     } else {
+                        game.check_misses(now);
                         game.release(lane, now);
                     }
                 }
@@ -409,15 +441,23 @@ fn show_result(
     progress: &str,
     destination: ResultDestination,
 ) -> Result<()> {
-    execute!(out, terminal::Clear(terminal::ClearType::All))?;
-    render::draw_result_with_destination(out, game, progress, destination)?;
+    wait_for_result_dismissal(terminal::size()?, event::read, |cols, rows| {
+        queue!(out, terminal::Clear(terminal::ClearType::All))?;
+        render::draw_result_content(out, game, cols, rows, progress, destination)
+    })
+}
+
+fn wait_for_result_dismissal(
+    (cols, rows): (u16, u16),
+    mut read: impl FnMut() -> std::io::Result<Event>,
+    mut draw: impl FnMut(u16, u16) -> Result<()>,
+) -> Result<()> {
+    draw(cols, rows)?;
     loop {
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(k) = event::read()? {
-                if k.kind == KeyEventKind::Press {
-                    return Ok(());
-                }
-            }
+        match read()? {
+            Event::Resize(cols, rows) => draw(cols, rows)?,
+            Event::Key(key) if key.kind == KeyEventKind::Press => return Ok(()),
+            _ => {}
         }
     }
 }
@@ -782,6 +822,7 @@ mod tests {
         PlayOptions {
             countdown_ms: 2000.0,
             synth_mode: true,
+            no_audio: false,
             auto_ks,
             audio_lead_ms: 0.0,
         }
@@ -843,8 +884,56 @@ mod tests {
     }
 
     #[test]
+    fn overdue_final_bgm_plays_before_gameplay_completes() {
+        let (bank, mut output) = audio::playback_test_bank();
+        let options = PlayOptions {
+            synth_mode: false,
+            ..opts(false)
+        };
+        let mut chart = base_chart(
+            4,
+            vec![Note {
+                time_ms: 3000.0,
+                keysound: Some(2),
+                ..Note::default()
+            }],
+        );
+        chart.bgm.push(BgmEvent {
+            time_ms: 4000.0,
+            keysound: 2,
+        });
+        chart.duration_ms = bank.chart_duration_ms(&chart, false, false, 0.0);
+        assert_eq!(chart.duration_ms, 4112.0);
+        let mut game = Game::new(chart);
+        let mut state = LoopState::new(Vec::new());
+        game.hit(0, 3000.0);
+        assert_eq!(game.perfect, 1);
+
+        let now = state.update_size(&bank, &mut game, 3999.0, 80, 24);
+        assert!(!advance_frame(&mut game, &bank, &options, &mut state, now));
+        assert_eq!(state.bgm_cursor, 0);
+        assert_eq!(output.next(), Some(0.0));
+
+        let now = state.update_size(&bank, &mut game, 5000.0, 80, 24);
+        assert!(game.gameplay_ended(now));
+        assert!(!advance_frame(&mut game, &bank, &options, &mut state, now));
+        assert_eq!(state.bgm_cursor, 1);
+        assert!(output.by_ref().take(2048).any(|sample| sample > 0.0));
+        assert_eq!(state.audio_end_ms, 5112.0);
+
+        let now = state.update_size(&bank, &mut game, 5079.0, 80, 24);
+        assert!(!advance_frame(&mut game, &bank, &options, &mut state, now));
+        assert!(!game.completed);
+
+        let now = state.update_size(&bank, &mut game, 5112.0, 80, 24);
+        assert!(advance_frame(&mut game, &bank, &options, &mut state, now));
+        assert!(game.completed);
+    }
+
+    #[test]
     fn completion_waits_for_an_invisible_keysound_played_by_a_manual_press() {
-        let bank = audio::manual_playback_test_bank()
+        let (bank, _output) = audio::playback_test_bank();
+        let bank = bank
             .with_slices(
                 &[(
                     1,
@@ -894,11 +983,43 @@ mod tests {
             assert_eq!((game.perfect, game.miss), (1, 0));
             assert_eq!(state.advance_completion(&mut game, 6500.0), auto_ks);
             if !auto_ks {
+                let audio_end = state.audio_end_ms;
+                for now in [6500.0, 7500.0, 8500.0, 16_399.0] {
+                    handle_key(
+                        KeyCode::Char('s'),
+                        KeyEventKind::Press,
+                        &mut game,
+                        &bank,
+                        &opts,
+                        &mut state,
+                        now,
+                    );
+                    assert_eq!(state.audio_end_ms, audio_end);
+                    assert!(!game.completed);
+                }
                 assert!(!state.advance_completion(&mut game, 16_399.0));
                 assert!(!game.completed);
                 assert!(state.advance_completion(&mut game, 16_432.0));
             }
         }
+    }
+
+    #[test]
+    fn lane_presses_can_judge_pending_notes_at_chart_end() {
+        let mut game = ready_game();
+        game.chart.duration_ms = 3000.0;
+        let bank = SampleBank::silent();
+        let mut state = LoopState::new(Vec::new());
+        handle_key(
+            KeyCode::Char('s'),
+            KeyEventKind::Press,
+            &mut game,
+            &bank,
+            &opts(false),
+            &mut state,
+            3000.0,
+        );
+        assert_eq!(game.perfect, 1);
     }
 
     #[test]
@@ -1017,7 +1138,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_frame_schedules_countdown_audio_at_each_lead_time() {
+    fn scheduled_audio_plays_during_countdown_at_each_lead_time() {
         for auto_ks in [false, true] {
             let times = [2000.0, 2032.0, 2064.0];
             let notes = times
@@ -1044,8 +1165,6 @@ mod tests {
             let mut options = opts(auto_ks);
             options.audio_lead_ms = 80.0;
             let mut state = LoopState::new(build_auto_notes(&game, &options));
-            let mut out = std::io::stdout();
-
             for (now, expected) in [
                 (1919.0, 0),
                 (1920.0, 1),
@@ -1055,9 +1174,7 @@ mod tests {
                 (1984.0, 3),
                 (2000.0, 3),
             ] {
-                // Rendering can fail without a terminal; audio must still be scheduled.
-                let bga = Presentation::new(&game.chart, false);
-                let _ = draw_frame(&mut out, &mut game, &bank, &options, &mut state, &bga, now);
+                assert!(!advance_frame(&mut game, &bank, &options, &mut state, now));
                 assert_eq!(state.bgm_cursor, expected, "BGM at {now} ms");
                 assert_eq!(
                     state.note_snd_cursor,
@@ -1252,6 +1369,56 @@ mod tests {
             },
         ];
         Game::new(base_chart(4, notes))
+    }
+
+    #[test]
+    fn last_key_release_judges_both_overlapping_bms_long_notes() {
+        let mut chart = crate::bms::load_bytes(
+            std::path::Path::new("overlap.bms"),
+            b"#BPM 120\n#LNMODE 1\n#LNOBJ 03\n#00151:01000100\n#00111:00020003\n",
+            0.0,
+            0,
+        )
+        .unwrap();
+        chart.keys[0] = vec!['F', 'J'];
+        let mut game = Game::new(chart);
+        let mut state = LoopState::new(Vec::new());
+        let bank = SampleBank::silent();
+        let options = PlayOptions {
+            countdown_ms: 0.0,
+            ..opts(false)
+        };
+        let mut send_key = |game: &mut Game, key, kind, now| {
+            handle_key(
+                KeyCode::Char(key),
+                kind,
+                game,
+                &bank,
+                &options,
+                &mut state,
+                now,
+            );
+        };
+
+        send_key(&mut game, 'f', KeyEventKind::Press, 2000.0);
+        send_key(&mut game, 'j', KeyEventKind::Press, 2500.0);
+        send_key(&mut game, 'f', KeyEventKind::Release, 2600.0);
+        assert_eq!((game.perfect, game.miss), (2, 0));
+        assert!(game
+            .chart
+            .notes
+            .iter()
+            .all(|note| note.held_since.is_some()));
+
+        send_key(&mut game, 'j', KeyEventKind::Release, 2750.0);
+        assert_eq!((game.perfect, game.miss), (2, 2));
+        assert!(game
+            .chart
+            .notes
+            .iter()
+            .all(|note| note.hit && note.held_since.is_none()));
+        game.check_misses(3500.0);
+        assert_eq!((game.perfect, game.miss), (2, 2));
     }
 
     #[test]
@@ -1496,6 +1663,74 @@ mod tests {
     }
 
     #[test]
+    fn lane_press_applies_only_misses_strictly_past_the_deadline() {
+        for (now, misses, combo) in [(1160.0, 0, 2), (1162.0, 1, 1)] {
+            let notes = [(800.0, 0), (1000.0, 0), (1165.0, 1)].map(|(time_ms, lane)| Note {
+                time_ms,
+                lane,
+                ..Note::default()
+            });
+            let mut game = Game::new(base_chart(4, notes.to_vec()));
+            let mut state = LoopState::new(Vec::new());
+            let bank = SampleBank::silent();
+            let options = PlayOptions {
+                countdown_ms: 0.0,
+                ..opts(false)
+            };
+            game.hit(0, 800.0);
+            game.check_misses(1158.0);
+            let score = game.score;
+            handle_key(
+                KeyCode::Char('d'),
+                KeyEventKind::Press,
+                &mut game,
+                &bank,
+                &options,
+                &mut state,
+                now,
+            );
+            assert_eq!((game.perfect, game.miss, game.combo), (2, misses, combo));
+            assert_eq!(game.score - score, game::Judgment::Perfect.points() + combo);
+        }
+    }
+
+    #[test]
+    fn lane_release_applies_overdue_charge_note_tail_once() {
+        let note = Note {
+            time_ms: 3000.0,
+            end_ms: Some(5000.0),
+            ..Note::default()
+        };
+        let mut game = Game::new(base_chart(4, vec![note]));
+        let mut state = LoopState::new(Vec::new());
+        let bank = SampleBank::silent();
+        let options = opts(false);
+        handle_key(
+            KeyCode::Char('s'),
+            KeyEventKind::Press,
+            &mut game,
+            &bank,
+            &options,
+            &mut state,
+            3000.0,
+        );
+        game.check_misses(5160.0);
+        assert_eq!(game.perfect, 1);
+        handle_key(
+            KeyCode::Char('s'),
+            KeyEventKind::Release,
+            &mut game,
+            &bank,
+            &options,
+            &mut state,
+            5162.0,
+        );
+        game.check_misses(5170.0);
+        assert_eq!((game.perfect, game.miss, game.combo), (2, 0, 2));
+        assert!(game.chart.notes[0].hit);
+    }
+
+    #[test]
     fn handle_key_treats_unbound_letters_as_noops() {
         let mut g = ready_game();
         let mut s = LoopState::new(Vec::new());
@@ -1548,6 +1783,51 @@ mod result_tests {
     use super::*;
 
     #[test]
+    fn result_redraws_at_each_size_until_a_key_press() {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+
+        let game = game::Game::new(chart::built_in(120.0, 0.0));
+        let mut events = [
+            Event::Resize(80, 24),
+            Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+                KeyEventKind::Release,
+            )),
+            Event::Resize(29, 5),
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Event::Resize(80, 24),
+        ]
+        .into_iter();
+        let mut frames = Vec::new();
+        wait_for_result_dismissal(
+            (80, 5),
+            || Ok(events.next().expect("expected a dismissal key press")),
+            |cols, rows| {
+                let mut frame = Vec::new();
+                render::draw_result_content(
+                    &mut frame,
+                    &game,
+                    cols,
+                    rows,
+                    "Interrupted",
+                    ResultDestination::Selector,
+                )?;
+                frames.push(String::from_utf8(frame)?);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(frames.len(), 3);
+        assert!(!frames[0].contains("score"));
+        assert!(frames[1].contains("score"));
+        assert!(!frames[2].contains("score"));
+        assert!(frames[2].contains("any key: return to selector"));
+        assert_eq!(events.next(), Some(Event::Resize(80, 24)));
+    }
+
+    #[test]
     fn storage_failures_are_non_fatal_and_corrupt_records_are_preserved() {
         let dir =
             std::env::temp_dir().join(format!("tapline-runtime-results-{}", std::process::id()));
@@ -1569,7 +1849,10 @@ mod result_tests {
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "corrupt");
         std::fs::remove_file(&path).unwrap();
+        game.score = 100;
         assert!(persist_result(&path, &id, &game, false).contains("First completed"));
+        game.score = 200;
+        assert!(persist_result(&path, &id, &game, false).contains("score +100"));
         assert!(crate::results::Store::load(&path)
             .unwrap()
             .get(&id)

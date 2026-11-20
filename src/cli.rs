@@ -69,7 +69,7 @@ impl Args {
 
 pub enum ChartChoice {
     File(PathBuf),
-    Selected(Box<bms::ChartMeta>),
+    Selected(Box<select::ChartEntry>),
     Cancelled,
     BuiltIn,
 }
@@ -89,11 +89,12 @@ pub fn choose_chart_with_selector(
     if let Some(p) = &args.file {
         return Ok(ChartChoice::File(p.clone()));
     }
-    let Some(dir) = args.dir.clone().or_else(default_songs_dir) else {
-        return Ok(ChartChoice::BuiltIn);
-    };
-    let charts = state.scan(&dir);
-    if charts.is_empty() {
+    let charts = args
+        .dir
+        .clone()
+        .or_else(default_songs_dir)
+        .map_or_else(Vec::new, |dir| state.scan(&dir));
+    if charts.is_empty() && !state.reopening_selector {
         return Ok(ChartChoice::BuiltIn);
     }
     Ok(
@@ -106,13 +107,25 @@ pub fn choose_chart_with_selector(
 
 pub type LoadedSession = (crate::chart::Chart, Option<crate::results::Identity>);
 
+#[derive(Debug)]
+pub struct ChartRevisionChanged;
+
+impl std::fmt::Display for ChartRevisionChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The selected chart changed on disk")
+    }
+}
+
+impl std::error::Error for ChartRevisionChanged {}
+
 pub fn load_session(choice: &ChartChoice, args: &Args) -> Result<Option<LoadedSession>> {
     use crate::results::Identity;
-    let (path, seed) = match choice {
-        ChartChoice::File(path) => (path, (!bmson::is_bmson(path)).then(bms::random_seed)),
-        ChartChoice::Selected(meta) => (
-            &meta.path,
-            (!bmson::is_bmson(&meta.path)).then_some(meta.random_seed),
+    let (path, seed, expected) = match choice {
+        ChartChoice::File(path) => (path, (!bmson::is_bmson(path)).then(bms::random_seed), None),
+        ChartChoice::Selected(entry) => (
+            &entry.path,
+            entry.identity.random_seed,
+            Some(&entry.identity),
         ),
         ChartChoice::BuiltIn => {
             return Ok(Some((
@@ -128,6 +141,7 @@ pub fn load_session(choice: &ChartChoice, args: &Args) -> Result<Option<LoadedSe
         &bytes,
         seed,
         args.countdown_ms,
+        expected,
     )?))
 }
 
@@ -136,8 +150,12 @@ fn session_from_bytes(
     bytes: &[u8],
     seed: Option<u64>,
     lead_in_ms: f64,
+    expected: Option<&crate::results::Identity>,
 ) -> Result<LoadedSession> {
     let identity = crate::results::Identity::from_bytes(path, bytes, seed);
+    if expected.is_some_and(|entry| entry.key != identity.key) {
+        return Err(ChartRevisionChanged.into());
+    }
     let chart = match seed {
         Some(seed) => bms::load_bytes(path, bytes, lead_in_ms, seed)?,
         None => bmson::load_bytes(path, bytes, lead_in_ms)?,
@@ -199,13 +217,15 @@ fn default_songs_dir() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let p = Path::new(&home).join(".tapline").join("songs");
-        if p.is_dir() {
-            return Some(p);
-        }
-    }
-    None
+    [
+        "HOME",
+        #[cfg(windows)]
+        "USERPROFILE",
+    ]
+    .into_iter()
+    .filter_map(std::env::var_os)
+    .map(|home| Path::new(&home).join(".tapline").join("songs"))
+    .find(|path| path.is_dir())
 }
 
 #[cfg(test)]
@@ -376,6 +396,7 @@ mod tests {
     struct EnvSnapshot {
         songs_dir: Option<std::ffi::OsString>,
         home: Option<std::ffi::OsString>,
+        user_profile: Option<std::ffi::OsString>,
         cwd: PathBuf,
     }
 
@@ -384,6 +405,7 @@ mod tests {
             Self {
                 songs_dir: std::env::var_os("TAPLINE_SONGS_DIR"),
                 home: std::env::var_os("HOME"),
+                user_profile: std::env::var_os("USERPROFILE"),
                 cwd: std::env::current_dir().unwrap(),
             }
         }
@@ -398,6 +420,10 @@ mod tests {
             match &self.home {
                 Some(v) => std::env::set_var("HOME", v),
                 None => std::env::remove_var("HOME"),
+            }
+            match &self.user_profile {
+                Some(v) => std::env::set_var("USERPROFILE", v),
+                None => std::env::remove_var("USERPROFILE"),
             }
             let _ = std::env::set_current_dir(&self.cwd);
         }
@@ -427,6 +453,7 @@ mod tests {
         let isolated = tempdir();
         std::env::set_current_dir(&isolated).unwrap();
         std::env::remove_var("HOME");
+        std::env::remove_var("USERPROFILE");
         assert!(
             default_songs_dir().is_none(),
             "env var pointing at a missing dir should not survive"
@@ -462,11 +489,42 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn default_songs_dir_falls_back_to_windows_profile_without_home() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _snapshot = EnvSnapshot::capture();
+        let workspace = tempdir();
+        let profile = tempdir();
+        let songs = profile.join(".tapline").join("songs");
+        std::fs::create_dir_all(&songs).unwrap();
+        std::fs::write(
+            songs.join("song.bms"),
+            "#TITLE Profile Song\n#BPM 120\n#00111:01\n",
+        )
+        .unwrap();
+        std::env::remove_var("TAPLINE_SONGS_DIR");
+        std::env::remove_var("HOME");
+        std::env::set_var("USERPROFILE", &profile);
+        std::env::set_current_dir(&workspace).unwrap();
+
+        assert_eq!(default_songs_dir().as_deref(), Some(songs.as_path()));
+        assert_eq!(select::SelectorState::default().scan(&songs).len(), 1);
+
+        for candidate in ["tests/fixtures", "songs"] {
+            std::fs::create_dir_all(workspace.join(candidate)).unwrap();
+            assert_eq!(default_songs_dir().as_deref(), Some(Path::new(candidate)));
+        }
+        std::env::set_var("TAPLINE_SONGS_DIR", &profile);
+        assert_eq!(default_songs_dir().as_deref(), Some(profile.as_path()));
+    }
+
+    #[test]
     fn default_songs_dir_gives_up_when_nothing_matches() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _snapshot = EnvSnapshot::capture();
         std::env::remove_var("TAPLINE_SONGS_DIR");
         std::env::remove_var("HOME");
+        std::env::remove_var("USERPROFILE");
         let isolated = tempdir();
         std::env::set_current_dir(&isolated).unwrap();
         assert!(default_songs_dir().is_none());
@@ -561,7 +619,7 @@ mod session_tests {
         let snapshot = crate::chart_file::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::write(&path, replacement).unwrap();
-        let (chart, identity) = session_from_bytes(&path, &snapshot, seed, 500.0).unwrap();
+        let (chart, identity) = session_from_bytes(&path, &snapshot, seed, 500.0, None).unwrap();
         let identity = identity.unwrap();
         assert_eq!(chart.title, "Original");
         assert_eq!(chart.bpm, 120.0);
@@ -592,29 +650,12 @@ mod session_tests {
     }
 
     #[test]
-    fn selected_random_seed_is_carried_to_the_loaded_session() {
+    fn direct_bms_load_has_a_random_seed() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.bms");
-        let meta = bms::read_meta_with_seed(&path, 42).unwrap();
         let args = Args::parse_from(["tapline"]);
-        let (chart, identity) = load_session(&ChartChoice::Selected(Box::new(meta)), &args)
+        let (_, identity) = load_session(&ChartChoice::File(path), &args)
             .unwrap()
             .unwrap();
-        let identity = identity.unwrap();
-        assert_eq!(identity.random_seed, Some(42));
-        assert_eq!(
-            identity.key,
-            crate::results::Identity::file(&path, None).unwrap().key
-        );
-        assert_eq!(
-            chart.notes.len(),
-            bms::load_with_seed(&path, args.countdown_ms, 42)
-                .unwrap()
-                .notes
-                .len()
-        );
-        let (_, explicit) = load_session(&ChartChoice::File(path), &args)
-            .unwrap()
-            .unwrap();
-        assert!(explicit.unwrap().random_seed.is_some());
+        assert!(identity.unwrap().random_seed.is_some());
     }
 }

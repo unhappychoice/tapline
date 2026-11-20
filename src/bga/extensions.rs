@@ -8,6 +8,14 @@ pub struct Extensions {
     pub switches: HashMap<u32, Switch>,
     pub events: Vec<EffectEvent>,
     pub poor_mode: u8,
+    pub overlay_transparency: OverlayTransparency,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum OverlayTransparency {
+    #[default]
+    BlackColorKey,
+    ImageAlpha,
 }
 
 #[derive(Clone, Copy)]

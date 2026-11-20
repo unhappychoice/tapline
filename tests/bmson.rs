@@ -8,6 +8,10 @@ fn fixture() -> &'static Path {
 }
 
 fn load_value(value: Value) -> anyhow::Result<tapline::chart::Chart> {
+    load_with_lead_in(value, 1000.0)
+}
+
+fn load_with_lead_in(value: Value, lead_in_ms: f64) -> anyhow::Result<tapline::chart::Chart> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static COUNT: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -18,7 +22,7 @@ fn load_value(value: Value) -> anyhow::Result<tapline::chart::Chart> {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("test.bmson");
     std::fs::write(&path, value.to_string()).unwrap();
-    let result = bmson::load(&path, 1000.0);
+    let result = bmson::load(&path, lead_in_ms);
     std::fs::remove_dir_all(dir).unwrap();
     result
 }
@@ -30,10 +34,16 @@ fn base() -> Value {
 
 #[test]
 fn fixture_loads_through_cli_and_can_be_played() {
-    let args = cli::Args::parse_from(["tapline", "--countdown-ms", "1000"]);
-    let chart = cli::load_chart(&cli::ChartChoice::File(fixture().into()), &args)
-        .unwrap()
-        .unwrap();
+    let args = cli::Args::parse_from([
+        "tapline",
+        "--file",
+        fixture().to_str().unwrap(),
+        "--countdown-ms",
+        "1000",
+    ]);
+    let choice = cli::choose_chart(&mut std::io::stdout(), &args).unwrap();
+    let chart = cli::load_chart(&choice, &args).unwrap().unwrap();
+    assert_eq!(chart.playlevel, Some(256));
     assert_eq!(chart.lane_count, 4);
     assert_eq!(chart.notes.len(), 2);
     assert_eq!(chart.notes[1].time_ms, 1500.0);
@@ -52,19 +62,59 @@ fn fixture_loads_through_cli_and_can_be_played() {
 }
 
 #[test]
+fn judge_rank_scales_taps_releases_and_deadlines() {
+    let mut value: Value = serde_json::from_str(include_str!("fixtures/minimal.bmson")).unwrap();
+    value["info"]["judge_rank"] = json!(50);
+    let mut game = Game::new(load_value(value.clone()).unwrap());
+    game.hit(0, 1100.0);
+    assert!(!game.chart.notes[0].hit);
+
+    game.hit(1, 1500.0);
+    game.release(1, 1850.0);
+    assert_eq!((game.good, game.perfect, game.miss), (0, 1, 1));
+
+    let mut game = Game::new(load_value(value).unwrap());
+    game.check_misses(1080.0);
+    assert_eq!(game.miss, 0);
+    game.check_misses(1081.0);
+    assert_eq!(game.miss, 1);
+    game.hit(1, 1500.0);
+    game.check_misses(1830.0);
+    assert!(!game.chart.notes[1].hit);
+    game.check_misses(1831.0);
+    assert!(game.chart.notes[1].hit);
+    assert_eq!(game.perfect, 2);
+}
+
+#[test]
+fn missing_or_invalid_judge_rank_uses_normal_windows() {
+    let mut value: Value = serde_json::from_str(include_str!("fixtures/minimal.bmson")).unwrap();
+    let mut game = Game::new(load_value(value.clone()).unwrap());
+    game.hit(0, 1100.0);
+    assert_eq!(game.good, 1);
+
+    for invalid in [0.0, -50.0, 1.7e308] {
+        value["info"]["judge_rank"] = json!(invalid);
+        let chart = load_value(value.clone()).unwrap();
+        assert_eq!(chart.judgment_scale(1000.0), 1.0);
+    }
+}
+
+#[test]
 fn selector_discovers_bmson_metadata() {
     let charts = select::scan(Path::new("tests/fixtures"));
     let meta = charts.iter().find(|m| m.path == fixture()).unwrap();
     assert_eq!(meta.title, "Minimal bmson");
     assert_eq!(meta.bpm, 120.0);
     assert!(meta.preview.is_none());
-    assert_eq!(meta.playlevel, Some(1));
+    assert_eq!(meta.playlevel, Some(256));
     assert_eq!(meta.random_seed, 0);
     let args = cli::Args::parse_from(["tapline", "--countdown-ms", "1000"]);
     let chart = cli::load_chart(&cli::ChartChoice::Selected(Box::new(meta.clone())), &args)
         .unwrap()
         .unwrap();
     assert_eq!(chart.title, meta.title);
+    assert_eq!(chart.playlevel, meta.playlevel);
     assert_eq!(chart.notes.len(), 2);
     assert_eq!(chart.notes[0].time_ms, 1000.0);
     assert!(bmson::is_bmson(Path::new("chart.BMSON")));
@@ -242,4 +292,38 @@ fn layered_long_notes_merge_and_unequal_lengths_are_rejected() {
             );
         }
     }
+}
+
+fn chart_with_rounded_timestamps() -> Value {
+    let mut data = base();
+    data["info"]["init_bpm"] = json!(1e20);
+    data["info"]["resolution"] = json!(240);
+    data["info"]["mode_hint"] = json!("generic-4keys");
+    data
+}
+
+#[test]
+fn distinct_pulses_with_equal_timestamps_keep_separate_judgments() {
+    let mut data = chart_with_rounded_timestamps();
+    data["sound_channels"] = json!([
+        {"name":"sound.wav","notes":[{"x":1,"y":0}, {"x":1,"y":1}]}
+    ]);
+    let chart = load_with_lead_in(data, 2000.0).unwrap();
+    assert_eq!(chart.notes.len(), 2);
+    assert!(chart.notes.iter().all(|note| note.time_ms == 2000.0));
+    let mut game = Game::new(chart);
+    game.hit(0, 2000.0);
+    game.hit(0, 2000.0);
+    assert_eq!(game.perfect, 2);
+}
+
+#[test]
+fn unequal_source_lengths_with_equal_end_timestamps_are_rejected() {
+    let mut data = chart_with_rounded_timestamps();
+    data["sound_channels"] = json!([
+        {"name":"first.wav","notes":[{"x":1,"y":0,"l":1}]},
+        {"name":"second.wav","notes":[{"x":1,"y":0,"l":2}]}
+    ]);
+    let error = load_with_lead_in(data, 2000.0).err().unwrap();
+    assert!(error.to_string().contains("unequal lengths"));
 }

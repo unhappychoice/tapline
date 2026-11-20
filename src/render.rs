@@ -275,15 +275,32 @@ fn display_key(c: &char) -> String {
     }
 }
 
-pub fn format_audio_badge(audio_on: bool, samples: usize, failures: usize) -> String {
-    if !audio_on {
-        return "silent (audio backend unavailable)".to_string();
+pub enum AudioMode {
+    Silent,
+    Samples,
+    Synth,
+}
+
+pub fn format_audio_badge(
+    mode: AudioMode,
+    audio_on: bool,
+    samples: usize,
+    failures: usize,
+) -> String {
+    match mode {
+        AudioMode::Silent => return "silent (--no-audio)".to_string(),
+        _ if !audio_on => return "silent (audio backend unavailable)".to_string(),
+        _ => {}
     }
-    match (samples, failures) {
-        (0, 0) => "audio on · synth mode".to_string(),
-        (_, 0) => format!("audio on · {samples} samples"),
-        (_, _) => format!("audio on · {samples} samples · {failures} failed to decode"),
+    let mut badge = match (mode, samples, failures) {
+        (_, 0, 0) => "audio on · synth mode".to_string(),
+        (AudioMode::Synth, _, _) => format!("synth notes · {samples} samples"),
+        _ => format!("audio on · {samples} samples"),
+    };
+    if failures > 0 {
+        badge.push_str(&format!(" · {failures} failed to decode"));
     }
+    badge
 }
 
 /// Compact HUD tag summarising the base/overlay/poor BGA slots the way a
@@ -635,18 +652,32 @@ pub fn draw(
     Ok(())
 }
 
-fn draw_stagefile(
-    out: &mut impl Write,
-    chart: &crate::chart::Chart,
-    cols: u16,
-    rows: u16,
-) -> std::io::Result<()> {
-    crate::artwork::draw(
-        out,
-        &chart.asset_dir,
-        &chart.stagefile,
-        (0, 0, cols, (rows / 2).saturating_sub(4)),
-    )
+#[derive(Default)]
+pub(crate) struct IntroArtwork {
+    size: (u16, u16),
+    pixels: Option<image::RgbaImage>,
+}
+
+impl IntroArtwork {
+    pub(crate) fn prepare(&mut self, chart: &crate::chart::Chart, size: (u16, u16)) {
+        if self.size != size {
+            self.size = size;
+            let (_, _, width, height) = stagefile_area(size);
+            self.pixels =
+                crate::artwork::prepare(&chart.asset_dir, &chart.stagefile, (width, height));
+        }
+    }
+
+    fn draw(&self, out: &mut impl Write) -> std::io::Result<()> {
+        if let Some(pixels) = &self.pixels {
+            crate::artwork::draw_pixels(out, pixels, stagefile_area(self.size))?;
+        }
+        Ok(())
+    }
+}
+
+fn stagefile_area((cols, rows): (u16, u16)) -> (u16, u16, u16, u16) {
+    (0, 0, cols, (rows / 2).saturating_sub(4))
 }
 
 pub fn draw_intro(
@@ -655,20 +686,68 @@ pub fn draw_intro(
     countdown_ms: f64,
     audio_on: bool,
 ) -> anyhow::Result<()> {
-    draw_intro_full(out, game, countdown_ms, audio_on, 0, 0)
+    draw_intro_full(out, game, countdown_ms, AudioMode::Samples, audio_on, 0, 0)
 }
 
 pub fn draw_intro_full(
     out: &mut impl Write,
     game: &Game,
     countdown_ms: f64,
+    mode: AudioMode,
     audio_on: bool,
     samples_loaded: usize,
     decode_failures: usize,
 ) -> anyhow::Result<()> {
-    let (cols, rows) = terminal::size()?;
+    let size = terminal::size()?;
     queue!(out, terminal::BeginSynchronizedUpdate)?;
-    draw_stagefile(out, &game.chart, cols, rows)?;
+    crate::artwork::draw(
+        out,
+        &game.chart.asset_dir,
+        &game.chart.stagefile,
+        stagefile_area(size),
+    )?;
+    draw_intro_content(
+        out,
+        game,
+        countdown_ms,
+        mode,
+        audio_on,
+        (samples_loaded, decode_failures),
+        size,
+    )
+}
+
+pub(crate) fn draw_prepared_intro(
+    out: &mut impl Write,
+    game: &Game,
+    countdown_ms: f64,
+    mode: AudioMode,
+    audio_on: bool,
+    samples: (usize, usize),
+    artwork: &IntroArtwork,
+) -> anyhow::Result<()> {
+    queue!(out, terminal::BeginSynchronizedUpdate)?;
+    artwork.draw(out)?;
+    draw_intro_content(
+        out,
+        game,
+        countdown_ms,
+        mode,
+        audio_on,
+        samples,
+        artwork.size,
+    )
+}
+
+fn draw_intro_content(
+    out: &mut impl Write,
+    game: &Game,
+    countdown_ms: f64,
+    mode: AudioMode,
+    audio_on: bool,
+    (samples_loaded, decode_failures): (usize, usize),
+    (cols, rows): (u16, u16),
+) -> anyhow::Result<()> {
     let title = format_title_line(&game.chart.title, &game.chart.subtitle);
     queue!(
         out,
@@ -728,7 +807,7 @@ pub fn draw_intro_full(
         style::SetAttribute(style::Attribute::Reset),
         ResetColor
     )?;
-    let badge = format_audio_badge(audio_on, samples_loaded, decode_failures);
+    let badge = format_audio_badge(mode, audio_on, samples_loaded, decode_failures);
     queue!(
         out,
         cursor::MoveTo(
@@ -801,7 +880,7 @@ fn draw_result_to<W: Write>(out: &mut W, game: &Game, cols: u16, rows: u16) -> a
     draw_result_content(out, game, cols, rows, "", ResultDestination::Exit)
 }
 
-fn draw_result_content<W: Write>(
+pub(crate) fn draw_result_content<W: Write>(
     out: &mut W,
     game: &Game,
     cols: u16,
@@ -1448,28 +1527,53 @@ mod tests {
     }
 
     #[test]
-    fn intro_draws_stagefile_relative_to_chart_directory() {
+    fn intro_reuses_stagefile_until_resize_or_replay() {
+        use crate::assets::DIRECTORY_VISITS;
+
         crossterm::style::force_color_output(true);
-        let dir = std::env::current_dir()
-            .unwrap()
-            .join("target/intro-artwork-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        image::RgbImage::from_pixel(4, 4, image::Rgb([0, 255, 0]))
-            .save(dir.join("stage.png"))
-            .unwrap();
+        let dir = std::path::PathBuf::from("target/intro-artwork-test");
+        std::fs::create_dir_all(dir.join("art")).unwrap();
+        let stage = dir.join("art/stage.png");
+        let save = |color| {
+            image::RgbImage::from_pixel(16, 16, image::Rgb(color))
+                .save(&stage)
+                .unwrap();
+        };
         let chart = crate::chart::Chart {
             asset_dir: dir,
-            stagefile: "stage.png".into(),
+            stagefile: "art/stage.png".into(),
             ..Default::default()
         };
-        let mut out = Vec::new();
-        draw_stagefile(&mut out, &chart, 80, 24).unwrap();
-        let output = String::from_utf8(out).unwrap();
-        assert!(output.contains('▀'));
-        assert!(output.contains("38;2;0;255;0"));
-        let mut tiny = Vec::new();
-        draw_stagefile(&mut tiny, &chart, 10, 8).unwrap();
-        assert!(tiny.is_empty());
+        let draw = |artwork: &IntroArtwork| {
+            let mut out = Vec::new();
+            artwork.draw(&mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+
+        save([0, 255, 0]);
+        let mut artwork = IntroArtwork::default();
+        artwork.prepare(&chart, (80, 24));
+        let original = draw(&artwork);
+        assert_eq!(original.matches('▀').count(), 128);
+        assert!(original.contains("38;2;0;255;0"));
+
+        save([255, 0, 0]);
+        let visits = DIRECTORY_VISITS.get();
+        artwork.prepare(&chart, (80, 24));
+        assert_eq!(draw(&artwork), original);
+        assert_eq!(DIRECTORY_VISITS.get(), visits);
+
+        let mut replay = IntroArtwork::default();
+        replay.prepare(&chart, (80, 24));
+        assert!(draw(&replay).contains("38;2;255;0;0"));
+
+        artwork.prepare(&chart, (80, 16));
+        let resized = draw(&artwork);
+        assert_eq!(resized.matches('▀').count(), 32);
+        assert!(resized.contains("38;2;255;0;0"));
+        artwork.prepare(&chart, (10, 8));
+        assert!(draw(&artwork).is_empty());
+        std::fs::remove_file(stage).unwrap();
     }
 
     #[test]
@@ -1534,6 +1638,84 @@ mod tests {
     }
 
     #[test]
+    fn indexed_scroll_candidates_match_full_scan_screen_geometry() {
+        use crate::chart::ScrollEvent;
+
+        let layout = PlayLayout::compute(80, 24, 4).unwrap();
+        for (rate, speed) in [
+            (0.5, 1.0),
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (1.0, 0.5),
+            (1.0, -1.0),
+            (1.0, 0.0),
+        ] {
+            let mut chart = base_chart(4);
+            chart.scroll = vec![
+                ScrollEvent {
+                    time_ms: 2000.0,
+                    multiplier: rate,
+                },
+                ScrollEvent {
+                    time_ms: 4000.0,
+                    multiplier: -rate,
+                },
+            ];
+            chart.speed = vec![ScrollEvent {
+                time_ms: 0.0,
+                multiplier: speed,
+            }];
+            chart.notes = [
+                (0.0, 0, Some(6000.0)),
+                (1000.0, 1, None),
+                (1060.0, 1, None),
+                (2000.0, 2, Some(6000.0)),
+                (2000.0, 3, None),
+                (3500.0, 1, None),
+                (6000.0, 2, None),
+                (100_000.0, 3, Some(101_000.0)),
+            ]
+            .into_iter()
+            .map(|(time_ms, lane, end_ms)| Note {
+                time_ms,
+                lane,
+                end_ms,
+                ..Note::default()
+            })
+            .collect();
+            let mut game = Game::new(chart);
+            game.hit(0, 0.0);
+            for now in [0.0, 500.0, 1060.0, 2000.0, 3500.0, 4000.0, 5900.0, 6200.0] {
+                game.check_misses(now);
+                let scroll = game.scroll.frame(&game.chart, now);
+                let geometry = |note: &Note| {
+                    if note.hit {
+                        return None;
+                    }
+                    let span = match note.end_ms {
+                        Some(end) => long_note_scroll_span(&scroll, note.time_ms, end, &layout),
+                        None => {
+                            note_screen_pos(scroll.distance(note.time_ms), &layout).map(|y| (y, y))
+                        }
+                    }?;
+                    Some((
+                        note.time_ms,
+                        note.lane,
+                        note_bar(span),
+                        note.held_since.is_some(),
+                    ))
+                };
+                let expected: Vec<_> = game.chart.notes.iter().filter_map(geometry).collect();
+                let actual: Vec<_> = game
+                    .visible_notes(now, APPROACH_MS)
+                    .filter_map(geometry)
+                    .collect();
+                assert_eq!(actual, expected, "rate={rate}, speed={speed}, now={now}");
+            }
+        }
+    }
+
+    #[test]
     fn display_metadata_removes_terminal_controls_and_preserves_unicode() {
         let payload = "\x1b]52;c;VEVTVA==\x07\u{9b}2J\r\n\t\x7f";
         let unsafe_text = format!("日本語{payload}");
@@ -1587,24 +1769,58 @@ mod tests {
     #[test]
     fn audio_badge_reports_the_backend_being_missing() {
         assert_eq!(
-            format_audio_badge(false, 0, 0),
+            format_audio_badge(AudioMode::Samples, false, 0, 0),
             "silent (audio backend unavailable)"
         );
     }
 
     #[test]
     fn audio_badge_says_synth_when_no_samples_and_no_failures() {
-        assert_eq!(format_audio_badge(true, 0, 0), "audio on · synth mode");
+        assert_eq!(
+            format_audio_badge(AudioMode::Samples, true, 0, 0),
+            "audio on · synth mode"
+        );
     }
 
     #[test]
     fn audio_badge_reports_a_healthy_sample_bank() {
-        assert_eq!(format_audio_badge(true, 12, 0), "audio on · 12 samples");
+        assert_eq!(
+            format_audio_badge(AudioMode::Samples, true, 12, 0),
+            "audio on · 12 samples"
+        );
     }
 
     #[test]
     fn audio_badge_calls_out_decode_failures_when_present() {
-        assert!(format_audio_badge(true, 8, 3).contains("3 failed"));
+        assert!(format_audio_badge(AudioMode::Samples, true, 8, 3).contains("3 failed"));
+    }
+
+    #[test]
+    fn audio_badge_reports_intentional_silence() {
+        assert_eq!(
+            format_audio_badge(AudioMode::Silent, false, 0, 0),
+            "silent (--no-audio)"
+        );
+    }
+
+    #[test]
+    fn audio_badge_reports_backend_failure_in_synth_mode() {
+        assert_eq!(
+            format_audio_badge(AudioMode::Synth, false, 0, 0),
+            "silent (audio backend unavailable)"
+        );
+    }
+
+    #[test]
+    fn audio_badge_reports_synth_notes_alongside_decoded_samples() {
+        assert_eq!(
+            format_audio_badge(AudioMode::Synth, true, 12, 0),
+            "synth notes · 12 samples"
+        );
+        assert_eq!(
+            format_audio_badge(AudioMode::Synth, true, 8, 3),
+            "synth notes · 8 samples · 3 failed to decode"
+        );
     }
 
     #[test]
@@ -1973,7 +2189,7 @@ mod tests {
         fn format_difficulty_badge_always_contains_bpm_and_lane_marker(
             bpm in 30.0f64..300.0,
             lane_count in prop_oneof![Just(4usize), Just(5), Just(7)],
-            playlevel in prop::option::of(1u8..=12),
+            playlevel in prop::option::of(1u32..=12),
             difficulty in prop::option::of(1u8..=5),
         ) {
             let mut chart = base_chart(lane_count);

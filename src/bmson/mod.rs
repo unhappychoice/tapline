@@ -4,8 +4,10 @@ mod model;
 mod timing;
 
 use crate::assets::AssetIndex;
+use crate::bga::{Extensions, OverlayTransparency};
 use crate::bms::ChartMeta;
-use crate::chart::{BgaEvent, BgaLayer, BgmEvent, Chart, Lane, Note, SampleSlice};
+use crate::chart::{BgaEvent, BgaLayer, BgmEvent, Chart, Lane, SampleSlice};
+use crate::game::JudgmentWindows;
 use anyhow::{ensure, Context, Result};
 use model::{Bmson, SoundChannel};
 use std::path::{Path, PathBuf};
@@ -42,17 +44,26 @@ pub(crate) fn load_bytes(path: &Path, bytes: &[u8], lead_in_ms: f64) -> Result<C
         banner: meta.banner,
         playlevel: meta.playlevel,
         difficulty: meta.difficulty,
+        def_exrank: data
+            .info
+            .judge_rank
+            .filter(|&rank| JudgmentWindows::valid_percent(rank)),
         lane_count: meta.lane_count,
         keys: Lane::bindings(&lanes),
         lanes,
+        bga_extensions: Extensions {
+            overlay_transparency: OverlayTransparency::ImageAlpha,
+            ..Extensions::default()
+        },
         ..Chart::default()
     };
     let dir = path.parent().unwrap_or(Path::new("."));
     let assets = AssetIndex::new(dir);
+    let mut playable = Vec::new();
     for channel in &data.sound_channels {
-        add_channel(&mut chart, channel, &timeline, &assets, mode)?;
+        add_channel(&mut chart, &mut playable, channel, &timeline, &assets, mode)?;
     }
-    layers::merge(&mut chart)?;
+    layers::merge(&mut chart, playable, &timeline)?;
     for image in &data.bga.bga_header {
         if let Some(path) = asset_path(&assets, &image.name, &[]) {
             chart.bmp_paths.insert(image.id, path);
@@ -111,6 +122,7 @@ fn parse(path: &Path, bytes: &[u8]) -> Result<Bmson> {
 
 fn add_channel(
     chart: &mut Chart,
+    playable: &mut Vec<layers::PlayableLayer>,
     channel: &SoundChannel,
     timeline: &Timeline,
     assets: &AssetIndex,
@@ -121,12 +133,13 @@ fn add_channel(
     let path = asset_path(assets, &channel.name, &["wav", "ogg", "mp3"]);
     let mut notes: Vec<_> = channel.notes.iter().collect();
     notes.sort_by_key(|n| n.y);
-    let mut restart = notes.first().map_or(0.0, |n| timeline.time(n.y.into()));
-    let mut index = 0;
-    while index < notes.len() {
-        let end = index + notes[index..].partition_point(|n| n.y == notes[index].y);
-        let time = timeline.time(notes[index].y.into());
-        if notes[index..end].iter().any(|n| !n.c) {
+    let mut groups = notes
+        .chunk_by(|a, b| a.y == b.y)
+        .map(|group| (group, timeline.time(group[0].y.into())))
+        .peekable();
+    let mut restart = groups.peek().map_or(0.0, |&(_, time)| time);
+    while let Some((group, time)) = groups.next() {
+        if group.iter().any(|n| !n.c) {
             restart = time;
         }
         let id = u32::try_from(chart.sample_slices.len()).context("Too many sound slices")?;
@@ -137,18 +150,16 @@ fn add_channel(
             id,
             SampleSlice {
                 start_ms: time - restart,
-                duration_ms: notes.get(end).map(|n| timeline.time(n.y.into()) - time),
+                duration_ms: groups.peek().map(|&(_, next_time)| next_time - time),
             },
         );
-        for note in &notes[index..end] {
+        for note in group {
             if let Some(lane) = lane(note.x.unwrap_or(0), chart.lane_count, mode) {
-                chart.notes.push(Note {
-                    time_ms: time,
+                playable.push(layers::PlayableLayer {
+                    pulse: note.y,
+                    length: note.l,
                     lane,
-                    keysound: Some(id),
-                    end_ms: (note.l > 0)
-                        .then(|| timeline.time(u64::from(note.y) + u64::from(note.l))),
-                    ..Note::default()
+                    keysound: id,
                 });
             } else {
                 chart.bgm.push(BgmEvent {
@@ -157,7 +168,6 @@ fn add_channel(
                 });
             }
         }
-        index = end;
     }
     Ok(())
 }

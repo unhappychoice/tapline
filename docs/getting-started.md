@@ -83,7 +83,7 @@ subdirectories up to five levels deep for `.bms`, `.bml`, `.bme`, `.pms`, and
 `.bmson` files. If the chosen directory has no charts, tapline plays the built-in
 chart instead. Loading a file directly exits after its result screen.
 
-See the [README](../README.md) for default song discovery paths, supported chart
+See the [README](https://github.com/unhappychoice/tapline/blob/main/README.md) for default song discovery paths, supported chart
 features, key layouts, judgment windows, and audio delay adjustments.
 
 For problems with chart discovery, terminal size, audio, or background video,

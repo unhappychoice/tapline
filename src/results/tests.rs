@@ -103,16 +103,90 @@ fn persistence_round_trip_replaces_file_and_rejects_corrupt_storage() {
     let dir = directory();
     let path = dir.join("data/results.json");
     let id = Identity::built_in(120.0);
-    let mut store = Store::load(&path).unwrap();
-    store.record(&id, &game(100, 2, 2, 1), false);
-    store.save(&path).unwrap();
-    store.record(&id, &game(200, 3, 3, 1), true);
-    store.save(&path).unwrap();
-    assert_eq!(Store::load(&path).unwrap().get(&id), store.get(&id));
+    assert!(update(&path, &id, &game(100, 2, 2, 1), false)
+        .unwrap()
+        .is_none());
+    let first = Store::load(&path).unwrap().get(&id).unwrap().clone();
+    let second = game(200, 3, 3, 1);
+    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+    fs::write(&temporary, "blocked").unwrap();
+    assert!(matches!(
+        update(&path, &id, &second, true),
+        Err(UpdateError::Write(Some(previous))) if previous == first
+    ));
+    fs::remove_file(temporary).unwrap();
+    assert_eq!(update(&path, &id, &second, true).unwrap(), Some(first));
+    assert_eq!(
+        Store::load(&path).unwrap().get(&id).unwrap().best.score,
+        200
+    );
     std::fs::write(&path, "broken").unwrap();
-    assert!(Store::load(&path).is_err());
-    assert!(store.save(&dir).is_err());
+    assert!(matches!(
+        update(&path, &id, &second, true),
+        Err(UpdateError::Read)
+    ));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "broken");
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn concurrent_processes_preserve_distinct_charts_and_shared_bests() {
+    use std::process::{Command, Stdio};
+
+    let dir = directory();
+    let path = dir.join("results.json");
+    let lock = lock_results(&path).unwrap();
+    let workers: Vec<_> = (1..=8)
+        .map(|index| {
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "results::tests::result_update_worker",
+                    "--ignored",
+                ])
+                .env("TAPLINE_TEST_RESULTS_PATH", &path)
+                .env("TAPLINE_TEST_RESULT_INDEX", index.to_string())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    drop(lock);
+    workers.into_iter().for_each(|worker| {
+        let output = worker.wait_with_output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    });
+    let store = Store::load(&path).unwrap();
+    (1..=8).for_each(|index| {
+        let id = Identity::built_in(f64::from(index));
+        assert_eq!(store.get(&id).unwrap().best.score, index * 100);
+    });
+    let best = &store.get(&Identity::built_in(120.0)).unwrap().best;
+    assert_eq!(best.score, 800);
+    assert_eq!(best.max_combo, 8);
+    assert_eq!(best.accuracy, 100.0);
+    assert!(best.clear);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "subprocess entry point for concurrent result updates"]
+fn result_update_worker() {
+    let Some(path) = std::env::var_os("TAPLINE_TEST_RESULTS_PATH").map(PathBuf::from) else {
+        return;
+    };
+    let index: u32 = std::env::var("TAPLINE_TEST_RESULT_INDEX")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut run = game(index * 100, 9 - index, 1, index - 1);
+    if index == 1 {
+        (0..1000).for_each(|_| run.gauge.apply(crate::game::Judgment::Perfect));
+    }
+    let id = Identity::built_in(f64::from(index));
+    assert!(update(&path, &id, &run, false).unwrap().is_none());
+    update(&path, &Identity::built_in(120.0), &run, false).unwrap();
 }
 
 #[cfg(unix)]

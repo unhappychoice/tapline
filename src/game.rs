@@ -49,6 +49,7 @@ pub struct Game {
     lane_notes: Vec<Vec<usize>>,
     lane_mines: Vec<Vec<usize>>,
     mine_index: crate::mine_visibility::MineIndex,
+    note_index: Option<crate::note_visibility::NoteIndex>,
     #[cfg(test)]
     mine_visits: usize,
     held_notes: Vec<usize>,
@@ -116,8 +117,8 @@ impl JudgmentWindows {
 
 impl Game {
     /// Notes and scroll/speed events must be time-sorted. Note timestamps, lanes,
-    /// order, and scroll events stay fixed during play. Mine timestamps, lanes, and
-    /// order must also stay fixed; mines need not arrive time-sorted.
+    /// end times, and order stay fixed during play, as do scroll events. Mine
+    /// timestamps, lanes, and order must also stay fixed; mines need not arrive time-sorted.
     pub fn new(chart: Chart) -> Self {
         let lane_count = chart.lane_count;
         let mut lane_notes = vec![Vec::new(); lane_count];
@@ -162,9 +163,12 @@ impl Game {
         });
         let scroll = crate::scroll::ScrollMap::new(&chart.scroll);
         let mine_index = crate::mine_visibility::MineIndex::new(&chart.mines, &scroll);
+        let note_index = (!chart.scroll.is_empty() || !chart.speed.is_empty())
+            .then(|| crate::note_visibility::NoteIndex::new(&chart.notes, &scroll));
         Self {
             scroll,
             mine_index,
+            note_index,
             volume: crate::audio::PlaybackVolume::new(&chart),
             gauge: Gauge::new(GaugeKind::Normal, &chart),
             completed: false,
@@ -204,10 +208,14 @@ impl Game {
     /// Finish only after the chart duration and all pending judgments have elapsed.
     pub fn advance_completion(&mut self, now_ms: f64) -> bool {
         self.check_misses(now_ms);
-        self.completed = now_ms >= self.chart.duration_ms
-            && self.next_miss == self.chart.notes.len()
-            && self.held_notes.is_empty();
+        self.completed = self.gameplay_ended(now_ms);
         self.completed
+    }
+
+    pub(crate) fn gameplay_ended(&self, now_ms: f64) -> bool {
+        now_ms >= self.chart.duration_ms
+            && self.next_miss == self.chart.notes.len()
+            && self.held_notes.is_empty()
     }
 
     /// Judge the nearest unhit note in the lane within the inclusive hit window.
@@ -280,7 +288,7 @@ impl Game {
         }
     }
 
-    /// Release the long note currently held on `lane` using the chart mode.
+    /// Release every long note currently held on `lane` using the chart mode.
     /// No-op if the lane isn't holding anything.
     pub fn release(&mut self, lane: usize, now_ms: f64) {
         if self
@@ -293,14 +301,18 @@ impl Game {
         if lane >= self.flash.last_lane_hit.len() {
             return;
         }
-        let Some(position) = self
-            .held_notes
-            .iter()
-            .position(|&i| self.chart.notes[i].lane == lane)
-        else {
-            return;
-        };
-        let i = self.held_notes.remove(position);
+        let mut held_notes = std::mem::take(&mut self.held_notes);
+        held_notes.retain(|&i| {
+            if self.chart.notes[i].lane != lane {
+                return true;
+            }
+            self.release_note(i, now_ms);
+            false
+        });
+        self.held_notes = held_notes;
+    }
+
+    fn release_note(&mut self, i: usize, now_ms: f64) {
         let Some(end_ms) = self.chart.notes[i].end_ms else {
             return;
         };
@@ -395,19 +407,32 @@ impl Game {
     /// Include pending starts since the last miss check and older held LNs.
     /// Scroll effects can bring any future note into view regardless of its timestamp.
     pub fn visible_notes(&self, now_ms: f64, approach_ms: f64) -> impl Iterator<Item = &Note> {
-        let end = if self.chart.scroll.is_empty() && self.chart.speed.is_empty() {
-            self.chart
-                .notes
-                .partition_point(|n| n.time_ms <= now_ms + approach_ms)
+        let frame = self
+            .note_index
+            .as_ref()
+            .map(|index| (index, self.scroll.frame(&self.chart, now_ms)));
+        let (start, ordinary, indexed) = if let Some((index, frame)) = &frame {
+            let start = self.next_miss;
+            (start, 0..0, index.visible(frame, start, approach_ms))
         } else {
-            self.chart.notes.len()
+            let end = self
+                .chart
+                .notes
+                .partition_point(|n| n.time_ms <= now_ms + approach_ms);
+            let start = self.next_miss.min(end);
+            (start, start..end, Vec::new())
         };
-        let start = self.next_miss.min(end);
         self.held_notes
             .iter()
             .copied()
-            .filter(move |&i| i < start)
-            .chain(start..end)
+            .filter(move |&i| {
+                i < start
+                    && frame
+                        .as_ref()
+                        .is_none_or(|(index, frame)| index.note_overlaps(i, frame, approach_ms))
+            })
+            .chain(ordinary)
+            .chain(indexed)
             .map(|i| {
                 #[cfg(test)]
                 self.render_visits.set(self.render_visits.get() + 1);
@@ -745,6 +770,31 @@ mod tests {
         for rank in [None, Some(0), Some(1), Some(2), Some(3), Some(4)] {
             assert_eq!(work(0, rank), (1, 2, 1));
             assert_eq!(work(100_000, rank), (1, 2, 1));
+        }
+    }
+
+    #[test]
+    fn distant_notes_and_spans_only_add_logarithmic_visits_with_a_speed_event() {
+        for extra in [0usize, 100, 10_000] {
+            let mut notes = vec![note(100.0, 0), ln(200.0, 300.0, 1)];
+            notes.extend((0..extra).map(|i| {
+                let time = 300_000.0 + i as f64 * 100.0;
+                if i % 2 == 0 {
+                    note(time, 0)
+                } else {
+                    ln(time, time + 50.0, 1)
+                }
+            }));
+            let mut chart = chart_with(notes, 4);
+            chart.speed.push(crate::chart::ScrollEvent {
+                time_ms: 0.0,
+                multiplier: 1.0,
+            });
+            let game = Game::new(chart);
+            assert_eq!(game.visible_notes(0.0, 1000.0).count(), 2);
+            assert_eq!(game.render_visits.get(), 2);
+            let index = game.note_index.as_ref().unwrap();
+            assert!(index.visits.get() <= 1 + 2 * (extra + 2).next_power_of_two().ilog2() as usize);
         }
     }
 
@@ -1152,6 +1202,32 @@ mod tests {
         assert_eq!(g.perfect, 2, "start + release both perfect");
         assert!(g.chart.notes[0].hit);
         assert!(g.chart.notes[0].held_since.is_none());
+    }
+
+    #[test]
+    fn release_judges_each_tail_by_its_end_time_and_leaves_other_lanes_held() {
+        for (mode, perfect, miss) in [(LnMode::Ln, 3, 2), (LnMode::Cn, 4, 1), (LnMode::Hcn, 4, 1)] {
+            let mut chart = chart_with(
+                vec![
+                    ln(1000.0, 2000.0, 0),
+                    ln(1500.0, 2500.0, 0),
+                    ln(1500.0, 2000.0, 1),
+                ],
+                4,
+            );
+            chart.ln_mode = mode;
+            let mut game = Game::new(chart);
+            game.hit(0, 1000.0);
+            game.hit(0, 1500.0);
+            game.hit(1, 1500.0);
+
+            game.release(0, 1990.0);
+
+            assert_eq!((game.perfect, game.miss), (perfect, miss), "{mode:?}");
+            assert_eq!(game.chart.notes[2].held_since, Some(1500.0));
+            game.check_misses(3000.0);
+            assert_eq!((game.perfect, game.miss), (perfect + 1, miss), "{mode:?}");
+        }
     }
 
     #[test]
