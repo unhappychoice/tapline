@@ -12,6 +12,12 @@ use std::collections::HashSet;
 use std::io::Stdout;
 use std::time::{Duration, Instant};
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResultAction {
+    Retry,
+    Dismiss,
+}
+
 pub struct PlayOptions {
     pub countdown_ms: f64,
     pub synth_mode: bool,
@@ -44,22 +50,35 @@ pub fn play_chart(
 pub fn play_chart_with_destination(
     out: &mut Stdout,
     args: &Args,
-    mut chart: chart::Chart,
+    chart: chart::Chart,
     identity: Option<crate::results::Identity>,
     destination: ResultDestination,
 ) -> Result<()> {
+    while play_attempt(out, args, &chart, identity.as_ref(), destination)? == ResultAction::Retry {}
+    Ok(())
+}
+
+pub fn play_attempt(
+    out: &mut Stdout,
+    args: &Args,
+    chart: &chart::Chart,
+    identity: Option<&crate::results::Identity>,
+    destination: ResultDestination,
+) -> Result<ResultAction> {
     let opts = PlayOptions::from_args(args);
     let bank = if opts.no_audio {
         audio::SampleBank::silent()
     } else {
-        audio::SampleBank::for_chart(&chart)
+        audio::SampleBank::for_chart(chart)
     };
-    chart.duration_ms =
-        bank.chart_duration_ms(&chart, opts.auto_ks, opts.synth_mode, opts.audio_lead_ms);
+    let duration_ms =
+        bank.chart_duration_ms(chart, opts.auto_ks, opts.synth_mode, opts.audio_lead_ms);
+    let mut chart = chart.clone();
+    chart.duration_ms = duration_ms;
     let mut game = game::Game::new(chart);
     execute!(out, terminal::Clear(terminal::ClearType::All))?;
     run_game(out, &mut game, &bank, &opts)?;
-    let progress = save_result(identity.as_ref(), &game, args.auto_ks);
+    let progress = save_result(identity, &game, args.auto_ks);
     after_playback(bank, || show_result(out, &game, &progress, destination))
 }
 
@@ -440,23 +459,28 @@ fn show_result(
     game: &game::Game,
     progress: &str,
     destination: ResultDestination,
-) -> Result<()> {
-    wait_for_result_dismissal(terminal::size()?, event::read, |cols, rows| {
+) -> Result<ResultAction> {
+    wait_for_result_action(terminal::size()?, event::read, |cols, rows| {
         queue!(out, terminal::Clear(terminal::ClearType::All))?;
         render::draw_result_content(out, game, cols, rows, progress, destination)
     })
 }
 
-fn wait_for_result_dismissal(
+fn wait_for_result_action(
     (cols, rows): (u16, u16),
     mut read: impl FnMut() -> std::io::Result<Event>,
     mut draw: impl FnMut(u16, u16) -> Result<()>,
-) -> Result<()> {
+) -> Result<ResultAction> {
     draw(cols, rows)?;
     loop {
         match read()? {
             Event::Resize(cols, rows) => draw(cols, rows)?,
-            Event::Key(key) if key.kind == KeyEventKind::Press => return Ok(()),
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                return Ok(match key.code {
+                    KeyCode::Char('r' | 'R') => ResultAction::Retry,
+                    _ => ResultAction::Dismiss,
+                });
+            }
             _ => {}
         }
     }
@@ -1800,7 +1824,7 @@ mod result_tests {
         ]
         .into_iter();
         let mut frames = Vec::new();
-        wait_for_result_dismissal(
+        let action = wait_for_result_action(
             (80, 5),
             || Ok(events.next().expect("expected a dismissal key press")),
             |cols, rows| {
@@ -1819,12 +1843,42 @@ mod result_tests {
         )
         .unwrap();
 
+        assert_eq!(action, ResultAction::Dismiss);
         assert_eq!(frames.len(), 3);
         assert!(!frames[0].contains("score"));
         assert!(frames[1].contains("score"));
         assert!(!frames[2].contains("score"));
-        assert!(frames[2].contains("any key: return to selector"));
+        assert!(frames[2].contains("R: retry / other: selector"));
         assert_eq!(events.next(), Some(Event::Resize(80, 24)));
+    }
+
+    #[test]
+    fn retry_requires_a_press_and_accepts_either_case() {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+
+        for key in ['r', 'R'] {
+            let mut kinds = [
+                KeyEventKind::Release,
+                KeyEventKind::Repeat,
+                KeyEventKind::Press,
+            ]
+            .into_iter();
+            let action = wait_for_result_action(
+                (80, 24),
+                || {
+                    let kind = kinds.next().expect("expected a retry key press");
+                    Ok(Event::Key(KeyEvent::new_with_kind(
+                        KeyCode::Char(key),
+                        KeyModifiers::NONE,
+                        kind,
+                    )))
+                },
+                |_, _| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(action, ResultAction::Retry);
+            assert_eq!(kinds.next(), None);
+        }
     }
 
     #[test]

@@ -24,7 +24,7 @@ fn quitting_the_chart_selector_exits_successfully() {
 }
 
 #[test]
-fn built_in_practice_draws_the_playfield_and_shows_interrupted_results() {
+fn built_in_practice_retries_from_interrupted_results() {
     let data = std::env::temp_dir().join(format!("tapline-practice-{}", std::process::id()));
     std::fs::create_dir(&data).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_tapline"));
@@ -33,16 +33,50 @@ fn built_in_practice_draws_the_playfield_and_shows_interrupted_results() {
         .env("TAPLINE_DATA_DIR", &data);
     let (status, output) = run_interactive(
         command,
-        &[(b"quit Esc / Q", b"q"), (b"press any key to exit", b" ")],
+        &[
+            (b"quit Esc / Q", b"q"),
+            (b"R: retry / other: exit", b"r"),
+            (b"quit Esc / Q", b"q"),
+            (b"R: retry / other: exit", b" "),
+        ],
     );
     let saved = data.join("results.json").exists();
     std::fs::remove_dir_all(data).unwrap();
     assert_eq!(status.code(), Some(0), "{output:?}");
     assert!(output.contains("Built-in Practice"), "{output:?}");
     assert!(output.contains("═"), "{output:?}");
-    assert!(output.contains("Interrupted: not saved"), "{output:?}");
+    assert_eq!(output.matches("Interrupted: not saved").count(), 2);
     assert!(!saved);
     assert!(output.contains("\x1b[?1049l"), "{output:?}");
+}
+
+#[test]
+fn completed_random_chart_retry_compares_with_the_saved_first_attempt() {
+    use tapline::results::{Identity, Store};
+
+    let dir = std::env::temp_dir().join(format!("tapline-retry-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("retry.bms");
+    std::fs::write(
+        &path,
+        "#BPM 6000\n#RANDOM 2\n#IF 1\n#00011:01\n#ELSE\n#00019:02\n#ENDIF\n#ENDRANDOM\n",
+    )
+    .unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tapline"));
+    command
+        .args(["--file", path.to_str().unwrap(), "--countdown-ms", "100"])
+        .env("TAPLINE_DATA_DIR", &dir);
+    let prompt: &[u8] = b"R: retry / other: exit";
+    let (status, output) = run_interactive(command, &[(prompt, b"r"), (prompt, b" ")]);
+    let identity = Identity::file(&path, None).unwrap();
+    let store = Store::load(&dir.join("results.json")).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+
+    assert_eq!(status.code(), Some(0), "{output:?}");
+    assert_eq!(output.matches("First completed play!").count(), 1);
+    assert_eq!(output.matches("vs best: score +0").count(), 1);
+    assert_eq!(output.matches("miss 1").count(), 2);
+    assert_eq!(store.get(&identity).unwrap().latest.random_seed, Some(1));
 }
 
 #[test]
@@ -137,7 +171,7 @@ fn drive_terminal(
     mut steps: &[(&[u8], &[u8])],
     mut before_input: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> io::Result<ExitStatus> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(10);
     let mut search_from = 0;
     let mut buffer = [0; 4096];
     loop {
