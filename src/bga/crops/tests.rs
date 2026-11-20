@@ -1,5 +1,7 @@
 use super::*;
+use crate::bga::{image_file::LOAD_CALLS, Presentation};
 use image::Rgba;
+use std::sync::Arc;
 
 #[test]
 fn prepares_only_crops_with_two_digit_bms_ids() {
@@ -36,7 +38,7 @@ fn prepares_only_crops_with_two_digit_bms_ids() {
 }
 
 #[test]
-fn decodes_once_per_path_across_bmp_ids_and_preserves_crop_placement() {
+fn presentation_decodes_each_source_once_and_preserves_bitmap_and_crop_pixels() {
     let dir = std::env::temp_dir().join(format!("tapline-crops-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("sheet.png");
@@ -56,22 +58,35 @@ fn decodes_once_per_path_across_bmp_ids_and_preserves_crop_placement() {
         (11, 1, [128, 0, 256, 128, 128, 128]),
         (12, 2, [128, 0, 256, 128, 0, 128]),
         (13, 3, [-8, -8, 256, 256, -64, -64]),
+        (3, 1, [0, 0, 128, 128, 0, 0]),
     ]
     .map(|(id, image, rect)| (id, Crop { image, rect }))
     .into();
-    let mut calls = HashMap::new();
-    let images = prepare(&chart, |path| {
-        *calls.entry(path.to_path_buf()).or_insert(0) += 1;
-        image::open(path).ok().map(|image| image.to_rgba8())
-    });
+    LOAD_CALLS.set(0);
+    let presentation = Presentation::new(&chart, true);
     std::fs::remove_dir_all(dir).unwrap();
-    assert_eq!(calls, [(path, 1), (other, 1)].into());
-    assert_eq!(images.len(), 4);
-    images.iter().for_each(|(&id, image)| {
+
+    assert_eq!(LOAD_CALLS.get(), 2);
+    let images = &presentation.bank.0;
+    assert_eq!(images.len(), 7);
+    assert!(Arc::ptr_eq(&images[&1], &images[&2]));
+    let transparent = Rgba([0; 4]);
+    let mut blended_blue = transparent;
+    image::Pixel::blend(&mut blended_blue, &blue);
+    let expected_bitmap = RgbaImage::from_fn(SIZE, SIZE, |x, y| match (x, y) {
+        (0..32, 16..48) => red,
+        (32..64, 16..48) => blended_blue,
+        _ => transparent,
+    });
+    assert_eq!(images[&1].as_ref(), &expected_bitmap);
+    assert_eq!(images[&2].as_ref(), &expected_bitmap);
+
+    [3, 10, 11, 12, 13].into_iter().for_each(|id| {
+        let image = &images[&id];
         assert_eq!(image.dimensions(), (SIZE, SIZE));
         image.enumerate_pixels().for_each(|(x, y, pixel)| {
             let expected = match id {
-                10 if x < 32 && y < 32 => red,
+                3 | 10 if x < 32 && y < 32 => red,
                 11 if x >= 32 && y >= 32 => blue,
                 12 if x < 32 && y >= 32 => blue,
                 13 if x < 16 && y < 16 => blue,
@@ -112,9 +127,9 @@ fn missing_and_invalid_sources_are_attempted_once_and_preserve_existing_images()
     assert_eq!(calls, [(path.clone(), 1), (missing, 1)].into());
     let mut bank = super::super::ImageBank::default();
     let original = RgbaImage::from_pixel(SIZE, SIZE, Rgba([12, 34, 56, 255]));
-    bank.0.insert(10, original.clone());
+    bank.0.insert(10, original.clone().into());
     bank.prepare_crops(&chart);
     assert_eq!(bank.0.len(), 1);
-    assert_eq!(bank.0[&10], original);
+    assert_eq!(bank.0[&10].as_ref(), &original);
     std::fs::remove_file(path).unwrap();
 }

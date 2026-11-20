@@ -1,8 +1,8 @@
 mod discovery;
-mod identities;
 use crate::artwork;
 use crate::bms::ChartMeta;
 use crate::chart::difficulty_label;
+use crate::results::Identity;
 use anyhow::Result;
 use crossterm::{
     cursor,
@@ -22,7 +22,21 @@ const CHART_ROW_LEFT: u16 = 2;
 const MIN_DETAIL_ROWS: u16 = 16;
 const BANNER_HEIGHT: u16 = 4;
 
-pub fn scan(root: &Path) -> Vec<ChartMeta> {
+#[derive(Clone, Debug)]
+pub struct ChartEntry {
+    meta: ChartMeta,
+    pub(crate) identity: Identity,
+}
+
+impl std::ops::Deref for ChartEntry {
+    type Target = ChartMeta;
+
+    fn deref(&self) -> &ChartMeta {
+        &self.meta
+    }
+}
+
+pub fn scan(root: &Path) -> Vec<ChartEntry> {
     SelectorState::default().scan(root)
 }
 
@@ -32,6 +46,7 @@ pub(crate) use discovery::{count_content_read, count_metadata_parse};
 #[derive(Default)]
 pub struct SelectorState {
     discovery: discovery::Discovery,
+    pub(crate) reopening_selector: bool,
     query: String,
     lanes: Option<usize>,
     editing: bool,
@@ -45,12 +60,17 @@ pub struct SelectorState {
 }
 
 impl SelectorState {
-    pub fn scan(&mut self, root: &Path) -> Vec<ChartMeta> {
+    pub fn scan(&mut self, root: &Path) -> Vec<ChartEntry> {
         self.lowercase_cache.clear();
         self.discovery.scan(root, &crate::bms::random_seed)
     }
 
-    fn refresh(&mut self, charts: &[ChartMeta]) {
+    pub fn refresh_changed_chart(&mut self, path: &Path) {
+        self.discovery.invalidate(path);
+        self.reopening_selector = true;
+    }
+
+    fn refresh(&mut self, charts: &[ChartEntry]) {
         if self.lowercase_cache.len() != charts.len() {
             self.lowercase_cache = charts
                 .iter()
@@ -85,7 +105,7 @@ impl SelectorState {
         self.indices.get(self.cursor).copied()
     }
 
-    fn key(&mut self, key: KeyCode, charts: &[ChartMeta]) -> bool {
+    fn key(&mut self, key: KeyCode, charts: &[ChartEntry]) -> bool {
         let before = self.visible_state();
         self.apply_key(key, charts);
         before != self.visible_state()
@@ -102,7 +122,7 @@ impl SelectorState {
         )
     }
 
-    fn apply_key(&mut self, key: KeyCode, charts: &[ChartMeta]) {
+    fn apply_key(&mut self, key: KeyCode, charts: &[ChartEntry]) {
         if self.editing {
             match key {
                 KeyCode::Esc | KeyCode::Enter => self.editing = false,
@@ -148,25 +168,22 @@ impl SelectorState {
     }
 }
 
-pub fn run(out: &mut Stdout, charts: &[ChartMeta], no_audio: bool) -> Result<Option<ChartMeta>> {
+pub fn run(out: &mut Stdout, charts: &[ChartEntry], no_audio: bool) -> Result<Option<ChartEntry>> {
     run_with_state(out, charts, no_audio, &mut SelectorState::default())
 }
 
 pub fn run_with_state(
     out: &mut Stdout,
-    charts: &[ChartMeta],
+    charts: &[ChartEntry],
     no_audio: bool,
     state: &mut SelectorState,
-) -> Result<Option<ChartMeta>> {
-    if charts.is_empty() {
+) -> Result<Option<ChartEntry>> {
+    let reopening_selector = std::mem::take(&mut state.reopening_selector);
+    if charts.is_empty() && !reopening_selector {
         return Ok(None);
     }
     let records_path = crate::results::data_path();
-    let progress = load_progress(
-        charts,
-        &mut state.discovery.identities,
-        records_path.as_deref(),
-    );
+    let progress = load_progress(charts, records_path.as_deref());
     state.editing = false;
     state.refresh(charts);
     let audio = crate::audio::preview_output(!no_audio);
@@ -204,20 +221,13 @@ pub fn run_with_state(
     }
 }
 
-fn load_progress(
-    charts: &[ChartMeta],
-    identities: &mut identities::Identities,
-    records_path: Option<&Path>,
-) -> Vec<String> {
+fn load_progress(charts: &[ChartEntry], records_path: Option<&Path>) -> Vec<String> {
     let Some(store) = records_path.and_then(|path| crate::results::Store::load(path).ok()) else {
         return vec!["[RECORDS UNAVAILABLE]".into(); charts.len()];
     };
     charts
         .iter()
-        .map(|chart| {
-            let record = identities.get(&chart.path).and_then(|id| store.get(&id));
-            format_progress(record)
-        })
+        .map(|chart| format_progress(store.get(&chart.identity)))
         .collect()
 }
 
@@ -235,7 +245,7 @@ impl SelectorFrame {
     fn draw_if_changed(
         &mut self,
         out: &mut impl Write,
-        charts: &[ChartMeta],
+        charts: &[ChartEntry],
         state: &mut SelectorState,
         progress: &[String],
         size: (u16, u16),
@@ -265,7 +275,7 @@ fn chart_banner(chart: &ChartMeta, width: u16) -> Option<Rc<RgbaImage>> {
 
 fn draw_frame(
     out: &mut impl Write,
-    charts: &[ChartMeta],
+    charts: &[ChartEntry],
     state: &mut SelectorState,
     progress: &[String],
     (cols, rows): (u16, u16),
@@ -484,8 +494,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn meta(title: &str) -> ChartMeta {
-        ChartMeta {
+    fn meta(title: &str) -> ChartEntry {
+        let meta = ChartMeta {
             path: PathBuf::from(format!("/tmp/{}.bms", title)),
             random_seed: 0,
             title: title.to_string(),
@@ -500,13 +510,15 @@ mod tests {
             playlevel: Some(3),
             difficulty: Some(2),
             lane_count: 5,
-        }
+        };
+        let identity = Identity::from_bytes(&meta.path, title.as_bytes(), Some(meta.random_seed));
+        ChartEntry { meta, identity }
     }
 
     #[test]
     fn idle_frames_emit_no_output_and_input_or_resize_redraws() {
         let mut charts = [meta("Alpha"), meta("Beta")];
-        charts[1].lane_count = 7;
+        charts[1].meta.lane_count = 7;
         let progress = ["[UNPLAYED]".into(), "[UNPLAYED]".into()];
         let mut state = SelectorState::default();
         state.refresh(&charts);
@@ -548,8 +560,8 @@ mod tests {
         let dir = tempdir();
         let banner = dir.join("banner.png");
         let mut chart = meta("Song");
-        chart.path = dir.join("song.bms");
-        chart.banner = "banner.png".into();
+        chart.meta.path = dir.join("song.bms");
+        chart.meta.banner = "banner.png".into();
         let charts = [chart];
         let mut state = SelectorState::default();
         state.refresh(&charts);
@@ -597,7 +609,7 @@ mod tests {
     #[test]
     fn empty_results_render_conditions_and_no_stale_chart_details() {
         let mut chart = meta("Alpha");
-        chart.comment = "Selected chart comment".into();
+        chart.meta.comment = "Selected chart comment".into();
         let charts = vec![chart];
         let mut state = SelectorState {
             query: "missing".into(),
@@ -682,15 +694,15 @@ mod tests {
     #[test]
     fn search_matches_title_subtitle_and_artist_case_insensitively() {
         let mut charts = vec![meta("ÉTOILE"), meta("Other"), meta("Third")];
-        charts[1].subtitle = "Étoile remix".into();
-        charts[2].artist = "étoile".into();
+        charts[1].meta.subtitle = "Étoile remix".into();
+        charts[2].meta.artist = "étoile".into();
         let mut state = SelectorState {
             query: "éTOILE".into(),
             ..Default::default()
         };
         state.refresh(&charts);
         assert_eq!(state.indices, vec![0, 1, 2]);
-        charts[1].lane_count = 7;
+        charts[1].meta.lane_count = 7;
         state.lanes = Some(7);
         state.refresh(&charts);
         assert_eq!(state.indices, vec![1]);
@@ -804,7 +816,7 @@ mod tests {
     #[test]
     fn editing_and_lane_cycle_combine_and_retain_conditions_on_refresh() {
         let mut charts = vec![meta("Alpha"), meta("Beta")];
-        charts[1].lane_count = 7;
+        charts[1].meta.lane_count = 7;
         let mut state = SelectorState::default();
         state.refresh(&charts);
         state.key(KeyCode::Char('l'), &charts);
@@ -833,9 +845,9 @@ mod tests {
             .save(dir.join("banner.png"))
             .unwrap();
         let mut chart = meta("Song");
-        chart.path = dir.join("song.bms");
-        chart.banner = "banner.png".into();
-        chart.comment = "Great song!\x1b\x07".into();
+        chart.meta.path = dir.join("song.bms");
+        chart.meta.banner = "banner.png".into();
+        chart.meta.comment = "Great song!\x1b\x07".into();
         let mut out = Vec::new();
         draw_details(
             &mut out,
@@ -855,8 +867,8 @@ mod tests {
     #[test]
     fn chart_row_sanitizes_metadata_before_clipping() {
         let mut chart = meta("曲名\x1b]52;c;VEVTVA==\x07");
-        chart.subtitle = "副題\u{9b}2J".into();
-        chart.artist = "作者\r\n\t\x7f".into();
+        chart.meta.subtitle = "副題\u{9b}2J".into();
+        chart.meta.artist = "作者\r\n\t\x7f".into();
         let row = format_chart_row(&chart, "▸ ");
         assert!(row.ends_with("曲名]52;c;VEVTVA==  ~副題2J~  — 作者"));
         assert!(!row.chars().any(char::is_control));
@@ -865,7 +877,7 @@ mod tests {
     #[test]
     fn chart_row_sanitizes_filename_fallback() {
         let mut chart = meta("");
-        chart.path = PathBuf::from("曲名\x1b]52;c;VEVTVA==\x07.bms");
+        chart.meta.path = PathBuf::from("曲名\x1b]52;c;VEVTVA==\x07.bms");
         let row = format_chart_row(&chart, "  ");
         assert!(row.ends_with("曲名]52;c;VEVTVA==.bms"));
         assert!(!row.chars().any(char::is_control));
@@ -916,14 +928,14 @@ mod tests {
     #[test]
     fn format_badge_omits_difficulty_label_when_missing() {
         let mut m = meta("A");
-        m.difficulty = None;
+        m.meta.difficulty = None;
         assert_eq!(format_badge(&m), "[5K Lv3 BPM140]");
     }
 
     #[test]
     fn format_badge_omits_level_when_missing() {
         let mut m = meta("A");
-        m.playlevel = None;
+        m.meta.playlevel = None;
         assert_eq!(format_badge(&m), "[5K NORMAL BPM140]");
     }
 
@@ -996,8 +1008,8 @@ mod tests {
     #[test]
     fn format_badge_omits_both_when_playlevel_and_difficulty_missing() {
         let mut m = meta("A");
-        m.difficulty = None;
-        m.playlevel = None;
+        m.meta.difficulty = None;
+        m.meta.playlevel = None;
         assert_eq!(format_badge(&m), "[5K BPM140]");
     }
 
@@ -1030,7 +1042,7 @@ mod tests {
     #[test]
     fn format_badge_rounds_bpm_to_the_nearest_integer() {
         let mut m = meta("A");
-        m.bpm = 173.6;
+        m.meta.bpm = 173.6;
         assert_eq!(format_badge(&m), "[5K NORMAL Lv3 BPM174]");
     }
 

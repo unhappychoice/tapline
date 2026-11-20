@@ -4,6 +4,7 @@ mod model;
 mod timing;
 
 use crate::assets::AssetIndex;
+use crate::bga::{Extensions, OverlayTransparency};
 use crate::bms::ChartMeta;
 use crate::chart::{BgaEvent, BgaLayer, BgmEvent, Chart, Lane, SampleSlice};
 use crate::game::JudgmentWindows;
@@ -50,6 +51,10 @@ pub(crate) fn load_bytes(path: &Path, bytes: &[u8], lead_in_ms: f64) -> Result<C
         lane_count: meta.lane_count,
         keys: Lane::bindings(&lanes),
         lanes,
+        bga_extensions: Extensions {
+            overlay_transparency: OverlayTransparency::ImageAlpha,
+            ..Extensions::default()
+        },
         ..Chart::default()
     };
     let dir = path.parent().unwrap_or(Path::new("."));

@@ -12,8 +12,10 @@ use std::{
     collections::HashMap,
     io::Write,
     path::PathBuf,
+    sync::Arc,
 };
 
+mod bitmaps;
 mod crops;
 mod effect_timeline;
 mod image_file;
@@ -35,7 +37,7 @@ const POOR_MS: f64 = 500.0;
 
 #[derive(Default)]
 pub struct ImageBank(
-    HashMap<u32, RgbaImage>,
+    HashMap<u32, Arc<RgbaImage>>,
     HashMap<u32, PathBuf>,
     RefCell<[Playback; 4]>,
     timeline::Timeline,
@@ -50,22 +52,7 @@ impl ImageBank {
         extensions: &Extensions,
     ) -> Self {
         Self(
-            paths
-                .iter()
-                .filter_map(|(id, path)| {
-                    let image = image_file::load(path)?
-                        .resize(SIZE, SIZE, imageops::FilterType::Nearest)
-                        .to_rgba8();
-                    let mut canvas = RgbaImage::new(SIZE, SIZE);
-                    imageops::overlay(
-                        &mut canvas,
-                        &image,
-                        ((SIZE - image.width()) / 2) as i64,
-                        ((SIZE - image.height()) / 2) as i64,
-                    );
-                    Some((*id, canvas))
-                })
-                .collect(),
+            bitmaps::load(paths, extensions),
             paths
                 .iter()
                 .filter(|(_, path)| is_video(path))
@@ -92,9 +79,13 @@ impl ImageBank {
 
     pub fn prepare_crops(&mut self, chart: &crate::chart::Chart) {
         *self.5.get_mut() = None;
-        self.0.extend(crops::prepare(chart, |path| {
-            image_file::load(path).map(|image| image.to_rgba8())
-        }));
+        self.0.extend(
+            crops::prepare(chart, |path| {
+                image_file::load(path).map(|image| image.into_rgba8())
+            })
+            .into_iter()
+            .map(|(id, image)| (id, Arc::new(image))),
+        );
     }
 
     /// Return the BMP id currently active on a given BGA layer at `now_ms`,
@@ -164,7 +155,7 @@ impl ImageBank {
             let mut frame = RgbaImage::from_pixel(SIZE, SIZE, Rgba([0, 0, 0, 255]));
             for (image, style) in key.layers.iter().flatten() {
                 let image = match image {
-                    LayerImage::Bitmap(id) => &self.0[id],
+                    LayerImage::Bitmap(id) => self.0[id].as_ref(),
                     LayerImage::Video(frame) => frame.0.as_ref(),
                 };
                 composite(&mut frame, image, style.alpha, style.key);
@@ -202,9 +193,11 @@ impl ImageBank {
     fn styled_layer(&self, game: &Game, layer: BgaLayer, now_ms: f64) -> Option<Layer> {
         let image = self.layer(game, layer, now_ms)?;
         let state = self.4.state(layer, now_ms);
+        let extensions = &game.chart.bga_extensions;
         let key = state.key.or_else(|| {
-            (layer != BgaLayer::Base
-                && (layer != BgaLayer::Poor || game.chart.bga_extensions.poor_mode == 1))
+            (extensions.overlay_transparency == OverlayTransparency::BlackColorKey
+                && layer != BgaLayer::Base
+                && (layer != BgaLayer::Poor || extensions.poor_mode == 1))
                 .then_some([0, 0, 0])
         });
         Some((

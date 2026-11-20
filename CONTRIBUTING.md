@@ -53,3 +53,13 @@ locally before opening a pull request.
   `feat:`, `docs:`, `refactor:`, ...), matching the existing commit history.
 - Make sure `cargo fmt`, `cargo clippy`, and `cargo test` pass before
   submitting.
+
+## Building the documentation
+
+Install [mdBook 0.5.4](https://github.com/rust-lang/mdBook/releases/tag/v0.5.4)
+and run `mdbook build` from the repository root. The generated site is in
+`target/book`.
+
+For the first deployment, select **GitHub Actions** as the source in the
+repository's **Settings → Pages**, then run the **Documentation** workflow on
+`main`. Later documentation changes on `main` deploy automatically.
