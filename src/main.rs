@@ -30,16 +30,20 @@ fn run_app() -> Result<()> {
     if args.test_tone {
         return run_test_tone();
     }
-    terminal::with_alt_screen(&mut stdout(), |out| run(out, &args))
+    let keymap = cli::Keymap::load(args.keymap.as_deref())?;
+    terminal::with_alt_screen(&mut stdout(), |out| run(out, &args, &keymap))
 }
 
-fn run(out: &mut Stdout, args: &Args) -> Result<()> {
+fn run(out: &mut Stdout, args: &Args, keymap: &cli::Keymap) -> Result<()> {
     let mut selector = tapline::select::SelectorState::default();
     run_session(
         out,
         args,
         |out, args| cli::choose_chart_with_selector(out, args, &mut selector),
-        runtime::play_chart_with_destination,
+        |out, args, mut chart, identity, destination| {
+            keymap.apply(&mut chart);
+            runtime::play_chart_with_destination(out, args, chart, identity, destination)
+        },
         terminal::show_load_error,
     )
 }

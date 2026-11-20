@@ -328,6 +328,36 @@ whichever finger is closer.
 | asymmetric DP | P1: 5K or 7K keys; P2: `Z X C N M` (5K) or `Z X C V B N M` (7K) | each side keeps its own width; scratch uses A for P1 and ; for P2 (P2 5K with scratch uses ZXCVB) |
 | 14    | `S D F SPACE J K L / Z X C V B N M` | 7K SP layout on the home row for P1, ZXCVBNM below for P2 |
 
+### Custom gameplay keys
+
+Pass a local JSON file with `tapline --keymap keys.json`. Tapline reads it
+once at startup and applies the matching entry to each chart you play,
+including charts opened from the selector. Layouts omitted from the file
+use the default bindings above.
+
+```json
+[
+  { "layout": "KKKKK", "keys": ["a", "s", "df", "j", "k"] },
+  { "layout": "KKKKKS", "keys": ["a", "s", "d", "j", "k", "z;"] },
+  {
+    "layout": "KKKKKS/KKKKKKK",
+    "keys": ["a", "s", "d", "j", "k", "z;", "1", "2", "3", "4", "5", "6", " "]
+  }
+]
+```
+
+Each `K` is an ordinary lane and each `S` is a scratch lane, in chart order.
+For double play, `/` separates the first player's lanes from the second
+player's lanes. Supply one non-empty string per lane. Each character in
+a string is an alternative binding for that lane, so `"z;"` accepts either
+Z or semicolon. The lane label shows the first key if the aliases are too
+wide to fit together.
+
+Use printable ASCII characters, including a literal space (`" "`) for
+Space. Letters are case-insensitive. Each key may appear only once per
+layout, and Q and Esc are reserved for quitting. Invalid keymaps are
+reported before the game opens the terminal interface.
+
 ## Personal bests
 
 Completed plays save the best score, accuracy, max combo, and CLEAR achievement

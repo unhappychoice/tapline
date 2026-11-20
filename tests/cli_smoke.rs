@@ -42,6 +42,7 @@ fn help_flag_documents_every_public_flag() {
     for flag in [
         "--file",
         "--dir",
+        "--keymap",
         "--bpm",
         "--countdown-ms",
         "--built-in",
@@ -191,4 +192,17 @@ fn overflowing_built_in_timing_is_rejected_before_terminal_setup() {
         assert!(!stderr.contains("panicked"), "{stderr}");
         assert!(!stderr.contains('\x1b'), "terminal escape: {stderr:?}");
     });
+}
+
+#[test]
+fn invalid_keymap_is_reported_before_entering_the_terminal() {
+    let (code, stdout, stderr) = run_with(&[
+        "--built-in",
+        "--keymap",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"),
+    ]);
+    assert_eq!(code, 1);
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("Invalid keymap"), "{stderr}");
+    assert!(stderr.contains("Cargo.toml"), "{stderr}");
 }

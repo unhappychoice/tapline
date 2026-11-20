@@ -45,6 +45,23 @@ fn built_in_practice_draws_the_playfield_and_shows_interrupted_results() {
     assert!(output.contains("\x1b[?1049l"), "{output:?}");
 }
 
+#[test]
+fn keymap_overrides_the_built_in_gameplay_labels() {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tapline"));
+    command.args([
+        "--built-in",
+        "--countdown-ms",
+        "0",
+        "--keymap",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/keymap.json"),
+    ]);
+    let (status, output) = run_interactive(
+        command,
+        &[(b"keys U I O P", b"q"), (b"press any key to exit", b" ")],
+    );
+    assert_eq!(status.code(), Some(0), "{output:?}");
+}
+
 fn run_interactive(mut command: Command, steps: &[(&[u8], &[u8])]) -> (ExitStatus, String) {
     let (mut master, slave) = open_pty();
     let result = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };

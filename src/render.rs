@@ -251,6 +251,11 @@ fn draw_judgment_counters(
 fn format_lane_key(keys: &[char]) -> String {
     let labels: Vec<String> = keys.iter().map(display_key).collect();
     let joined = labels.join("/");
+    let joined = if joined.chars().count() > usize::from(LANE_WIDTH) {
+        labels[0].clone()
+    } else {
+        joined
+    };
     let visible_width = joined.chars().count();
     let target = 3;
     if visible_width >= target {
@@ -550,7 +555,7 @@ pub fn draw(
     queue!(out, ResetColor)?;
 
     for lane in 0..(lanes as usize) {
-        let lx = x0 + 1 + lane as u16 * LANE_WIDTH + 3;
+        let lane_left = x0 + 1 + lane as u16 * LANE_WIDTH;
         let flash = now_ms
             - game
                 .flash
@@ -571,9 +576,10 @@ pub fn draw(
             lane_key_color(game, lane)
         };
         let display = format_lane_key(keys);
+        let lx = lane_left + (LANE_WIDTH - display.chars().count() as u16) / 2;
         queue!(
             out,
-            cursor::MoveTo(lx.saturating_sub(1), bottom + 1),
+            cursor::MoveTo(lx, bottom + 1),
             SetForegroundColor(color),
             style::SetAttribute(style::Attribute::Bold),
             Print(display),
@@ -635,7 +641,12 @@ pub fn draw(
     draw_judgment_flash(out, game, cols, layout.judgment_row(), now_ms)?;
 
     let key_hint = format_key_hint(&game.chart.keys);
-    let hint = format!("keys {}  ·  quit Esc / Q", key_hint);
+    let quit_hint = "  ·  quit Esc / Q";
+    let (keys, _) = fit_terminal_line(
+        &format!("keys {key_hint}"),
+        cols.saturating_sub(quit_hint.chars().count() as u16),
+    );
+    let hint = format!("{keys}{quit_hint}");
     queue!(
         out,
         cursor::MoveTo(
@@ -787,13 +798,10 @@ fn draw_intro_content(
         )?;
     }
     let key_hint = format_key_hint(&game.chart.keys);
-    let msg = format!("hit  {}  on the line", key_hint);
+    let (msg, width) = fit_terminal_line(&format!("hit  {key_hint}  on the line"), cols);
     queue!(
         out,
-        cursor::MoveTo(
-            cols.saturating_sub(msg.chars().count() as u16) / 2,
-            rows / 2
-        ),
+        cursor::MoveTo(cols.saturating_sub(width) / 2, rows / 2),
         Print(msg)
     )?;
     let n = (countdown_ms / 1000.0).ceil() as u32;
@@ -894,7 +902,7 @@ pub(crate) fn draw_result_content<W: Write>(
     let start = (usize::from(rows) - visible) / 2;
     let skipped = lines.len() - visible;
     for (y, (text, color)) in (start..).zip(lines.into_iter().skip(skipped)) {
-        let (text, width) = fit_result_line(&text, cols);
+        let (text, width) = fit_terminal_line(&text, cols);
         if !text.is_empty() {
             queue!(
                 out,
@@ -975,7 +983,7 @@ fn progress_lines(progress: &str, cols: u16) -> impl Iterator<Item = String> {
     lines.into_iter()
 }
 
-fn fit_result_line(text: &str, cols: u16) -> (String, u16) {
+fn fit_terminal_line(text: &str, cols: u16) -> (String, u16) {
     let mut text = crate::terminal_text::sanitize(text);
     let mut width = 0;
     let mut end = 0;
@@ -1026,9 +1034,9 @@ mod tests {
         let prefix = "chart by 123456789012345678";
         for emoji in ["❤️", "1️⃣", "👩‍💻"] {
             let credit = format!("{prefix}{emoji}!");
-            assert_eq!(fit_result_line(&credit, 28), (prefix.into(), 27));
+            assert_eq!(fit_terminal_line(&credit, 28), (prefix.into(), 27));
             assert_eq!(
-                fit_result_line(&credit, 29),
+                fit_terminal_line(&credit, 29),
                 (format!("{prefix}{emoji}"), 29)
             );
         }
@@ -1891,6 +1899,13 @@ mod tests {
     #[test]
     fn format_lane_key_renders_space_as_word() {
         assert_eq!(format_lane_key(&[' ']), "SPACE");
+    }
+
+    #[test]
+    fn format_lane_key_shows_the_primary_key_when_aliases_overflow() {
+        let keys = [' ', '1', '2', '3'];
+        assert_eq!(format_lane_key(&keys), "SPACE");
+        assert_eq!(format_key_hint(&[keys.to_vec()]), "SPACE/1/2/3");
     }
 
     #[test]

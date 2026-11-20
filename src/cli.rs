@@ -1,3 +1,4 @@
+pub use crate::keymap::Keymap;
 use crate::{bms, bmson, select};
 use anyhow::Result;
 use clap::Parser;
@@ -14,6 +15,10 @@ pub struct Args {
     /// Open the chart selector on this directory (recursive).
     #[arg(short, long)]
     pub dir: Option<PathBuf>,
+
+    /// Load gameplay key overrides from a JSON file.
+    #[arg(long, value_name = "FILE")]
+    pub keymap: Option<PathBuf>,
 
     /// Finite, positive BPM for the built-in chart (ignored when a BMS chart is loaded).
     #[arg(short, long, default_value_t = 120.0, value_parser = parse_bpm)]
