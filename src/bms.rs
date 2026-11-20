@@ -286,6 +286,18 @@ fn build_chart(
     bga.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     let duration_ms = timeline.end_time(max_measure) + 2500.0;
     ensure!(duration_ms.is_finite(), "BMS duration must be finite");
+    let last_event_ms = notes
+        .iter()
+        .map(|note| note.end_ms.unwrap_or(note.time_ms))
+        .chain(mines.iter().map(|mine| mine.time_ms))
+        .chain(invisible_notes.iter().map(|note| note.time_ms))
+        .chain(bgm.iter().map(|event| event.time_ms))
+        .chain(bga.iter().map(|event| event.time_ms))
+        .chain(text_events.iter().map(|event| event.time_ms))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let trailing_stop_completion_ms = timeline
+        .has_stop_after(last_event_ms)
+        .then_some(duration_ms);
     Ok(Chart {
         title: pass.title,
         subtitle: pass.subtitle,
@@ -323,6 +335,7 @@ fn build_chart(
         scroll,
         speed,
         duration_ms,
+        trailing_stop_completion_ms,
         lane_count,
         keys: Lane::bindings(&lanes),
         lanes,
@@ -1255,6 +1268,15 @@ impl Timeline {
 
     fn end_time(&self, max_measure: u32) -> f64 {
         self.time_at(max_measure, 1.0)
+    }
+
+    fn has_stop_after(&self, time_ms: f64) -> bool {
+        self.measures
+            .iter()
+            .flat_map(|measure| &measure.segments)
+            .any(|segment| {
+                segment.departure_ms > segment.arrival_ms && segment.departure_ms > time_ms
+            })
     }
 }
 
