@@ -85,17 +85,16 @@ fn persist_result(
     game: &game::Game,
     auto_ks: bool,
 ) -> String {
-    let Ok(mut store) = crate::results::Store::load(path) else {
-        return "Cannot read saved results".into();
-    };
-    let progress = render::format_progress(game, store.get(identity));
-    if !game.completed {
-        return progress;
-    }
-    store.record(identity, game, auto_ks);
-    match store.save(path) {
-        Ok(()) => progress,
-        Err(_) => format!("Storage error: result unsaved | {progress}"),
+    use crate::results::{self, UpdateError};
+
+    match results::update(path, identity, game, auto_ks) {
+        Ok(previous) => render::format_progress(game, previous.as_ref()),
+        Err(UpdateError::Read) => "Cannot read saved results".into(),
+        Err(UpdateError::Lock) => "Storage error: result unsaved".into(),
+        Err(UpdateError::Write(previous)) => {
+            let progress = render::format_progress(game, previous.as_ref());
+            format!("Storage error: result unsaved | {progress}")
+        }
     }
 }
 
@@ -144,6 +143,7 @@ struct LoopState {
     prev_mode: u8,
     auto_notes: Vec<(f64, usize, Option<u32>)>,
     screen: Screen,
+    intro_artwork: render::IntroArtwork,
     paused: bool,
     clock_ms: f64,
     last_wall_ms: f64,
@@ -191,6 +191,7 @@ impl LoopState {
             prev_mode: 0,
             auto_notes,
             screen: Screen::new(),
+            intro_artwork: render::IntroArtwork::default(),
             paused: false,
             clock_ms: 0.0,
             last_wall_ms: 0.0,
@@ -229,46 +230,51 @@ fn draw_frame(
     state.screen.resize(cols, rows);
     let mode: u8 = if now < opts.countdown_ms { 1 } else { 2 };
     if mode != state.prev_mode {
+        if mode == 2 {
+            state.intro_artwork = render::IntroArtwork::default();
+        }
         queue!(state.screen, terminal::Clear(terminal::ClearType::All))?;
         state.prev_mode = mode;
     }
     if state.paused {
+        state.intro_artwork = render::IntroArtwork::default();
         render::draw_size_warning(&mut state.screen, game.chart.lane_count)?;
         state.prev_mode = 0;
     } else {
-        draw_mode(&mut state.screen, game, bank, opts, bga, mode, now)?;
+        draw_mode(state, game, bank, opts, bga, (cols, rows), now)?;
     }
     state.screen.present(out)?;
     Ok(())
 }
 
 fn draw_mode(
-    screen: &mut Screen,
+    state: &mut LoopState,
     game: &mut game::Game,
     bank: &audio::SampleBank,
     opts: &PlayOptions,
     bga: &Presentation,
-    mode: u8,
+    size: (u16, u16),
     now: f64,
 ) -> Result<()> {
-    if mode == 1 {
+    if now < opts.countdown_ms {
         let audio_mode = match (opts.no_audio, opts.synth_mode) {
             (true, _) => AudioMode::Silent,
             (_, true) => AudioMode::Synth,
             _ => AudioMode::Samples,
         };
-        return render::draw_intro_full(
-            screen,
+        state.intro_artwork.prepare(&game.chart, size);
+        return render::draw_prepared_intro(
+            &mut state.screen,
             game,
             opts.countdown_ms - now,
             audio_mode,
             bank.enabled,
-            bank.sample_count(),
-            bank.decode_failures,
+            (bank.sample_count(), bank.decode_failures),
+            &state.intro_artwork,
         );
     }
     game.check_misses(now);
-    render::draw(screen, game, bga, now)
+    render::draw(&mut state.screen, game, bga, now)
 }
 
 fn fire_scheduled_audio(
@@ -1787,7 +1793,10 @@ mod result_tests {
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "corrupt");
         std::fs::remove_file(&path).unwrap();
+        game.score = 100;
         assert!(persist_result(&path, &id, &game, false).contains("First completed"));
+        game.score = 200;
+        assert!(persist_result(&path, &id, &game, false).contains("score +100"));
         assert!(crate::results::Store::load(&path)
             .unwrap()
             .get(&id)

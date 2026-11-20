@@ -2,6 +2,40 @@ use super::*;
 use image::Rgba;
 
 #[test]
+fn prepares_only_crops_with_two_digit_bms_ids() {
+    for (base, suffix, id) in [(36, "zZ", 1295), (62, "zz", 3843)] {
+        let text = format!(
+            "#BASE {base}\n#BPM 120\n#00111:01\n#00104:{suffix}\n\
+             #bga{suffix} 01 0 0 128 128 0 0\n\
+             #BGA100 01 0 0 128 128 0 0\n\
+             #BGA0{suffix} 01 0 0 128 128 128 128\n\
+             #BGA1 01 0 0 128 128 0 0\n\
+             #BGA+2 01 0 0 128 128 0 0\n\
+             #BGAé 01 0 0 128 128 0 0\n"
+        );
+        let mut chart =
+            crate::bms::load_bytes(Path::new("crop.bms"), text.as_bytes(), 0.0, 0).unwrap();
+        chart.bmp_paths.insert(1, "sheet.png".into());
+        let color = Rgba([255, 0, 0, 255]);
+        let images = prepare(&chart, |_| Some(RgbaImage::from_pixel(128, 128, color)));
+
+        assert_eq!(images.len(), 1, "base {base}");
+        assert_eq!(chart.bga_extensions.crops.len(), 1, "base {base}");
+        assert_eq!(chart.bga[0].bmp_id, id);
+        assert_eq!(
+            images[&id],
+            RgbaImage::from_fn(SIZE, SIZE, |x, y| {
+                if x < SIZE / 2 && y < SIZE / 2 {
+                    color
+                } else {
+                    Rgba([0, 0, 0, 0])
+                }
+            })
+        );
+    }
+}
+
+#[test]
 fn decodes_once_per_path_across_bmp_ids_and_preserves_crop_placement() {
     let dir = std::env::temp_dir().join(format!("tapline-crops-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

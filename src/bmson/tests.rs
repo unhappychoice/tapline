@@ -125,6 +125,55 @@ fn metadata_never_builds_channels_or_resolves_assets_as_content_grows() {
 }
 
 #[test]
+fn channel_pulse_groups_preserve_slices_and_events() {
+    let mut data = base();
+    data["info"]["init_bpm"] = json!(125);
+    data["bpm_events"] = json!([{"y":240,"bpm":250}]);
+    data["stop_events"] = json!([{"y":240,"duration":120}]);
+    data["sound_channels"] = json!([
+        {"name":"empty.wav","notes":[]},
+        {"name":"missing.wav","notes":[
+            {"x":3,"y":720,"c":true},
+            {"x":1,"y":120,"c":true},
+            {"x":0,"y":240,"c":true},
+            {"x":2,"y":120,"c":true},
+            {"x":0,"y":480},
+            {"x":0,"y":120,"c":true},
+            {"x":0,"y":480,"c":true}
+        ]}
+    ]);
+    with_chart(&data, |path| {
+        let chart = load(path, 100.0).unwrap();
+        let slices = [
+            (0.0, Some(240.0)),
+            (240.0, Some(360.0)),
+            (0.0, Some(240.0)),
+            (240.0, None),
+        ];
+        assert_eq!(chart.sample_slices.len(), slices.len());
+        for (id, (start, duration)) in slices.into_iter().enumerate() {
+            let slice = &chart.sample_slices[&(id as u32)];
+            assert_eq!((slice.start_ms, slice.duration_ms), (start, duration));
+        }
+        let notes: Vec<_> = chart
+            .notes
+            .iter()
+            .map(|n| (n.time_ms, n.lane, n.keysound))
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                (340.0, 0, Some(0)),
+                (340.0, 1, Some(0)),
+                (1180.0, 2, Some(3))
+            ]
+        );
+        let bgm: Vec<_> = chart.bgm.iter().map(|e| (e.time_ms, e.keysound)).collect();
+        assert_eq!(bgm, [(580.0, 1), (940.0, 2)]);
+    });
+}
+
+#[test]
 fn metadata_rejects_invalid_format_mode_and_timing() {
     let mut variants = vec![base(); 5];
     variants[0]["version"] = json!("0.21.0");

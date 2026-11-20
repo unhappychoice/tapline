@@ -359,6 +359,37 @@ fn argb_and_opacity_update_the_same_layer_state() {
 }
 
 #[test]
+fn held_video_composite_is_reused_until_layers_style_or_width_change() {
+    let (mut game, mut bank) = game();
+    bank.0.remove(&1);
+    let playback = &mut bank.2.get_mut()[timeline::slot(BgaLayer::Base)];
+    playback.event = Some(0);
+    playback.video = Some(video::Video::test_frame([255, 0, 0, 255]));
+    game.chart.bga_extensions.events.push(EffectEvent {
+        time_ms: 10.0,
+        effect: Effect::Opacity(BgaLayer::Base, 128),
+    });
+    bank.4 = effect_timeline::Timeline::new(&game.chart.bga_extensions);
+
+    let render = |time, width| {
+        let frame = bank.rendered_frame(&game, time, width);
+        assert_eq!(frame.dimensions(), (width, width));
+        (frame.as_raw().as_ptr(), frame.get_pixel(0, 0).0)
+    };
+    let (initial, color) = render(0.0, 16);
+    assert_eq!(color, [255, 0, 0, 255]);
+    assert_eq!(render(5.0, 16), (initial, color));
+
+    let (styled, color) = render(10.0, 16);
+    assert_ne!(styled, initial);
+    assert_eq!(color[..3], [128, 0, 0]);
+    let (resized, color) = render(15.0, SIZE);
+    assert_ne!(resized, styled);
+    assert_eq!(render(20.0, SIZE), (resized, color));
+    assert_eq!(render(100.0, SIZE).1, [255, 255, 255, 255]);
+}
+
+#[test]
 fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -491,16 +522,31 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
             if layer == BgaLayer::Base {
                 let mut hidden = Vec::new();
                 draw(&mut hidden, &delayed, &delayed_bank, 1760.0, 17, 4, 16).unwrap();
-                // Reopening after EOF must retain the last frame.
                 let deadline = Instant::now() + Duration::from_secs(10);
                 loop {
                     draw(&mut hidden, &delayed, &delayed_bank, 10000.0, 18, 4, 16).unwrap();
-                    if delayed_bank.frame(&delayed, 10000.0).get_pixel(32, 32)[1] > 240 {
+                    let playback = &delayed_bank.2.borrow()[timeline::slot(layer)];
+                    if playback
+                        .video
+                        .as_ref()
+                        .is_some_and(video::Video::reached_eof)
+                    {
                         break;
                     }
-                    assert!(Instant::now() < deadline);
+                    assert!(Instant::now() < deadline, "Video decoder did not reach EOF");
                     std::thread::sleep(Duration::from_millis(5));
                 }
+                let held = delayed_bank.rendered_frame(&delayed, 10001.0, 16);
+                assert!(held.get_pixel(8, 8)[1] > 240);
+                let pixels = held.as_raw().as_ptr();
+                drop(held);
+                assert_eq!(
+                    delayed_bank
+                        .rendered_frame(&delayed, 20000.0, 16)
+                        .as_raw()
+                        .as_ptr(),
+                    pixels
+                );
             }
         }
         let mut output = Vec::new();
