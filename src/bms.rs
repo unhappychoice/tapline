@@ -306,6 +306,7 @@ fn build_chart(
         exrank_defs: pass.exrank_defs,
         exrank_events,
         total: pass.total,
+        gauge_recovery_multiplier: 1.0,
         vol_wav: pass.vol_wav,
         ln_mode: pass.ln_mode,
         volume_events: collect_volume_events(&raw, &timeline),
