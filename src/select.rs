@@ -41,7 +41,7 @@ pub(crate) use discovery::{count_content_read, count_metadata_parse};
 #[derive(Default)]
 pub struct SelectorState {
     discovery: discovery::Discovery,
-    pub(crate) refreshing_revision: bool,
+    pub(crate) reopening_selector: bool,
     query: String,
     lanes: Option<usize>,
     editing: bool,
@@ -62,7 +62,7 @@ impl SelectorState {
 
     pub fn refresh_changed_chart(&mut self, path: &Path) {
         self.discovery.invalidate(path);
-        self.refreshing_revision = true;
+        self.reopening_selector = true;
     }
 
     fn refresh(&mut self, charts: &[ChartEntry]) {
@@ -156,8 +156,8 @@ pub fn run_with_state(
     no_audio: bool,
     state: &mut SelectorState,
 ) -> Result<Option<ChartEntry>> {
-    let refreshing_revision = std::mem::take(&mut state.refreshing_revision);
-    if charts.is_empty() && !refreshing_revision {
+    let reopening_selector = std::mem::take(&mut state.reopening_selector);
+    if charts.is_empty() && !reopening_selector {
         return Ok(None);
     }
     let records_path = crate::results::data_path();

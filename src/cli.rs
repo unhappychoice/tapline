@@ -89,11 +89,12 @@ pub fn choose_chart_with_selector(
     if let Some(p) = &args.file {
         return Ok(ChartChoice::File(p.clone()));
     }
-    let Some(dir) = args.dir.clone().or_else(default_songs_dir) else {
-        return Ok(ChartChoice::BuiltIn);
-    };
-    let charts = state.scan(&dir);
-    if charts.is_empty() && !state.refreshing_revision {
+    let charts = args
+        .dir
+        .clone()
+        .or_else(default_songs_dir)
+        .map_or_else(Vec::new, |dir| state.scan(&dir));
+    if charts.is_empty() && !state.reopening_selector {
         return Ok(ChartChoice::BuiltIn);
     }
     Ok(

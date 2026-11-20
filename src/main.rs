@@ -74,9 +74,8 @@ fn run_session(
                 let cli::ChartChoice::Selected(entry) = &choice else {
                     return Err(error);
                 };
-                if error.is::<cli::ChartRevisionChanged>() {
-                    selector.refresh_changed_chart(&entry.path);
-                } else {
+                selector.refresh_changed_chart(&entry.path);
+                if !error.is::<cli::ChartRevisionChanged>() {
                     report_error(out, &error)?;
                 }
                 continue;

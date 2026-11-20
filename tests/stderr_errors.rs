@@ -11,14 +11,65 @@ use std::time::{Duration, Instant};
 #[test]
 fn quitting_the_chart_selector_exits_successfully() {
     let songs = Path::new(env!("CARGO_MANIFEST_DIR")).join("songs");
-    let (status, output) = run_selector(&songs);
+    let (status, output) = run_selector(&songs, |output, master| {
+        if !output.contains("First Steps") {
+            return Ok(false);
+        }
+        master.write_all(b"q")?;
+        Ok(true)
+    });
     assert_eq!(status.code(), Some(0), "{output:?}");
     assert!(output.contains("T A P L I N E"), "{output:?}");
     assert!(output.contains("First Steps"), "{output:?}");
     assert!(output.contains("\x1b[?1049l"), "{output:?}");
 }
 
-fn run_selector(songs: &Path) -> (ExitStatus, String) {
+#[test]
+fn oversized_replacement_returns_to_the_empty_selector() {
+    let dir = std::env::temp_dir().join(format!(
+        "tapline-oversized-selection-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("chart.bms");
+    std::fs::write(&path, "#TITLE Original\n#00111:01\n").unwrap();
+
+    let mut selected = false;
+    let mut acknowledged = false;
+    let (status, output) = run_selector(&dir, |output, master| {
+        if !selected && output.contains("Original") {
+            File::options()
+                .write(true)
+                .open(&path)?
+                .set_len(16 * 1024 * 1024 + 1)?;
+            master.write_all(b"\r")?;
+            selected = true;
+        }
+        if !acknowledged && output.contains("Press any key to return to the selector.") {
+            master.write_all(b" ")?;
+            acknowledged = true;
+        }
+        if output.contains("select a chart  ·  0 loaded") {
+            master.write_all(b"q")?;
+            return Ok(true);
+        }
+        Ok(false)
+    });
+    std::fs::remove_dir_all(dir).unwrap();
+
+    assert_eq!(status.code(), Some(0), "{output:?}");
+    assert!(acknowledged, "{output:?}");
+    assert!(
+        output.contains("chart exceeds the maximum size"),
+        "{output:?}"
+    );
+    assert!(output.contains("select a chart  ·  0 loaded"), "{output:?}");
+}
+
+fn run_selector(
+    songs: &Path,
+    interact: impl FnMut(&str, &mut File) -> io::Result<bool>,
+) -> (ExitStatus, String) {
     let (mut master, slave) = open_pty();
     let result = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
     assert_eq!(result, 0, "{}", io::Error::last_os_error());
@@ -44,7 +95,7 @@ fn run_selector(songs: &Path) -> (ExitStatus, String) {
 
     let mut child = command.spawn().unwrap();
     let mut output = Vec::new();
-    let result = wait_for_selector(&mut child, &mut master, &mut output);
+    let result = wait_for_selector(&mut child, &mut master, &mut output, interact);
     if result.is_err() {
         let _ = child.kill();
         child.wait().unwrap();
@@ -60,6 +111,7 @@ fn wait_for_selector(
     child: &mut Child,
     master: &mut File,
     output: &mut Vec<u8>,
+    mut interact: impl FnMut(&str, &mut File) -> io::Result<bool>,
 ) -> io::Result<ExitStatus> {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut sent_quit = false;
@@ -72,15 +124,8 @@ fn wait_for_selector(
         match master.read(&mut buffer) {
             Ok(n) if n > 0 => {
                 output.extend_from_slice(&buffer[..n]);
-                // The first frame confirms that the child has enabled raw mode.
-                if !sent_quit
-                    && status.is_none()
-                    && output
-                        .windows(b"First Steps".len())
-                        .any(|w| w == b"First Steps")
-                {
-                    master.write_all(b"q")?;
-                    sent_quit = true;
+                if !sent_quit && status.is_none() {
+                    sent_quit = interact(&String::from_utf8_lossy(output), master)?;
                 }
             }
             Ok(_) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
