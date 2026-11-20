@@ -1614,11 +1614,13 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
     };
     #[derive(Clone, Copy)]
     struct IfLevel {
+        parents_active: bool,
         matched_yet: bool,
         included: bool,
     }
     #[derive(Default)]
     struct SwitchLevel {
+        parents_active: bool,
         pick: Option<u32>,
         included: bool,
         skipped: bool,
@@ -1627,11 +1629,21 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
     let mut switch_stack: Vec<SwitchLevel> = Vec::new();
     let mut random_stack: Vec<u32> = Vec::new();
     let mut if_stack: Vec<IfLevel> = Vec::new();
-    let is_active = |ifs: &[IfLevel], switches: &[SwitchLevel]| {
-        ifs.iter().all(|l| l.included) && switches.iter().all(|l| l.included)
+    // Each stack only changes its top frame, so its saved parent activity stays valid.
+    let ifs_active = |ifs: &[IfLevel]| {
+        ifs.last()
+            .is_none_or(|top| top.parents_active && top.included)
+    };
+    let switches_active = |switches: &[SwitchLevel]| {
+        switches
+            .last()
+            .is_none_or(|top| top.parents_active && top.included)
     };
     let mut out = String::with_capacity(text.len());
     for line in text.lines() {
+        let if_active = ifs_active(&if_stack);
+        let switch_active = switches_active(&switch_stack);
+        let active = if_active && switch_active;
         let trimmed = line.trim().trim_start_matches('\u{feff}');
         if let Some(body) = trimmed.strip_prefix('#') {
             let (head, rest) = split_first_word(body);
@@ -1639,15 +1651,16 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
             match up.as_str() {
                 "SWITCH" | "SETSWITCH" => {
                     let pick = rest.trim().parse::<u32>().ok().filter(|&n| n > 0);
-                    let pick = pick.filter(|_| is_active(&if_stack, &switch_stack));
+                    let pick = pick.filter(|_| active);
                     switch_stack.push(SwitchLevel {
+                        parents_active: switch_active,
                         pick: pick.map(|n| if up == "SWITCH" { draw(n) } else { n }),
                         ..SwitchLevel::default()
                     });
                     continue;
                 }
                 "CASE" | "DEF" | "SKIP" => {
-                    if if_stack.iter().all(|l| l.included) {
+                    if if_active {
                         if let Some(top) = switch_stack.last_mut() {
                             if !top.skipped && !top.default {
                                 match up.as_str() {
@@ -1676,7 +1689,7 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
                     continue;
                 }
                 "RANDOM" => {
-                    if is_active(&if_stack, &switch_stack) {
+                    if active {
                         if let Ok(n) = rest.trim().parse::<u32>() {
                             if n > 0 {
                                 random_stack.push(draw(n));
@@ -1686,7 +1699,7 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
                     continue;
                 }
                 "SETRANDOM" => {
-                    if is_active(&if_stack, &switch_stack) {
+                    if active {
                         if let Ok(n) = rest.trim().parse::<u32>() {
                             random_stack.push(n);
                         }
@@ -1694,7 +1707,7 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
                     continue;
                 }
                 "ENDRANDOM" => {
-                    if is_active(&if_stack, &switch_stack) {
+                    if active {
                         random_stack.pop();
                     }
                     continue;
@@ -1704,6 +1717,7 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
                         .last()
                         .is_some_and(|&p| rest.trim().parse::<u32>().ok() == Some(p));
                     if_stack.push(IfLevel {
+                        parents_active: if_active,
                         matched_yet: ok,
                         included: ok,
                     });
@@ -1737,7 +1751,7 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
                 _ => {}
             }
         }
-        if is_active(&if_stack, &switch_stack) {
+        if active {
             out.push_str(line);
             out.push('\n');
         }
@@ -3296,6 +3310,30 @@ mod tests {
 ";
         let out = resolve_control_flow(text, 0);
         assert!(out.contains("#TITLE Inner"));
+    }
+
+    #[test]
+    fn deeply_nested_branches_resolve_for_metadata_and_loading() {
+        let depth = 512;
+        let text = [
+            "#SETRANDOM 1\n".to_owned(),
+            "#IF 1\n#SETSWITCH 1\n#CASE 1\n".repeat(depth),
+            "Active branch content\n".repeat(depth),
+            "#TITLE Deep branch\n#BPM 120\n#00111:01\n".to_owned(),
+            "#SKIP\n#TITLE Skipped branch\n#ENDSW\n#ELSE\n#TITLE Inactive branch\n#ENDIF\n"
+                .repeat(depth),
+            "#ARTIST After branches\n".to_owned(),
+        ]
+        .concat();
+        let path = Path::new("deep.bms");
+        let (meta, _, _) = parse_meta(path, text.as_bytes(), 0).unwrap();
+        let chart = load_bytes(path, text.as_bytes(), 0.0, 0).unwrap();
+
+        assert_eq!(meta.title, "Deep branch");
+        assert_eq!(chart.title, meta.title);
+        assert_eq!(meta.artist, "After branches");
+        assert_eq!(chart.artist, meta.artist);
+        assert_eq!(chart.notes.len(), 1);
     }
 
     #[test]
