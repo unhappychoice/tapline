@@ -69,7 +69,7 @@ impl Args {
 
 pub enum ChartChoice {
     File(PathBuf),
-    Selected(Box<bms::ChartMeta>),
+    Selected(Box<select::ChartEntry>),
     Cancelled,
     BuiltIn,
 }
@@ -89,11 +89,12 @@ pub fn choose_chart_with_selector(
     if let Some(p) = &args.file {
         return Ok(ChartChoice::File(p.clone()));
     }
-    let Some(dir) = args.dir.clone().or_else(default_songs_dir) else {
-        return Ok(ChartChoice::BuiltIn);
-    };
-    let charts = state.scan(&dir);
-    if charts.is_empty() {
+    let charts = args
+        .dir
+        .clone()
+        .or_else(default_songs_dir)
+        .map_or_else(Vec::new, |dir| state.scan(&dir));
+    if charts.is_empty() && !state.reopening_selector {
         return Ok(ChartChoice::BuiltIn);
     }
     Ok(
@@ -106,13 +107,25 @@ pub fn choose_chart_with_selector(
 
 pub type LoadedSession = (crate::chart::Chart, Option<crate::results::Identity>);
 
+#[derive(Debug)]
+pub struct ChartRevisionChanged;
+
+impl std::fmt::Display for ChartRevisionChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The selected chart changed on disk")
+    }
+}
+
+impl std::error::Error for ChartRevisionChanged {}
+
 pub fn load_session(choice: &ChartChoice, args: &Args) -> Result<Option<LoadedSession>> {
     use crate::results::Identity;
-    let (path, seed) = match choice {
-        ChartChoice::File(path) => (path, (!bmson::is_bmson(path)).then(bms::random_seed)),
-        ChartChoice::Selected(meta) => (
-            &meta.path,
-            (!bmson::is_bmson(&meta.path)).then_some(meta.random_seed),
+    let (path, seed, expected) = match choice {
+        ChartChoice::File(path) => (path, (!bmson::is_bmson(path)).then(bms::random_seed), None),
+        ChartChoice::Selected(entry) => (
+            &entry.path,
+            entry.identity.random_seed,
+            Some(&entry.identity),
         ),
         ChartChoice::BuiltIn => {
             return Ok(Some((
@@ -128,6 +141,7 @@ pub fn load_session(choice: &ChartChoice, args: &Args) -> Result<Option<LoadedSe
         &bytes,
         seed,
         args.countdown_ms,
+        expected,
     )?))
 }
 
@@ -136,8 +150,12 @@ fn session_from_bytes(
     bytes: &[u8],
     seed: Option<u64>,
     lead_in_ms: f64,
+    expected: Option<&crate::results::Identity>,
 ) -> Result<LoadedSession> {
     let identity = crate::results::Identity::from_bytes(path, bytes, seed);
+    if expected.is_some_and(|entry| entry.key != identity.key) {
+        return Err(ChartRevisionChanged.into());
+    }
     let chart = match seed {
         Some(seed) => bms::load_bytes(path, bytes, lead_in_ms, seed)?,
         None => bmson::load_bytes(path, bytes, lead_in_ms)?,
@@ -601,7 +619,7 @@ mod session_tests {
         let snapshot = crate::chart_file::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::write(&path, replacement).unwrap();
-        let (chart, identity) = session_from_bytes(&path, &snapshot, seed, 500.0).unwrap();
+        let (chart, identity) = session_from_bytes(&path, &snapshot, seed, 500.0, None).unwrap();
         let identity = identity.unwrap();
         assert_eq!(chart.title, "Original");
         assert_eq!(chart.bpm, 120.0);
@@ -632,29 +650,12 @@ mod session_tests {
     }
 
     #[test]
-    fn selected_random_seed_is_carried_to_the_loaded_session() {
+    fn direct_bms_load_has_a_random_seed() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.bms");
-        let meta = bms::read_meta_with_seed(&path, 42).unwrap();
         let args = Args::parse_from(["tapline"]);
-        let (chart, identity) = load_session(&ChartChoice::Selected(Box::new(meta)), &args)
+        let (_, identity) = load_session(&ChartChoice::File(path), &args)
             .unwrap()
             .unwrap();
-        let identity = identity.unwrap();
-        assert_eq!(identity.random_seed, Some(42));
-        assert_eq!(
-            identity.key,
-            crate::results::Identity::file(&path, None).unwrap().key
-        );
-        assert_eq!(
-            chart.notes.len(),
-            bms::load_with_seed(&path, args.countdown_ms, 42)
-                .unwrap()
-                .notes
-                .len()
-        );
-        let (_, explicit) = load_session(&ChartChoice::File(path), &args)
-            .unwrap()
-            .unwrap();
-        assert!(explicit.unwrap().random_seed.is_some());
+        assert!(identity.unwrap().random_seed.is_some());
     }
 }

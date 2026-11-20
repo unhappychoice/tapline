@@ -24,7 +24,7 @@ pub struct ChartMeta {
     pub banner: String,
     pub comment: String,
     pub bpm: f64,
-    pub playlevel: Option<u8>,
+    pub playlevel: Option<u32>,
     pub difficulty: Option<u8>,
     pub lane_count: usize,
 }
@@ -81,7 +81,7 @@ pub(crate) fn parse_meta(
         banner: pass.banner,
         comment: pass.comment,
         bpm: pass.bpm,
-        playlevel: pass.playlevel,
+        playlevel: pass.playlevel.map(u32::from),
         difficulty: pass.difficulty,
         lane_count: mode.playable_lane_count(&acc, &p2_acc),
     };
@@ -247,10 +247,6 @@ fn build_chart(
     let mut p2_notes = p2_acc.notes;
     let mut p2_invisible_notes = p2_acc.invisible_notes;
     let mut p2_mines = p2_acc.mines;
-    if let Some(lnobj) = pass.lnobj {
-        promote_lnobj(&mut notes, lnobj);
-        promote_lnobj(&mut p2_notes, lnobj);
-    }
     notes.retain(|n| n.lane < p1_lane_count || n.lane == 7);
     mines.retain(|n| n.lane < p1_lane_count || n.lane == 7);
     p2_notes.retain(|n| n.lane < p2_lane_count || n.lane == 7);
@@ -286,6 +282,18 @@ fn build_chart(
     bga.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     let duration_ms = timeline.end_time(max_measure) + 2500.0;
     ensure!(duration_ms.is_finite(), "BMS duration must be finite");
+    let last_event_ms = notes
+        .iter()
+        .map(|note| note.end_ms.unwrap_or(note.time_ms))
+        .chain(mines.iter().map(|mine| mine.time_ms))
+        .chain(invisible_notes.iter().map(|note| note.time_ms))
+        .chain(bgm.iter().map(|event| event.time_ms))
+        .chain(bga.iter().map(|event| event.time_ms))
+        .chain(text_events.iter().map(|event| event.time_ms))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let trailing_stop_completion_ms = timeline
+        .has_stop_after(last_event_ms)
+        .then_some(duration_ms);
     Ok(Chart {
         title: pass.title,
         subtitle: pass.subtitle,
@@ -299,7 +307,7 @@ fn build_chart(
         asset_dir: dir.clone(),
         maker: pass.maker,
         bpm: pass.bpm,
-        playlevel: pass.playlevel,
+        playlevel: pass.playlevel.map(u32::from),
         difficulty: pass.difficulty,
         rank: pass.rank,
         def_exrank: pass.def_exrank,
@@ -324,6 +332,7 @@ fn build_chart(
         scroll,
         speed,
         duration_ms,
+        trailing_stop_completion_ms,
         lane_count,
         keys: Lane::bindings(&lanes),
         lanes,
@@ -343,11 +352,11 @@ fn collect_chart_sides(
 ) -> Result<(Timeline, ChartAcc, ChartAcc)> {
     let timeline = build_timeline(raw, pass, lead_in_ms)?;
     let lanes = if pms { PMS_LANES } else { P1_LANES };
-    let acc = accumulate_side(raw, &timeline, lanes, collect_bgm, pass.lntype, pass.base);
+    let acc = accumulate_side(raw, &timeline, lanes, collect_bgm, pass);
     let p2_acc = if pms {
         ChartAcc::default()
     } else {
-        accumulate_side(raw, &timeline, P2_LANES, false, pass.lntype, pass.base)
+        accumulate_side(raw, &timeline, P2_LANES, false, pass)
     };
     Ok((timeline, acc, p2_acc))
 }
@@ -526,11 +535,11 @@ fn accumulate_side(
     timeline: &Timeline,
     lanes: LaneMap,
     collect_bgm: bool,
-    lntype: u8,
-    base: u32,
+    pass: &HeaderPass,
 ) -> ChartAcc {
     #[cfg(test)]
     MATERIALIZATION_CALLS.with(|calls| calls.set(calls.get() + 1));
+    let base = pass.base;
     let raw = merge_note_lines(raw, lanes, base);
     let raw = raw.as_slice();
     let mut acc = ChartAcc::default();
@@ -555,7 +564,10 @@ fn accumulate_side(
             push_bgm_slots(&mut acc, *measure, data, timeline, base);
         }
     }
-    if lntype == 2 {
+    if let Some(lnobj) = pass.lnobj {
+        promote_lnobj(&mut acc.notes, lnobj);
+    }
+    if pass.lntype == 2 {
         materialize_continuous_long_notes(&mut acc, raw, timeline, lanes.long, base);
     } else {
         materialize_long_notes_with(&mut acc, raw, timeline, lanes.long, base);
@@ -1257,6 +1269,15 @@ impl Timeline {
     fn end_time(&self, max_measure: u32) -> f64 {
         self.time_at(max_measure, 1.0)
     }
+
+    fn has_stop_after(&self, time_ms: f64) -> bool {
+        self.measures
+            .iter()
+            .flat_map(|measure| &measure.segments)
+            .any(|segment| {
+                segment.departure_ms > segment.arrival_ms && segment.departure_ms > time_ms
+            })
+    }
 }
 
 struct HeaderPass {
@@ -1606,6 +1627,42 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
     resolve_branches(text, seed).0
 }
 
+#[cfg(test)]
+thread_local! {
+    static BRANCH_FRAME_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+struct BranchStack<T>(Vec<T>);
+
+impl<T> BranchStack<T> {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    fn push(&mut self, frame: T) {
+        self.0.push(frame);
+    }
+
+    fn pop(&mut self) {
+        self.0.pop();
+    }
+
+    fn iter(&self) -> impl DoubleEndedIterator<Item = &T> {
+        let frames = self.0.iter();
+        #[cfg(test)]
+        let frames =
+            frames.inspect(|_| BRANCH_FRAME_READS.with(|reads| reads.set(reads.get() + 1)));
+        frames
+    }
+
+    fn last_mut(&mut self) -> Option<&mut T> {
+        let frame = self.0.last_mut()?;
+        #[cfg(test)]
+        BRANCH_FRAME_READS.with(|reads| reads.set(reads.get() + 1));
+        Some(frame)
+    }
+}
+
 fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
     let mut rng = seed.wrapping_add(RNG_OFFSET);
     let mut draws_random = false;
@@ -1615,24 +1672,38 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
     };
     #[derive(Clone, Copy)]
     struct IfLevel {
+        parents_active: bool,
         matched_yet: bool,
         included: bool,
     }
     #[derive(Default)]
     struct SwitchLevel {
+        parents_active: bool,
         pick: Option<u32>,
         included: bool,
         skipped: bool,
         default: bool,
     }
-    let mut switch_stack: Vec<SwitchLevel> = Vec::new();
+    let mut switch_stack = BranchStack::<SwitchLevel>::new();
     let mut random_stack: Vec<u32> = Vec::new();
-    let mut if_stack: Vec<IfLevel> = Vec::new();
-    let is_active = |ifs: &[IfLevel], switches: &[SwitchLevel]| {
-        ifs.iter().all(|l| l.included) && switches.iter().all(|l| l.included)
+    let mut if_stack = BranchStack::<IfLevel>::new();
+    // Each stack only changes its top frame, so its saved parent activity stays valid.
+    let ifs_active = |ifs: &BranchStack<IfLevel>| {
+        ifs.iter()
+            .next_back()
+            .is_none_or(|top| top.parents_active && top.included)
+    };
+    let switches_active = |switches: &BranchStack<SwitchLevel>| {
+        switches
+            .iter()
+            .next_back()
+            .is_none_or(|top| top.parents_active && top.included)
     };
     let mut out = String::with_capacity(text.len());
     for line in text.lines() {
+        let if_active = ifs_active(&if_stack);
+        let switch_active = switches_active(&switch_stack);
+        let active = if_active && switch_active;
         let trimmed = line.trim().trim_start_matches('\u{feff}');
         if let Some(body) = trimmed.strip_prefix('#') {
             let (head, rest) = split_first_word(body);
@@ -1640,15 +1711,16 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
             match up.as_str() {
                 "SWITCH" | "SETSWITCH" => {
                     let pick = rest.trim().parse::<u32>().ok().filter(|&n| n > 0);
-                    let pick = pick.filter(|_| is_active(&if_stack, &switch_stack));
+                    let pick = pick.filter(|_| active);
                     switch_stack.push(SwitchLevel {
+                        parents_active: switch_active,
                         pick: pick.map(|n| if up == "SWITCH" { draw(n) } else { n }),
                         ..SwitchLevel::default()
                     });
                     continue;
                 }
                 "CASE" | "DEF" | "SKIP" => {
-                    if if_stack.iter().all(|l| l.included) {
+                    if if_active {
                         if let Some(top) = switch_stack.last_mut() {
                             if !top.skipped && !top.default {
                                 match up.as_str() {
@@ -1677,7 +1749,7 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
                     continue;
                 }
                 "RANDOM" => {
-                    if is_active(&if_stack, &switch_stack) {
+                    if active {
                         if let Ok(n) = rest.trim().parse::<u32>() {
                             if n > 0 {
                                 random_stack.push(draw(n));
@@ -1687,7 +1759,7 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
                     continue;
                 }
                 "SETRANDOM" => {
-                    if is_active(&if_stack, &switch_stack) {
+                    if active {
                         if let Ok(n) = rest.trim().parse::<u32>() {
                             random_stack.push(n);
                         }
@@ -1695,7 +1767,7 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
                     continue;
                 }
                 "ENDRANDOM" => {
-                    if is_active(&if_stack, &switch_stack) {
+                    if active {
                         random_stack.pop();
                     }
                     continue;
@@ -1705,6 +1777,7 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
                         .last()
                         .is_some_and(|&p| rest.trim().parse::<u32>().ok() == Some(p));
                     if_stack.push(IfLevel {
+                        parents_active: if_active,
                         matched_yet: ok,
                         included: ok,
                     });
@@ -1738,7 +1811,7 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
                 _ => {}
             }
         }
-        if is_active(&if_stack, &switch_stack) {
+        if active {
             out.push_str(line);
             out.push('\n');
         }
@@ -3300,6 +3373,44 @@ mod tests {
     }
 
     #[test]
+    fn deeply_nested_branches_resolve_for_metadata_and_loading() {
+        let depth = 512;
+        let text = [
+            "#SETRANDOM 1\n".to_owned(),
+            "#IF 1\n#SETSWITCH 1\n#CASE 1\n".repeat(depth),
+            "Active branch content\n".repeat(depth),
+            "#TITLE Deep branch\n#BPM 120\n#00111:01\n".to_owned(),
+            "#SKIP\n#TITLE Skipped branch\n#ENDSW\n#ELSE\n#TITLE Inactive branch\n#ENDIF\n"
+                .repeat(depth),
+            "#ARTIST After branches\n".to_owned(),
+        ]
+        .concat();
+        let path = Path::new("deep.bms");
+        // Each line can read both stack tops and update at most one of them.
+        let max_frame_reads = 3 * text.lines().count();
+        BRANCH_FRAME_READS.set(0);
+        let (meta, _, _) = parse_meta(path, text.as_bytes(), 0).unwrap();
+        let metadata_reads = BRANCH_FRAME_READS.replace(0);
+        assert!(
+            (1..=max_frame_reads).contains(&metadata_reads),
+            "metadata parsing accessed {metadata_reads} branch frames, expected 1..={max_frame_reads}"
+        );
+
+        let chart = load_bytes(path, text.as_bytes(), 0.0, 0).unwrap();
+        let loading_reads = BRANCH_FRAME_READS.replace(0);
+        assert!(
+            (1..=max_frame_reads).contains(&loading_reads),
+            "chart loading accessed {loading_reads} branch frames, expected 1..={max_frame_reads}"
+        );
+
+        assert_eq!(meta.title, "Deep branch");
+        assert_eq!(chart.title, meta.title);
+        assert_eq!(meta.artist, "After branches");
+        assert_eq!(chart.artist, meta.artist);
+        assert_eq!(chart.notes.len(), 1);
+    }
+
+    #[test]
     fn switch_selects_cases_with_skip_and_fallthrough() {
         let branches = "\
 #CASE 1
@@ -4485,6 +4596,21 @@ Always
         // First note is at measure 1, slot 0 → t = 4000 + 500 = 4500 ms.
         assert!((chart.notes[0].time_ms - 4500.0).abs() < 1e-6);
         assert!(chart.wav_paths.is_empty(), "no wav file bundled");
+    }
+
+    #[test]
+    fn load_preserves_coincident_bgm_events_with_repeated_and_distinct_wav_ids() {
+        let dir = tempdir();
+        let path = dir.join("song.bms");
+        std::fs::write(&path, "#BPM 60\n#00101:01\n#00101:01\n#00101:02\n").unwrap();
+
+        let chart = load(&path, 0.0).unwrap();
+        let events: Vec<_> = chart
+            .bgm
+            .iter()
+            .map(|event| (event.time_ms, event.keysound))
+            .collect();
+        assert_eq!(events, [(4000.0, 1), (4000.0, 1), (4000.0, 2)]);
     }
 
     #[test]

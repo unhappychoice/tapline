@@ -10,6 +10,7 @@ use std::{
     collections::VecDeque,
     io::{BufReader, Write},
     path::{Path, PathBuf},
+    rc::Rc,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -35,18 +36,30 @@ pub(crate) fn draw(
     name: &str,
     area: (u16, u16, u16, u16),
 ) -> std::io::Result<()> {
-    if name.is_empty() || area.2 == 0 || area.3 == 0 {
-        return Ok(());
+    if let Some(image) = thumbnail(dir, name, (area.2, area.3)) {
+        draw_pixels(out, &image, area)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn thumbnail(dir: &Path, name: &str, size: (u16, u16)) -> Option<Rc<RgbaImage>> {
+    if name.is_empty() || size.0 == 0 || size.1 == 0 {
+        return None;
     }
     CACHE.with(|cache| {
-        match cache
+        cache
             .borrow_mut()
-            .pixels(dir, name, (area.2, area.3), Instant::now)
-        {
-            Some(image) => draw_pixels(out, image, area),
-            None => Ok(()),
-        }
+            .pixels(dir, name, size, Instant::now)
+            .cloned()
     })
+}
+
+pub(crate) fn prepare(dir: &Path, name: &str, size: (u16, u16)) -> Option<RgbaImage> {
+    if name.is_empty() || size.0 == 0 || size.1 == 0 {
+        return None;
+    }
+    let path = AssetIndex::new(dir).resolve_path(name, &[])?;
+    load_image(&path).map(|image| resize(&image, size))
 }
 
 struct ArtworkCache {
@@ -86,7 +99,7 @@ struct Thumbnail {
     path: PathBuf,
     size: (u16, u16),
     source: SourceVersion,
-    pixels: Result<RgbaImage, Instant>,
+    pixels: Result<Rc<RgbaImage>, Instant>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -104,7 +117,7 @@ impl ArtworkCache {
         name: &str,
         size: (u16, u16),
         now: impl Fn() -> Instant,
-    ) -> Option<&RgbaImage> {
+    ) -> Option<&Rc<RgbaImage>> {
         let (path, source) = self.resolve(dir, name, &now)?;
         self.thumbnails
             .retain(|entry| entry.path != path || entry.source == source);
@@ -116,7 +129,7 @@ impl ArtworkCache {
             Some(entry) if !matches!(entry.pixels, Err(retry_at) if now() >= retry_at) => entry,
             _ => Thumbnail {
                 pixels: load_image(&path)
-                    .map(|image| resize(&image, size))
+                    .map(|image| Rc::new(resize(&image, size)))
                     .ok_or_else(|| now() + RETRY_INTERVAL),
                 path,
                 size,
@@ -218,7 +231,7 @@ fn load_image(path: &Path) -> Option<DynamicImage> {
         .ok()
 }
 
-fn draw_pixels(
+pub(crate) fn draw_pixels(
     out: &mut impl Write,
     pixels: &RgbaImage,
     (x, y, width, _height): (u16, u16, u16, u16),

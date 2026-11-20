@@ -2,8 +2,7 @@ use crate::chart::{Chart, ScrollEvent};
 
 /// Immutable index built once when gameplay loads a chart. Events must be time-sorted.
 pub struct ScrollMap {
-    events: Vec<ScrollEvent>,
-    coordinates: Vec<f64>,
+    segments: Vec<ScrollSegment>,
     ranges: Vec<(f64, f64)>,
     #[cfg(test)]
     visits: std::cell::Cell<usize>,
@@ -11,28 +10,16 @@ pub struct ScrollMap {
 
 impl ScrollMap {
     pub fn new(events: &[ScrollEvent]) -> Self {
-        let mut time = 0.0;
-        let mut coordinate = 0.0;
-        let mut rate = 1.0;
-        let coordinates: Vec<_> = events
-            .iter()
-            .map(|event| {
-                coordinate += (event.time_ms - time) * rate;
-                time = event.time_ms;
-                rate = event.multiplier;
-                coordinate
-            })
-            .collect();
+        let segments: Vec<_> = integrate(events.iter()).collect();
         let mut ranges = vec![(f64::INFINITY, f64::NEG_INFINITY); events.len() * 2];
-        coordinates.iter().enumerate().for_each(|(i, &value)| {
-            ranges[events.len() + i] = (value, value);
+        segments.iter().enumerate().for_each(|(i, segment)| {
+            ranges[events.len() + i] = (segment.coordinate, segment.coordinate);
         });
         for i in (1..events.len()).rev() {
             ranges[i] = merge(ranges[i * 2], ranges[i * 2 + 1]);
         }
         Self {
-            events: events.to_vec(),
-            coordinates,
+            segments,
             ranges,
             #[cfg(test)]
             visits: std::cell::Cell::new(0),
@@ -40,10 +27,9 @@ impl ScrollMap {
     }
 
     pub fn coordinate(&self, time: f64) -> f64 {
-        let index = self.index(time, true);
-        index.checked_sub(1).map_or(time, |i| {
-            self.coordinates[i] + (time - self.events[i].time_ms) * self.events[i].multiplier
-        })
+        self.segments[..self.index(time, true)]
+            .last()
+            .map_or(time, |segment| segment.coordinate_at(time))
     }
 
     /// Query endpoints and internal event extrema in O(log S) time.
@@ -51,8 +37,8 @@ impl ScrollMap {
         let a = self.coordinate(start);
         let b = self.coordinate(end);
         let mut range = (a.min(b), a.max(b));
-        let mut left = self.index(start, true) + self.events.len();
-        let mut right = self.index(end, false) + self.events.len();
+        let mut left = self.index(start, true) + self.segments.len();
+        let mut right = self.index(end, false) + self.segments.len();
         while left < right {
             #[cfg(test)]
             self.visits.set(self.visits.get() + 1);
@@ -71,21 +57,18 @@ impl ScrollMap {
     }
 
     pub fn frame(&self, chart: &Chart, now: f64) -> ScrollFrame<'_> {
-        let index = chart.speed.partition_point(|event| event.time_ms <= now);
-        let speed = index
-            .checked_sub(1)
-            .map_or(1.0, |i| chart.speed[i].multiplier);
         ScrollFrame {
             map: self,
             now: self.coordinate(now),
-            speed,
+            speed: speed_at(chart, now),
         }
     }
+
     fn index(&self, time: f64, inclusive: bool) -> usize {
-        self.events.partition_point(|event| {
+        self.segments.partition_point(|segment| {
             #[cfg(test)]
             self.visits.set(self.visits.get() + 1);
-            event.time_ms < time || (inclusive && event.time_ms == time)
+            segment.time < time || (inclusive && segment.time == time)
         })
     }
 }
@@ -109,8 +92,64 @@ impl ScrollFrame<'_> {
     }
 
     pub(crate) fn transform(&self, coordinate: f64) -> f64 {
-        (coordinate - self.now) * self.speed
+        scaled_distance(coordinate, self.now, self.speed)
     }
+}
+
+pub(crate) fn distance(chart: &Chart, time: f64, now: f64) -> f64 {
+    let coordinate = |time| {
+        integrate(
+            chart
+                .scroll
+                .iter()
+                .take_while(|event| event.time_ms <= time),
+        )
+        .last()
+        .map_or(time, |segment| segment.coordinate_at(time))
+    };
+    scaled_distance(coordinate(time), coordinate(now), speed_at(chart, now))
+}
+
+#[derive(Clone, Copy)]
+struct ScrollSegment {
+    time: f64,
+    coordinate: f64,
+    rate: f64,
+}
+
+impl ScrollSegment {
+    fn coordinate_at(&self, time: f64) -> f64 {
+        self.coordinate + (time - self.time) * self.rate
+    }
+}
+
+fn integrate<'a>(
+    events: impl Iterator<Item = &'a ScrollEvent> + 'a,
+) -> impl Iterator<Item = ScrollSegment> + 'a {
+    let mut segment = ScrollSegment {
+        time: 0.0,
+        coordinate: 0.0,
+        rate: 1.0,
+    };
+    events.map(move |event| {
+        segment = ScrollSegment {
+            time: event.time_ms,
+            coordinate: segment.coordinate_at(event.time_ms),
+            rate: event.multiplier,
+        };
+        segment
+    })
+}
+
+fn speed_at(chart: &Chart, now: f64) -> f64 {
+    let index = chart.speed.partition_point(|event| event.time_ms <= now);
+    chart.speed[..index]
+        .last()
+        .map_or(1.0, |event| event.multiplier)
+}
+
+fn scaled_distance(coordinate: f64, now: f64, speed: f64) -> f64 {
+    (coordinate - now) * speed
 }
 
 fn merge(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
@@ -120,6 +159,26 @@ fn merge(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simultaneous_bms_scroll_changes_have_no_distance_between_them() {
+        let chart = crate::bms::load_bytes(
+            std::path::Path::new("simultaneous.bms"),
+            b"#BPM 120\n#SCROLL01 1e20\n#SCROLL02 1\n#000SC:0001\n#000SC:0002\n",
+            0.0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(chart.scroll.len(), 2);
+        assert_eq!(chart.scroll[0].time_ms, 1000.0);
+        assert_eq!(chart.scroll[1].time_ms, 1000.0);
+        assert_eq!(chart.scroll[0].multiplier, 1e20);
+        assert_eq!(chart.scroll[1].multiplier, 1.0);
+
+        let map = ScrollMap::new(&chart.scroll);
+        assert_eq!(chart.scroll_distance(1500.0, 1000.0), 500.0);
+        assert_eq!(map.frame(&chart, 1000.0).distance(1500.0), 500.0);
+    }
 
     #[test]
     fn indexed_ranges_match_integrated_extrema() {
@@ -153,6 +212,10 @@ mod tests {
                 },
                 ScrollEvent {
                     time_ms: 200.0,
+                    multiplier: 3.0,
+                },
+                ScrollEvent {
+                    time_ms: 200.0,
                     multiplier: -2.0,
                 },
                 ScrollEvent {
@@ -163,6 +226,16 @@ mod tests {
             ..Chart::default()
         };
         let map = ScrollMap::new(&chart.scroll);
+        for (now, time, expected) in [
+            (-200.0, 300.0, 100.0),
+            (100.0, 300.0, 0.0),
+            (200.0, 300.0, 200.0),
+            (400.0, 500.0, 100.0),
+        ] {
+            assert_eq!(chart.scroll_distance(time, now), expected);
+            assert_eq!(map.frame(&chart, now).distance(time), expected);
+        }
+
         for now in [-200.0, 100.0, 250.0, 500.0] {
             let frame = map.frame(&chart, now);
             for start in [-200.0, 100.0, 200.0, 300.0, 500.0] {

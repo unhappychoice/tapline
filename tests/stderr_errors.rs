@@ -11,24 +11,97 @@ use std::time::{Duration, Instant};
 #[test]
 fn quitting_the_chart_selector_exits_successfully() {
     let songs = Path::new(env!("CARGO_MANIFEST_DIR")).join("songs");
-    let (status, output) = run_selector(&songs);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tapline"));
+    command
+        .arg("--dir")
+        .arg(songs)
+        .env("TAPLINE_DATA_DIR", "/dev/null");
+    let (status, output) = run_interactive(command, &[(b"First Steps", b"q")]);
     assert_eq!(status.code(), Some(0), "{output:?}");
     assert!(output.contains("T A P L I N E"), "{output:?}");
     assert!(output.contains("First Steps"), "{output:?}");
     assert!(output.contains("\x1b[?1049l"), "{output:?}");
 }
 
-fn run_selector(songs: &Path) -> (ExitStatus, String) {
-    let (mut master, slave) = open_pty();
-    let result = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
-    assert_eq!(result, 0, "{}", io::Error::last_os_error());
+#[test]
+fn built_in_practice_draws_the_playfield_and_shows_interrupted_results() {
+    let data = std::env::temp_dir().join(format!("tapline-practice-{}", std::process::id()));
+    std::fs::create_dir(&data).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tapline"));
+    command
+        .args(["--built-in", "--countdown-ms", "0", "--bpm", "60"])
+        .env("TAPLINE_DATA_DIR", &data);
+    let (status, output) = run_interactive(
+        command,
+        &[(b"quit Esc / Q", b"q"), (b"press any key to exit", b" ")],
+    );
+    let saved = data.join("results.json").exists();
+    std::fs::remove_dir_all(data).unwrap();
+    assert_eq!(status.code(), Some(0), "{output:?}");
+    assert!(output.contains("Built-in Practice"), "{output:?}");
+    assert!(output.contains("═"), "{output:?}");
+    assert!(output.contains("Interrupted: not saved"), "{output:?}");
+    assert!(!saved);
+    assert!(output.contains("\x1b[?1049l"), "{output:?}");
+}
+
+#[test]
+fn oversized_replacement_returns_to_the_empty_selector() {
+    let dir = std::env::temp_dir().join(format!(
+        "tapline-oversized-selection-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("chart.bms");
+    std::fs::write(&path, "#TITLE Original\n#00111:01\n").unwrap();
+
     let mut command = Command::new(env!("CARGO_BIN_EXE_tapline"));
     command
         .arg("--dir")
-        .arg(songs)
+        .arg(&dir)
+        .env("TAPLINE_DATA_DIR", "/dev/null");
+    let (status, output) = run_interactive_with(
+        command,
+        &[
+            (b"Original", b"\r"),
+            (b"Press any key to return to the selector.", b" "),
+            ("select a chart  ·  0 loaded".as_bytes(), b"q"),
+        ],
+        |prompt| {
+            if prompt == b"Original" {
+                File::options()
+                    .write(true)
+                    .open(&path)?
+                    .set_len(16 * 1024 * 1024 + 1)?;
+            }
+            Ok(())
+        },
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+
+    assert_eq!(status.code(), Some(0), "{output:?}");
+    assert!(
+        output.contains("chart exceeds the maximum size"),
+        "{output:?}"
+    );
+    assert!(output.contains("select a chart  ·  0 loaded"), "{output:?}");
+}
+
+fn run_interactive(command: Command, steps: &[(&[u8], &[u8])]) -> (ExitStatus, String) {
+    run_interactive_with(command, steps, |_| Ok(()))
+}
+
+fn run_interactive_with(
+    mut command: Command,
+    steps: &[(&[u8], &[u8])],
+    before_input: impl FnMut(&[u8]) -> io::Result<()>,
+) -> (ExitStatus, String) {
+    let (mut master, slave) = open_pty();
+    let result = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+    assert_eq!(result, 0, "{}", io::Error::last_os_error());
+    command
         .arg("--no-audio")
         .env("TAPLINE_RANDOM_SEED", "1")
-        .env("TAPLINE_DATA_DIR", "/dev/null")
         .stdin(slave.try_clone().unwrap())
         .stdout(slave.try_clone().unwrap())
         .stderr(slave.try_clone().unwrap());
@@ -44,7 +117,7 @@ fn run_selector(songs: &Path) -> (ExitStatus, String) {
 
     let mut child = command.spawn().unwrap();
     let mut output = Vec::new();
-    let result = wait_for_selector(&mut child, &mut master, &mut output);
+    let result = drive_terminal(&mut child, &mut master, &mut output, steps, before_input);
     if result.is_err() {
         let _ = child.kill();
         child.wait().unwrap();
@@ -52,17 +125,20 @@ fn run_selector(songs: &Path) -> (ExitStatus, String) {
     // Keep the slave open while reading the last bytes after child exit.
     drop(slave);
     let output = String::from_utf8_lossy(&output).into_owned();
-    let status = result.unwrap_or_else(|err| panic!("chart selector: {err}; output: {output:?}"));
+    let status =
+        result.unwrap_or_else(|err| panic!("interactive tapline: {err}; output: {output:?}"));
     (status, output)
 }
 
-fn wait_for_selector(
+fn drive_terminal(
     child: &mut Child,
     master: &mut File,
     output: &mut Vec<u8>,
+    mut steps: &[(&[u8], &[u8])],
+    mut before_input: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> io::Result<ExitStatus> {
     let deadline = Instant::now() + Duration::from_secs(5);
-    let mut sent_quit = false;
+    let mut search_from = 0;
     let mut buffer = [0; 4096];
     loop {
         if Instant::now() >= deadline {
@@ -72,23 +148,25 @@ fn wait_for_selector(
         match master.read(&mut buffer) {
             Ok(n) if n > 0 => {
                 output.extend_from_slice(&buffer[..n]);
-                // The first frame confirms that the child has enabled raw mode.
-                if !sent_quit
-                    && status.is_none()
-                    && output
-                        .windows(b"First Steps".len())
-                        .any(|w| w == b"First Steps")
-                {
-                    master.write_all(b"q")?;
-                    sent_quit = true;
+                if let Some(((prompt, input), remaining)) = steps.split_first() {
+                    if status.is_none()
+                        && output[search_from..]
+                            .windows(prompt.len())
+                            .any(|w| w == *prompt)
+                    {
+                        before_input(prompt)?;
+                        master.write_all(input)?;
+                        steps = remaining;
+                        search_from = output.len();
+                    }
                 }
             }
             Ok(_) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
                 if let Some(status) = status {
-                    if status.success() && !sent_quit {
-                        return Err(io::Error::other("exited before receiving q"));
+                    if status.success() && !steps.is_empty() {
+                        return Err(io::Error::other("exited before receiving all input"));
                     }
                     return Ok(status);
                 }

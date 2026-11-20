@@ -21,5 +21,6 @@ mod assets;
 mod chart_file;
 mod fs_guard;
 mod mine_visibility;
+mod note_visibility;
 mod preview;
 mod scroll;

@@ -12,8 +12,10 @@ use std::{
     collections::HashMap,
     io::Write,
     path::PathBuf,
+    sync::Arc,
 };
 
+mod bitmaps;
 mod crops;
 mod effect_timeline;
 mod image_file;
@@ -35,7 +37,7 @@ const POOR_MS: f64 = 500.0;
 
 #[derive(Default)]
 pub struct ImageBank(
-    HashMap<u32, RgbaImage>,
+    HashMap<u32, Arc<RgbaImage>>,
     HashMap<u32, PathBuf>,
     RefCell<[Playback; 4]>,
     timeline::Timeline,
@@ -50,22 +52,7 @@ impl ImageBank {
         extensions: &Extensions,
     ) -> Self {
         Self(
-            paths
-                .iter()
-                .filter_map(|(id, path)| {
-                    let image = image_file::load(path)?
-                        .resize(SIZE, SIZE, imageops::FilterType::Nearest)
-                        .to_rgba8();
-                    let mut canvas = RgbaImage::new(SIZE, SIZE);
-                    imageops::overlay(
-                        &mut canvas,
-                        &image,
-                        ((SIZE - image.width()) / 2) as i64,
-                        ((SIZE - image.height()) / 2) as i64,
-                    );
-                    Some((*id, canvas))
-                })
-                .collect(),
+            bitmaps::load(paths, extensions),
             paths
                 .iter()
                 .filter(|(_, path)| is_video(path))
@@ -92,9 +79,13 @@ impl ImageBank {
 
     pub fn prepare_crops(&mut self, chart: &crate::chart::Chart) {
         *self.5.get_mut() = None;
-        self.0.extend(crops::prepare(chart, |path| {
-            image_file::load(path).map(|image| image.to_rgba8())
-        }));
+        self.0.extend(
+            crops::prepare(chart, |path| {
+                image_file::load(path).map(|image| image.into_rgba8())
+            })
+            .into_iter()
+            .map(|(id, image)| (id, Arc::new(image))),
+        );
     }
 
     /// Return the BMP id currently active on a given BGA layer at `now_ms`,
@@ -158,21 +149,14 @@ impl ImageBank {
 
     fn rendered_frame(&self, game: &Game, now_ms: f64, width: u32) -> RefMut<'_, RgbaImage> {
         let layers = self.visible_layers(game, now_ms);
-        let bitmaps = layers.each_ref().map(|layer| match layer {
-            Some((LayerImage::Bitmap(id), style)) => Some((*id, *style)),
-            _ => None,
-        });
-        let has_video = layers
-            .iter()
-            .any(|layer| matches!(layer, Some((LayerImage::Video(_), _))));
-        let key = (!has_video).then_some(FrameKey { width, bitmaps });
+        let key = FrameKey { width, layers };
         let mut cached = self.5.borrow_mut();
-        if key.is_none() || !cached.as_ref().is_some_and(|frame| frame.key == key) {
+        if !cached.as_ref().is_some_and(|frame| frame.key == key) {
             let mut frame = RgbaImage::from_pixel(SIZE, SIZE, Rgba([0, 0, 0, 255]));
-            for (image, style) in layers.iter().flatten() {
+            for (image, style) in key.layers.iter().flatten() {
                 let image = match image {
-                    LayerImage::Bitmap(id) => &self.0[id],
-                    LayerImage::Video(image) => image,
+                    LayerImage::Bitmap(id) => self.0[id].as_ref(),
+                    LayerImage::Video(frame) => frame.0.as_ref(),
                 };
                 composite(&mut frame, image, style.alpha, style.key);
             }
@@ -209,9 +193,11 @@ impl ImageBank {
     fn styled_layer(&self, game: &Game, layer: BgaLayer, now_ms: f64) -> Option<Layer> {
         let image = self.layer(game, layer, now_ms)?;
         let state = self.4.state(layer, now_ms);
+        let extensions = &game.chart.bga_extensions;
         let key = state.key.or_else(|| {
-            (layer != BgaLayer::Base
-                && (layer != BgaLayer::Poor || game.chart.bga_extensions.poor_mode == 1))
+            (extensions.overlay_transparency == OverlayTransparency::BlackColorKey
+                && layer != BgaLayer::Base
+                && (layer != BgaLayer::Poor || extensions.poor_mode == 1))
                 .then_some([0, 0, 0])
         });
         Some((
@@ -316,9 +302,10 @@ mod tests;
 
 type Layer = (LayerImage, LayerStyle);
 
+#[derive(PartialEq, Eq)]
 enum LayerImage {
     Bitmap(u32),
-    Video(RgbaImage),
+    Video(video::Frame),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -330,11 +317,11 @@ struct LayerStyle {
 #[derive(PartialEq, Eq)]
 struct FrameKey {
     width: u32,
-    bitmaps: [Option<(u32, LayerStyle)>; 5],
+    layers: [Option<Layer>; 5],
 }
 
 struct RenderedFrame {
-    key: Option<FrameKey>,
+    key: FrameKey,
     pixels: RgbaImage,
 }
 

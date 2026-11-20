@@ -485,6 +485,43 @@ fn duplicate_lnobj_objects_merge_before_promotion() {
 }
 
 #[test]
+fn lnobj_preserves_dedicated_hold_with_matching_keysound() {
+    let path = write_text("#BPM 120\n#LNOBJ ZZ\n#00011:02\n#00151:ZZ01\n#00211:03ZZ\n");
+    let chart = bms::load(&path, 0.0).unwrap();
+    let notes: Vec<_> = chart
+        .notes
+        .iter()
+        .map(|note| (note.lane, note.time_ms, note.end_ms, note.keysound))
+        .collect();
+    assert_eq!(
+        notes,
+        [
+            (0, 0.0, None, Some(2)),
+            (0, 2000.0, Some(3000.0), Some(1295)),
+            (0, 4000.0, Some(5000.0), Some(3)),
+        ]
+    );
+}
+
+#[test]
+fn lnobj_pairs_visible_objects_across_a_dedicated_hold() {
+    let path = write_text("#BPM 120\n#LNOBJ ZZ\n#00021:02\n#00161:0301\n#00221:ZZ\n");
+    let chart = bms::load(&path, 0.0).unwrap();
+    let notes: Vec<_> = chart
+        .notes
+        .iter()
+        .map(|note| (note.time_ms, note.end_ms, note.keysound))
+        .collect();
+    assert_eq!(
+        notes,
+        [
+            (0.0, Some(4000.0), Some(2)),
+            (2000.0, Some(3000.0), Some(3))
+        ]
+    );
+}
+
+#[test]
 fn duplicate_bgm_lines_keep_simultaneous_sounds() {
     let path = write_text("#BPM 60\n#00101:01\n#00101:0200\n");
     let chart = bms::load(&path, 0.0).unwrap();

@@ -652,18 +652,32 @@ pub fn draw(
     Ok(())
 }
 
-fn draw_stagefile(
-    out: &mut impl Write,
-    chart: &crate::chart::Chart,
-    cols: u16,
-    rows: u16,
-) -> std::io::Result<()> {
-    crate::artwork::draw(
-        out,
-        &chart.asset_dir,
-        &chart.stagefile,
-        (0, 0, cols, (rows / 2).saturating_sub(4)),
-    )
+#[derive(Default)]
+pub(crate) struct IntroArtwork {
+    size: (u16, u16),
+    pixels: Option<image::RgbaImage>,
+}
+
+impl IntroArtwork {
+    pub(crate) fn prepare(&mut self, chart: &crate::chart::Chart, size: (u16, u16)) {
+        if self.size != size {
+            self.size = size;
+            let (_, _, width, height) = stagefile_area(size);
+            self.pixels =
+                crate::artwork::prepare(&chart.asset_dir, &chart.stagefile, (width, height));
+        }
+    }
+
+    fn draw(&self, out: &mut impl Write) -> std::io::Result<()> {
+        if let Some(pixels) = &self.pixels {
+            crate::artwork::draw_pixels(out, pixels, stagefile_area(self.size))?;
+        }
+        Ok(())
+    }
+}
+
+fn stagefile_area((cols, rows): (u16, u16)) -> (u16, u16, u16, u16) {
+    (0, 0, cols, (rows / 2).saturating_sub(4))
 }
 
 pub fn draw_intro(
@@ -684,9 +698,56 @@ pub fn draw_intro_full(
     samples_loaded: usize,
     decode_failures: usize,
 ) -> anyhow::Result<()> {
-    let (cols, rows) = terminal::size()?;
+    let size = terminal::size()?;
     queue!(out, terminal::BeginSynchronizedUpdate)?;
-    draw_stagefile(out, &game.chart, cols, rows)?;
+    crate::artwork::draw(
+        out,
+        &game.chart.asset_dir,
+        &game.chart.stagefile,
+        stagefile_area(size),
+    )?;
+    draw_intro_content(
+        out,
+        game,
+        countdown_ms,
+        mode,
+        audio_on,
+        (samples_loaded, decode_failures),
+        size,
+    )
+}
+
+pub(crate) fn draw_prepared_intro(
+    out: &mut impl Write,
+    game: &Game,
+    countdown_ms: f64,
+    mode: AudioMode,
+    audio_on: bool,
+    samples: (usize, usize),
+    artwork: &IntroArtwork,
+) -> anyhow::Result<()> {
+    queue!(out, terminal::BeginSynchronizedUpdate)?;
+    artwork.draw(out)?;
+    draw_intro_content(
+        out,
+        game,
+        countdown_ms,
+        mode,
+        audio_on,
+        samples,
+        artwork.size,
+    )
+}
+
+fn draw_intro_content(
+    out: &mut impl Write,
+    game: &Game,
+    countdown_ms: f64,
+    mode: AudioMode,
+    audio_on: bool,
+    (samples_loaded, decode_failures): (usize, usize),
+    (cols, rows): (u16, u16),
+) -> anyhow::Result<()> {
     let title = format_title_line(&game.chart.title, &game.chart.subtitle);
     queue!(
         out,
@@ -1466,28 +1527,53 @@ mod tests {
     }
 
     #[test]
-    fn intro_draws_stagefile_relative_to_chart_directory() {
+    fn intro_reuses_stagefile_until_resize_or_replay() {
+        use crate::assets::DIRECTORY_VISITS;
+
         crossterm::style::force_color_output(true);
-        let dir = std::env::current_dir()
-            .unwrap()
-            .join("target/intro-artwork-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        image::RgbImage::from_pixel(4, 4, image::Rgb([0, 255, 0]))
-            .save(dir.join("stage.png"))
-            .unwrap();
+        let dir = std::path::PathBuf::from("target/intro-artwork-test");
+        std::fs::create_dir_all(dir.join("art")).unwrap();
+        let stage = dir.join("art/stage.png");
+        let save = |color| {
+            image::RgbImage::from_pixel(16, 16, image::Rgb(color))
+                .save(&stage)
+                .unwrap();
+        };
         let chart = crate::chart::Chart {
             asset_dir: dir,
-            stagefile: "stage.png".into(),
+            stagefile: "art/stage.png".into(),
             ..Default::default()
         };
-        let mut out = Vec::new();
-        draw_stagefile(&mut out, &chart, 80, 24).unwrap();
-        let output = String::from_utf8(out).unwrap();
-        assert!(output.contains('▀'));
-        assert!(output.contains("38;2;0;255;0"));
-        let mut tiny = Vec::new();
-        draw_stagefile(&mut tiny, &chart, 10, 8).unwrap();
-        assert!(tiny.is_empty());
+        let draw = |artwork: &IntroArtwork| {
+            let mut out = Vec::new();
+            artwork.draw(&mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+
+        save([0, 255, 0]);
+        let mut artwork = IntroArtwork::default();
+        artwork.prepare(&chart, (80, 24));
+        let original = draw(&artwork);
+        assert_eq!(original.matches('▀').count(), 128);
+        assert!(original.contains("38;2;0;255;0"));
+
+        save([255, 0, 0]);
+        let visits = DIRECTORY_VISITS.get();
+        artwork.prepare(&chart, (80, 24));
+        assert_eq!(draw(&artwork), original);
+        assert_eq!(DIRECTORY_VISITS.get(), visits);
+
+        let mut replay = IntroArtwork::default();
+        replay.prepare(&chart, (80, 24));
+        assert!(draw(&replay).contains("38;2;255;0;0"));
+
+        artwork.prepare(&chart, (80, 16));
+        let resized = draw(&artwork);
+        assert_eq!(resized.matches('▀').count(), 32);
+        assert!(resized.contains("38;2;255;0;0"));
+        artwork.prepare(&chart, (10, 8));
+        assert!(draw(&artwork).is_empty());
+        std::fs::remove_file(stage).unwrap();
     }
 
     #[test]
@@ -1548,6 +1634,84 @@ mod tests {
                 .filter_map(geometry)
                 .collect();
             assert_eq!(actual, expected, "at {now} ms");
+        }
+    }
+
+    #[test]
+    fn indexed_scroll_candidates_match_full_scan_screen_geometry() {
+        use crate::chart::ScrollEvent;
+
+        let layout = PlayLayout::compute(80, 24, 4).unwrap();
+        for (rate, speed) in [
+            (0.5, 1.0),
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (1.0, 0.5),
+            (1.0, -1.0),
+            (1.0, 0.0),
+        ] {
+            let mut chart = base_chart(4);
+            chart.scroll = vec![
+                ScrollEvent {
+                    time_ms: 2000.0,
+                    multiplier: rate,
+                },
+                ScrollEvent {
+                    time_ms: 4000.0,
+                    multiplier: -rate,
+                },
+            ];
+            chart.speed = vec![ScrollEvent {
+                time_ms: 0.0,
+                multiplier: speed,
+            }];
+            chart.notes = [
+                (0.0, 0, Some(6000.0)),
+                (1000.0, 1, None),
+                (1060.0, 1, None),
+                (2000.0, 2, Some(6000.0)),
+                (2000.0, 3, None),
+                (3500.0, 1, None),
+                (6000.0, 2, None),
+                (100_000.0, 3, Some(101_000.0)),
+            ]
+            .into_iter()
+            .map(|(time_ms, lane, end_ms)| Note {
+                time_ms,
+                lane,
+                end_ms,
+                ..Note::default()
+            })
+            .collect();
+            let mut game = Game::new(chart);
+            game.hit(0, 0.0);
+            for now in [0.0, 500.0, 1060.0, 2000.0, 3500.0, 4000.0, 5900.0, 6200.0] {
+                game.check_misses(now);
+                let scroll = game.scroll.frame(&game.chart, now);
+                let geometry = |note: &Note| {
+                    if note.hit {
+                        return None;
+                    }
+                    let span = match note.end_ms {
+                        Some(end) => long_note_scroll_span(&scroll, note.time_ms, end, &layout),
+                        None => {
+                            note_screen_pos(scroll.distance(note.time_ms), &layout).map(|y| (y, y))
+                        }
+                    }?;
+                    Some((
+                        note.time_ms,
+                        note.lane,
+                        note_bar(span),
+                        note.held_since.is_some(),
+                    ))
+                };
+                let expected: Vec<_> = game.chart.notes.iter().filter_map(geometry).collect();
+                let actual: Vec<_> = game
+                    .visible_notes(now, APPROACH_MS)
+                    .filter_map(geometry)
+                    .collect();
+                assert_eq!(actual, expected, "rate={rate}, speed={speed}, now={now}");
+            }
         }
     }
 
@@ -2025,7 +2189,7 @@ mod tests {
         fn format_difficulty_badge_always_contains_bpm_and_lane_marker(
             bpm in 30.0f64..300.0,
             lane_count in prop_oneof![Just(4usize), Just(5), Just(7)],
-            playlevel in prop::option::of(1u8..=12),
+            playlevel in prop::option::of(1u32..=12),
             difficulty in prop::option::of(1u8..=5),
         ) {
             let mut chart = base_chart(lane_count);

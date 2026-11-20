@@ -26,7 +26,7 @@ struct Expect {
     file: &'static str,
     title: &'static str,
     lanes: usize,
-    level: u8,
+    level: u32,
     difficulty: u8,
     bpm: f64,
 }
