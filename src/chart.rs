@@ -134,7 +134,9 @@ pub struct Chart {
     pub p2_invisible_notes: Vec<InvisibleNote>,
     pub p2_mines: Vec<Mine>,
     pub bgm: Vec<BgmEvent>,
+    /// Scroll rate changes in ascending time order.
     pub scroll: Vec<ScrollEvent>,
+    /// Display speed changes in ascending time order.
     pub speed: Vec<ScrollEvent>,
     pub bga: Vec<BgaEvent>,
     pub bga_extensions: crate::bga::Extensions,
@@ -218,22 +220,7 @@ impl Default for Chart {
 impl Chart {
     /// Display distance in normal-speed milliseconds; judgment stays time-based.
     pub fn scroll_distance(&self, time_ms: f64, now_ms: f64) -> f64 {
-        let coordinate = |time: f64| {
-            let mut rate = 1.0;
-            let mut distance = time;
-            for event in self.scroll.iter().take_while(|e| e.time_ms <= time) {
-                distance += (time - event.time_ms) * (event.multiplier - rate);
-                rate = event.multiplier;
-            }
-            distance
-        };
-        let speed = self
-            .speed
-            .iter()
-            .rev()
-            .find(|e| e.time_ms <= now_ms)
-            .map_or(1.0, |e| e.multiplier);
-        (coordinate(time_ms) - coordinate(now_ms)) * speed
+        crate::scroll::distance(self, time_ms, now_ms)
     }
 }
 
