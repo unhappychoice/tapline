@@ -202,9 +202,11 @@ impl ImageBank {
     fn styled_layer(&self, game: &Game, layer: BgaLayer, now_ms: f64) -> Option<Layer> {
         let image = self.layer(game, layer, now_ms)?;
         let state = self.4.state(layer, now_ms);
+        let extensions = &game.chart.bga_extensions;
         let key = state.key.or_else(|| {
-            (layer != BgaLayer::Base
-                && (layer != BgaLayer::Poor || game.chart.bga_extensions.poor_mode == 1))
+            (extensions.overlay_transparency == OverlayTransparency::BlackColorKey
+                && layer != BgaLayer::Base
+                && (layer != BgaLayer::Poor || extensions.poor_mode == 1))
                 .then_some([0, 0, 0])
         });
         Some((
