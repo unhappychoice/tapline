@@ -270,7 +270,7 @@ impl SampleBank {
     }
 
     pub fn play_with_gain(&self, id: u32, gain: f32) {
-        self.play_sound(id, gain);
+        self.start_sound(id, gain);
     }
 
     pub fn play_synth(&self, freq: f32, duration_ms: u32) {
@@ -315,12 +315,12 @@ impl SampleBank {
                 bus.add(source.amplify(gain));
                 duration
             }
-            HitSound::Sample(id) => self.play_sound(id, gain),
+            HitSound::Sample(id) => self.start_sound(id, gain),
             HitSound::Silent => None,
         }
     }
 
-    fn play_sound(&self, id: u32, gain: f32) -> Option<Duration> {
+    pub(crate) fn start_sound(&self, id: u32, gain: f32) -> Option<Duration> {
         let bus = self.bus.as_ref()?;
         self.sound_ids(&id)
             .iter()
@@ -540,16 +540,17 @@ where
 }
 
 #[cfg(test)]
-pub(crate) fn manual_playback_test_bank() -> SampleBank {
-    let (mixer, _output) = rodio::mixer::mixer(rodio::nz!(2), rodio::nz!(44_100));
+pub(crate) fn playback_test_bank() -> (SampleBank, rodio::mixer::MixerSource) {
+    let (mixer, output) = rodio::mixer::mixer(rodio::nz!(2), rodio::nz!(44_100));
     let mut bank = tests::duration_bank_with_length(12_000);
-    let short = tests::duration_bank_with_length(80)
+    let mut short = tests::duration_bank_with_length(80)
         .samples
         .remove(&1)
         .unwrap();
+    Arc::make_mut(&mut short.data).fill(0.25);
     bank.samples.insert(2, short);
     bank.bus = Some(master::master_bus(&mixer));
-    bank
+    (bank, output)
 }
 
 #[cfg(test)]
