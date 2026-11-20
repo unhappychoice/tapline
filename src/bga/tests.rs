@@ -221,6 +221,48 @@ fn bmson_images_are_loaded_and_rendered_through_presentation() {
 }
 
 #[test]
+fn overlay_transparency_follows_chart_format() {
+    let dir = std::env::temp_dir().join(format!("tapline-bga-alpha-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let white = [255, 255, 255, 255];
+    let black = [0, 0, 0, 255];
+    RgbaImage::from_pixel(SIZE, SIZE, Rgba(white))
+        .save(dir.join("base.png"))
+        .unwrap();
+    let mut overlay = RgbaImage::from_pixel(SIZE, SIZE, Rgba(black));
+    overlay.put_pixel(1, 0, Rgba([255, 0, 0, 0]));
+    overlay.put_pixel(2, 0, Rgba([255, 0, 0, 255]));
+    overlay.save(dir.join("overlay.png")).unwrap();
+
+    let bmson = crate::bmson::load_bytes(
+        &dir.join("chart.bmson"),
+        br#"{"version":"1.0.0","info":{"title":"BGA","artist":"Test","init_bpm":120},
+        "sound_channels":[],"bga":{"bga_header":[{"id":1,"name":"base.png"},
+        {"id":2,"name":"overlay.png"}],"bga_events":[{"y":0,"id":1}],
+        "layer_events":[{"y":0,"id":2}]}}"#,
+        0.0,
+    )
+    .unwrap();
+    let path = dir.join("chart.bms");
+    std::fs::write(
+        &path,
+        "#BPM 120\n#BMP01 base.png\n#BMP02 overlay.png\n#00004:01\n#00007:02\n",
+    )
+    .unwrap();
+    let bms = crate::bms::load(&path, 0.0).unwrap();
+    let frames = [bmson, bms].map(|chart| load_bank(&chart).frame(&Game::new(chart), 0.0));
+    std::fs::remove_dir_all(dir).unwrap();
+
+    let [bmson, bms] = frames;
+    assert_eq!(bmson.get_pixel(0, 0).0, black);
+    assert_eq!(bms.get_pixel(0, 0).0, white);
+    for frame in [bmson, bms] {
+        assert_eq!(frame.get_pixel(1, 0).0, white);
+        assert_eq!(frame.get_pixel(2, 0).0, [255, 0, 0, 255]);
+    }
+}
+
+#[test]
 fn extended_layers_opacity_and_poor_modes() {
     let (mut game, mut bank) = game();
     game.chart.bga.push(BgaEvent {
