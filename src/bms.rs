@@ -1605,6 +1605,42 @@ fn resolve_control_flow(text: &str, seed: u64) -> String {
     resolve_branches(text, seed).0
 }
 
+#[cfg(test)]
+thread_local! {
+    static BRANCH_FRAME_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+struct BranchStack<T>(Vec<T>);
+
+impl<T> BranchStack<T> {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    fn push(&mut self, frame: T) {
+        self.0.push(frame);
+    }
+
+    fn pop(&mut self) {
+        self.0.pop();
+    }
+
+    fn iter(&self) -> impl DoubleEndedIterator<Item = &T> {
+        let frames = self.0.iter();
+        #[cfg(test)]
+        let frames =
+            frames.inspect(|_| BRANCH_FRAME_READS.with(|reads| reads.set(reads.get() + 1)));
+        frames
+    }
+
+    fn last_mut(&mut self) -> Option<&mut T> {
+        let frame = self.0.last_mut()?;
+        #[cfg(test)]
+        BRANCH_FRAME_READS.with(|reads| reads.set(reads.get() + 1));
+        Some(frame)
+    }
+}
+
 fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
     let mut rng = seed.wrapping_add(RNG_OFFSET);
     let mut draws_random = false;
@@ -1626,17 +1662,19 @@ fn resolve_branches(text: &str, seed: u64) -> (String, bool) {
         skipped: bool,
         default: bool,
     }
-    let mut switch_stack: Vec<SwitchLevel> = Vec::new();
+    let mut switch_stack = BranchStack::<SwitchLevel>::new();
     let mut random_stack: Vec<u32> = Vec::new();
-    let mut if_stack: Vec<IfLevel> = Vec::new();
+    let mut if_stack = BranchStack::<IfLevel>::new();
     // Each stack only changes its top frame, so its saved parent activity stays valid.
-    let ifs_active = |ifs: &[IfLevel]| {
-        ifs.last()
+    let ifs_active = |ifs: &BranchStack<IfLevel>| {
+        ifs.iter()
+            .next_back()
             .is_none_or(|top| top.parents_active && top.included)
     };
-    let switches_active = |switches: &[SwitchLevel]| {
+    let switches_active = |switches: &BranchStack<SwitchLevel>| {
         switches
-            .last()
+            .iter()
+            .next_back()
             .is_none_or(|top| top.parents_active && top.included)
     };
     let mut out = String::with_capacity(text.len());
@@ -3326,8 +3364,22 @@ mod tests {
         ]
         .concat();
         let path = Path::new("deep.bms");
+        // Each line can read both stack tops and update at most one of them.
+        let max_frame_reads = 3 * text.lines().count();
+        BRANCH_FRAME_READS.set(0);
         let (meta, _, _) = parse_meta(path, text.as_bytes(), 0).unwrap();
+        let metadata_reads = BRANCH_FRAME_READS.replace(0);
+        assert!(
+            (1..=max_frame_reads).contains(&metadata_reads),
+            "metadata parsing accessed {metadata_reads} branch frames, expected 1..={max_frame_reads}"
+        );
+
         let chart = load_bytes(path, text.as_bytes(), 0.0, 0).unwrap();
+        let loading_reads = BRANCH_FRAME_READS.replace(0);
+        assert!(
+            (1..=max_frame_reads).contains(&loading_reads),
+            "chart loading accessed {loading_reads} branch frames, expected 1..={max_frame_reads}"
+        );
 
         assert_eq!(meta.title, "Deep branch");
         assert_eq!(chart.title, meta.title);
