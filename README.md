@@ -30,6 +30,15 @@ Chain hits for combo, chase accuracy, panic-quit with Esc.
               keys S D F SPACE J K L  ·  quit Esc / Q
 ```
 
+## Features
+
+- Play BMS, PMS, and bmson charts with keysounds, background music, and
+  terminal-rendered artwork.
+- Search charts by title, subtitle, or artist, filter by lane count, and hear
+  previews when the chart provides one.
+- Practice with the built-in four-lane chart at an adjustable tempo.
+- Track local personal bests for score, accuracy, max combo, and clears.
+
 ## Install
 
 From source:
