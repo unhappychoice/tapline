@@ -13,9 +13,23 @@ use std::{
 
 pub(super) struct Decoder(Child);
 
+// Each decoded frame owns a distinct allocation that is shared through EOF.
+#[derive(Clone)]
+pub(super) struct Frame(pub(super) Arc<RgbaImage>);
+
+impl PartialEq for Frame {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Frame {}
+
+type DecodedFrame = (u64, Frame, bool);
+
 pub(super) struct Video {
-    frames: Receiver<(u64, RgbaImage, bool)>,
-    current: Option<(u64, RgbaImage, bool)>,
+    frames: Receiver<DecodedFrame>,
+    current: Option<DecodedFrame>,
     target: Arc<AtomicU64>,
 }
 
@@ -54,7 +68,7 @@ impl Video {
                         }
                         break;
                     }
-                    let frame = RgbaImage::from_raw(SIZE, SIZE, bytes).unwrap();
+                    let frame = Frame(Arc::new(RgbaImage::from_raw(SIZE, SIZE, bytes).unwrap()));
                     if index >= requested.load(Ordering::Relaxed)
                         && sender.send((index, frame.clone(), false)).is_err()
                     {
@@ -68,7 +82,7 @@ impl Video {
         Some((child, Self::from_frames(frames, target)))
     }
 
-    fn from_frames(frames: Receiver<(u64, RgbaImage, bool)>, target: Arc<AtomicU64>) -> Self {
+    fn from_frames(frames: Receiver<DecodedFrame>, target: Arc<AtomicU64>) -> Self {
         Self {
             frames,
             current: None,
@@ -80,11 +94,11 @@ impl Video {
     pub fn test_frame(color: [u8; 4]) -> Self {
         let (sender, frames) = sync_channel(1);
         let image = RgbaImage::from_pixel(SIZE, SIZE, image::Rgba(color));
-        sender.send((0, image, true)).unwrap();
+        sender.send((0, Frame(Arc::new(image)), true)).unwrap();
         Self::from_frames(frames, Arc::new(AtomicU64::new(0)))
     }
 
-    pub fn frame(&mut self, elapsed_ms: f64) -> Option<RgbaImage> {
+    pub fn frame(&mut self, elapsed_ms: f64) -> Option<Frame> {
         let target = (elapsed_ms.max(0.0) * 30.0 / 1000.0).floor() as u64;
         self.target.store(target, Ordering::Relaxed);
         while self
@@ -155,41 +169,22 @@ mod tests {
         assert!(video.frame(0.0).is_none());
         assert!(video.frame(34.0).is_none());
 
-        let first = RgbaImage::new(SIZE, SIZE);
+        let first = Frame(Arc::new(RgbaImage::new(SIZE, SIZE)));
         sender.send((0, first.clone(), false)).unwrap();
-        assert_eq!(video.frame(0.0), Some(first.clone()));
-        assert_eq!(video.frame(34.0), Some(first.clone()));
-        assert_eq!(video.frame(34.0), Some(first));
+        assert!(video.frame(0.0) == Some(first.clone()));
+        assert!(video.frame(32.0) == Some(first.clone()));
+        assert!(video.frame(34.0) == Some(first));
 
-        let second = RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255]));
+        let second = Frame(Arc::new(RgbaImage::new(SIZE, SIZE)));
         sender.send((1, second.clone(), false)).unwrap();
-        assert_eq!(video.frame(34.0), Some(second.clone()));
-        assert_eq!(video.frame(100.0), Some(second));
-    }
-
-    #[test]
-    fn frames_follow_elapsed_time_and_hold_at_eof() {
-        let (sender, frames) = sync_channel(2);
-        sender.send((0, RgbaImage::new(SIZE, SIZE), false)).unwrap();
-        sender
-            .send((
-                1,
-                RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([1, 2, 3, 255])),
-                true,
-            ))
-            .unwrap();
+        assert!(video.frame(34.0) == Some(second.clone()));
+        sender.send((1, second.clone(), true)).unwrap();
         drop(sender);
-        let mut video = video_with_frames(frames);
-        assert_eq!(video.frame(0.0).unwrap().get_pixel(0, 0).0, [0; 4]);
-        assert_eq!(video.frame(32.0).unwrap().get_pixel(0, 0).0, [0; 4]);
-        assert_eq!(video.frame(34.0).unwrap().get_pixel(0, 0).0, [1, 2, 3, 255]);
-        assert_eq!(
-            video.frame(10000.0).unwrap().get_pixel(0, 0).0,
-            [1, 2, 3, 255]
-        );
+        assert!(video.frame(100.0) == Some(second.clone()));
+        assert!(video.frame(10000.0) == Some(second));
     }
 
-    fn video_with_frames(frames: Receiver<(u64, RgbaImage, bool)>) -> Video {
+    fn video_with_frames(frames: Receiver<DecodedFrame>) -> Video {
         Video::from_frames(frames, Arc::new(AtomicU64::new(0)))
     }
 }
