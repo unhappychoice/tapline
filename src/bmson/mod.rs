@@ -123,12 +123,13 @@ fn add_channel(
     let path = asset_path(assets, &channel.name, &["wav", "ogg", "mp3"]);
     let mut notes: Vec<_> = channel.notes.iter().collect();
     notes.sort_by_key(|n| n.y);
-    let mut restart = notes.first().map_or(0.0, |n| timeline.time(n.y.into()));
-    let mut index = 0;
-    while index < notes.len() {
-        let end = index + notes[index..].partition_point(|n| n.y == notes[index].y);
-        let time = timeline.time(notes[index].y.into());
-        if notes[index..end].iter().any(|n| !n.c) {
+    let mut groups = notes
+        .chunk_by(|a, b| a.y == b.y)
+        .map(|group| (group, timeline.time(group[0].y.into())))
+        .peekable();
+    let mut restart = groups.peek().map_or(0.0, |&(_, time)| time);
+    while let Some((group, time)) = groups.next() {
+        if group.iter().any(|n| !n.c) {
             restart = time;
         }
         let id = u32::try_from(chart.sample_slices.len()).context("Too many sound slices")?;
@@ -139,10 +140,10 @@ fn add_channel(
             id,
             SampleSlice {
                 start_ms: time - restart,
-                duration_ms: notes.get(end).map(|n| timeline.time(n.y.into()) - time),
+                duration_ms: groups.peek().map(|&(_, next_time)| next_time - time),
             },
         );
-        for note in &notes[index..end] {
+        for note in group {
             if let Some(lane) = lane(note.x.unwrap_or(0), chart.lane_count, mode) {
                 playable.push(layers::PlayableLayer {
                     pulse: note.y,
@@ -157,7 +158,6 @@ fn add_channel(
                 });
             }
         }
-        index = end;
     }
     Ok(())
 }
