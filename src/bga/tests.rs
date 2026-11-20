@@ -36,7 +36,7 @@ fn game() -> (Game, ImageBank) {
             (3, [0, 0, 0, 255]),
             (4, [0, 0, 255, 255]),
         ]
-        .map(|(id, color)| (id, RgbaImage::from_pixel(SIZE, SIZE, Rgba(color))))
+        .map(|(id, color)| (id, Arc::new(RgbaImage::from_pixel(SIZE, SIZE, Rgba(color)))))
         .into(),
         HashMap::new(),
         RefCell::default(),
@@ -44,8 +44,7 @@ fn game() -> (Game, ImageBank) {
         effect_timeline::Timeline::new(&game.chart.bga_extensions),
         RefCell::default(),
     );
-    bank.0
-        .get_mut(&3)
+    Arc::get_mut(bank.0.get_mut(&3).unwrap())
         .unwrap()
         .put_pixel(0, 0, Rgba([255, 255, 255, 255]));
     (game, bank)
@@ -113,7 +112,7 @@ fn switches_layers_and_keys_out_black() {
 #[test]
 fn overlay_keys_out_semitransparent_black_and_blends_other_colors() {
     let (game, mut bank) = game();
-    let overlay = bank.0.get_mut(&3).unwrap();
+    let overlay = Arc::get_mut(bank.0.get_mut(&3).unwrap()).unwrap();
     overlay.put_pixel(0, 0, Rgba([0, 0, 0, 128]));
     overlay.put_pixel(1, 0, Rgba([255, 0, 0, 128]));
     let frame = bank.frame(&game, 100.0);
@@ -221,6 +220,48 @@ fn bmson_images_are_loaded_and_rendered_through_presentation() {
 }
 
 #[test]
+fn overlay_transparency_follows_chart_format() {
+    let dir = std::env::temp_dir().join(format!("tapline-bga-alpha-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let white = [255, 255, 255, 255];
+    let black = [0, 0, 0, 255];
+    RgbaImage::from_pixel(SIZE, SIZE, Rgba(white))
+        .save(dir.join("base.png"))
+        .unwrap();
+    let mut overlay = RgbaImage::from_pixel(SIZE, SIZE, Rgba(black));
+    overlay.put_pixel(1, 0, Rgba([255, 0, 0, 0]));
+    overlay.put_pixel(2, 0, Rgba([255, 0, 0, 255]));
+    overlay.save(dir.join("overlay.png")).unwrap();
+
+    let bmson = crate::bmson::load_bytes(
+        &dir.join("chart.bmson"),
+        br#"{"version":"1.0.0","info":{"title":"BGA","artist":"Test","init_bpm":120},
+        "sound_channels":[],"bga":{"bga_header":[{"id":1,"name":"base.png"},
+        {"id":2,"name":"overlay.png"}],"bga_events":[{"y":0,"id":1}],
+        "layer_events":[{"y":0,"id":2}]}}"#,
+        0.0,
+    )
+    .unwrap();
+    let path = dir.join("chart.bms");
+    std::fs::write(
+        &path,
+        "#BPM 120\n#BMP01 base.png\n#BMP02 overlay.png\n#00004:01\n#00007:02\n",
+    )
+    .unwrap();
+    let bms = crate::bms::load(&path, 0.0).unwrap();
+    let frames = [bmson, bms].map(|chart| load_bank(&chart).frame(&Game::new(chart), 0.0));
+    std::fs::remove_dir_all(dir).unwrap();
+
+    let [bmson, bms] = frames;
+    assert_eq!(bmson.get_pixel(0, 0).0, black);
+    assert_eq!(bms.get_pixel(0, 0).0, white);
+    for frame in [bmson, bms] {
+        assert_eq!(frame.get_pixel(1, 0).0, white);
+        assert_eq!(frame.get_pixel(2, 0).0, [255, 0, 0, 255]);
+    }
+}
+
+#[test]
 fn extended_layers_opacity_and_poor_modes() {
     let (mut game, mut bank) = game();
     game.chart.bga.push(BgaEvent {
@@ -242,8 +283,10 @@ fn extended_layers_opacity_and_poor_modes() {
     game.chart.bga_extensions.poor_mode = 2;
     assert_eq!(bank.frame(&game, 50.0).get_pixel(1, 1).0, pixel);
     game.chart.bga_extensions.poor_mode = 1;
-    bank.0
-        .insert(4, RgbaImage::from_pixel(SIZE, SIZE, Rgba([0, 0, 0, 255])));
+    bank.0.insert(
+        4,
+        Arc::new(RgbaImage::from_pixel(SIZE, SIZE, Rgba([0, 0, 0, 255]))),
+    );
     assert_eq!(bank.frame(&game, 50.0).get_pixel(1, 1).0, [255, 0, 0, 255]);
 }
 
@@ -557,9 +600,7 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
 }
 
 pub(super) fn load_bank(chart: &Chart) -> ImageBank {
-    let mut bank = ImageBank::load(&chart.bmp_paths, &chart.bga, &chart.bga_extensions);
-    bank.prepare_crops(chart);
-    bank
+    Presentation::load_assets(chart)
 }
 
 #[test]
@@ -607,8 +648,8 @@ fn headless_judgments_and_hidden_presentation_never_load_images() {
     let mut presentation = Presentation::new(&game.chart, visible);
     assert_eq!(
         image_file::LOAD_CALLS.get(),
-        2,
-        "ordinary image and crop source are loaded before playback"
+        1,
+        "ordinary image and crop share a load attempt before playback"
     );
     assert_no_deferred_load(&mut presentation, &game.chart, visible);
 }

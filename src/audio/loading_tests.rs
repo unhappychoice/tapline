@@ -24,6 +24,97 @@ fn chart(dir: &Path, name: &str) -> Chart {
 }
 
 #[test]
+fn gameplay_decodes_only_referenced_bms_wavs() {
+    let dir = tempdir();
+    let wav = include_bytes!("../../tests/fixtures/tone.wav");
+    for name in ["shared.wav", "invisible.wav", "unused.wav"] {
+        std::fs::write(dir.join(name), wav).unwrap();
+    }
+    std::fs::write(dir.join("broken.wav"), b"invalid audio").unwrap();
+    let path = dir.join("chart.bms");
+    std::fs::write(
+        &path,
+        "#BPM 120\n#WAV01 shared.wav\n#WAV02 shared.wav\n#WAV03 invisible.wav\n\
+         #WAV04 unused.wav\n#WAV05 broken.wav\n#00101:01\n#00111:02\n\
+         #00132:03\n#00201:05\n",
+    )
+    .unwrap();
+    let chart = crate::bms::load(&path, 0.0).unwrap();
+    assert_eq!(chart.wav_paths[&4], dir.join("unused.wav"));
+    let calls = AtomicUsize::new(0);
+    let mut bank = SampleBank::load_chart_with(&chart, |path| {
+        assert_ne!(path, &chart.wav_paths[&4]);
+        calls.fetch_add(1, Ordering::Relaxed);
+        decode(path)
+    });
+    assert_eq!(calls.load(Ordering::Relaxed), 3);
+    assert_eq!(bank.decode_failures, 1);
+    assert_eq!(bank.sample_count(), 3);
+    assert!(Arc::ptr_eq(&bank.samples[&1].data, &bank.samples[&2].data));
+
+    let (mixer, _output) = rodio::mixer::mixer(rodio::nz!(2), rodio::nz!(44_100));
+    bank.bus = Some(master::master_bus(&mixer));
+    assert!(bank.start_sound(chart.bgm[0].keysound, 1.0).is_some());
+    assert!(bank.start_sound(chart.bgm[1].keysound, 1.0).is_none());
+    let note = chart.notes[0];
+    assert!(bank
+        .start_hit(note.lane, note.keysound, false, 1.0)
+        .is_some());
+    let invisible = chart.invisible_notes[0];
+    let mut game = crate::game::Game::new(chart);
+    let keysound = game.hit(note.lane, note.time_ms);
+    assert_eq!(keysound, note.keysound);
+    assert!(bank.start_hit(note.lane, keysound, false, 1.0).is_some());
+    let keysound = game.hit(invisible.lane, invisible.time_ms);
+    assert_eq!(keysound, Some(invisible.keysound));
+    assert!(bank
+        .start_hit(invisible.lane, keysound, false, 1.0)
+        .is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn gameplay_loads_only_reachable_layer_members_and_preserves_slices() {
+    let mut chart = crate::chart::built_in(120.0, 0.0);
+    chart.notes[0].keysound = Some(10);
+    chart.sound_layers = HashMap::from([(10, vec![1, 2]), (20, vec![3])]);
+    chart.wav_paths = HashMap::from([
+        (1, "shared.wav".into()),
+        (2, "shared.wav".into()),
+        (3, "unused.wav".into()),
+    ]);
+    chart.sample_slices.insert(
+        2,
+        crate::chart::SampleSlice {
+            start_ms: 2.0,
+            duration_ms: Some(3.0),
+        },
+    );
+    let mut bank = SampleBank::load_chart_with(&chart, |path| {
+        assert_eq!(path, &chart.wav_paths[&1]);
+        Ok(DecodedSample::new(
+            1,
+            1000,
+            Arc::new((0..10).map(|i| i as f32).collect()),
+        ))
+    });
+    assert_eq!(bank.sample_count(), 2);
+    assert_eq!(bank.decode_failures, 0);
+    let slice = bank.sample_with_gain(2, 1.0).unwrap();
+    assert_eq!(slice.collect::<Vec<_>>(), [2.0, 3.0, 4.0]);
+
+    let (mixer, _output) = rodio::mixer::mixer(rodio::nz!(2), rodio::nz!(44_100));
+    bank.bus = Some(master::master_bus(&mixer));
+    let note = chart.notes[0];
+    assert_eq!(
+        bank.start_hit(note.lane, note.keysound, false, 1.0),
+        Some(Duration::from_millis(10))
+    );
+    assert!(bank.playing.borrow().contains_key(&1));
+    assert!(bank.playing.borrow().contains_key(&2));
+}
+
+#[test]
 fn bmson_decodes_regular_audio_and_extension_fallback_without_a_device() {
     let dir = tempdir();
     std::fs::create_dir(dir.join("Audio")).unwrap();

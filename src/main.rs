@@ -35,11 +35,10 @@ fn run_app() -> Result<()> {
 }
 
 fn run(out: &mut Stdout, args: &Args, keymap: &cli::Keymap) -> Result<()> {
-    let mut selector = tapline::select::SelectorState::default();
     run_session(
         out,
         args,
-        |out, args| cli::choose_chart_with_selector(out, args, &mut selector),
+        cli::choose_chart_with_selector,
         |out, args, mut chart, identity, destination| {
             keymap.apply(&mut chart);
             runtime::play_chart_with_destination(out, args, chart, identity, destination)
@@ -51,7 +50,11 @@ fn run(out: &mut Stdout, args: &Args, keymap: &cli::Keymap) -> Result<()> {
 fn run_session(
     out: &mut Stdout,
     args: &Args,
-    mut choose: impl FnMut(&mut Stdout, &Args) -> Result<cli::ChartChoice>,
+    mut choose: impl FnMut(
+        &mut Stdout,
+        &Args,
+        &mut tapline::select::SelectorState,
+    ) -> Result<cli::ChartChoice>,
     mut play: impl FnMut(
         &mut Stdout,
         &Args,
@@ -61,8 +64,9 @@ fn run_session(
     ) -> Result<()>,
     mut report_error: impl FnMut(&mut Stdout, &anyhow::Error) -> Result<()>,
 ) -> Result<()> {
+    let mut selector = tapline::select::SelectorState::default();
     loop {
-        let choice = choose(out, args)?;
+        let choice = choose(out, args, &mut selector)?;
         let destination = match choice {
             cli::ChartChoice::Selected(_) => ResultDestination::Selector,
             _ => ResultDestination::Exit,
@@ -70,11 +74,16 @@ fn run_session(
         let (chart, identity) = match cli::load_session(&choice, args) {
             Ok(Some(chart)) => chart,
             Ok(None) => return Ok(()),
-            Err(error) if destination == ResultDestination::Selector => {
-                report_error(out, &error)?;
+            Err(error) => {
+                let cli::ChartChoice::Selected(entry) = &choice else {
+                    return Err(error);
+                };
+                selector.refresh_changed_chart(&entry.path);
+                if !error.is::<cli::ChartRevisionChanged>() {
+                    report_error(out, &error)?;
+                }
                 continue;
             }
-            Err(error) => return Err(error),
         };
         play(out, args, chart, identity, destination)?;
         if destination == ResultDestination::Exit {

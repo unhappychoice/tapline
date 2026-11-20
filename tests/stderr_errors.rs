@@ -62,7 +62,57 @@ fn keymap_overrides_the_built_in_gameplay_labels() {
     assert_eq!(status.code(), Some(0), "{output:?}");
 }
 
-fn run_interactive(mut command: Command, steps: &[(&[u8], &[u8])]) -> (ExitStatus, String) {
+#[test]
+fn oversized_replacement_returns_to_the_empty_selector() {
+    let dir = std::env::temp_dir().join(format!(
+        "tapline-oversized-selection-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("chart.bms");
+    std::fs::write(&path, "#TITLE Original\n#00111:01\n").unwrap();
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tapline"));
+    command
+        .arg("--dir")
+        .arg(&dir)
+        .env("TAPLINE_DATA_DIR", "/dev/null");
+    let (status, output) = run_interactive_with(
+        command,
+        &[
+            (b"Original", b"\r"),
+            (b"Press any key to return to the selector.", b" "),
+            ("select a chart  ·  0 loaded".as_bytes(), b"q"),
+        ],
+        |prompt| {
+            if prompt == b"Original" {
+                File::options()
+                    .write(true)
+                    .open(&path)?
+                    .set_len(16 * 1024 * 1024 + 1)?;
+            }
+            Ok(())
+        },
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+
+    assert_eq!(status.code(), Some(0), "{output:?}");
+    assert!(
+        output.contains("chart exceeds the maximum size"),
+        "{output:?}"
+    );
+    assert!(output.contains("select a chart  ·  0 loaded"), "{output:?}");
+}
+
+fn run_interactive(command: Command, steps: &[(&[u8], &[u8])]) -> (ExitStatus, String) {
+    run_interactive_with(command, steps, |_| Ok(()))
+}
+
+fn run_interactive_with(
+    mut command: Command,
+    steps: &[(&[u8], &[u8])],
+    before_input: impl FnMut(&[u8]) -> io::Result<()>,
+) -> (ExitStatus, String) {
     let (mut master, slave) = open_pty();
     let result = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
     assert_eq!(result, 0, "{}", io::Error::last_os_error());
@@ -84,7 +134,7 @@ fn run_interactive(mut command: Command, steps: &[(&[u8], &[u8])]) -> (ExitStatu
 
     let mut child = command.spawn().unwrap();
     let mut output = Vec::new();
-    let result = drive_terminal(&mut child, &mut master, &mut output, steps);
+    let result = drive_terminal(&mut child, &mut master, &mut output, steps, before_input);
     if result.is_err() {
         let _ = child.kill();
         child.wait().unwrap();
@@ -102,6 +152,7 @@ fn drive_terminal(
     master: &mut File,
     output: &mut Vec<u8>,
     mut steps: &[(&[u8], &[u8])],
+    mut before_input: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> io::Result<ExitStatus> {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut search_from = 0;
@@ -120,6 +171,7 @@ fn drive_terminal(
                             .windows(prompt.len())
                             .any(|w| w == *prompt)
                     {
+                        before_input(prompt)?;
                         master.write_all(input)?;
                         steps = remaining;
                         search_from = output.len();

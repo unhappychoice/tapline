@@ -30,7 +30,7 @@ selector returns there after the result screen.
 ## Gameplay keys
 
 Use `--keymap <FILE>` to load a local JSON file of gameplay bindings at
-startup. See the [keymap format and examples](../README.md#custom-gameplay-keys).
+startup. See the [keymap format and examples](https://github.com/unhappychoice/tapline/blob/main/README.md#custom-gameplay-keys).
 
 ## Timing
 
@@ -77,4 +77,4 @@ prints `audio backend unavailable` to standard error and exits with status `1`.
 | `-V, --version` | Print the package version and exit. |
 
 For key bindings, chart-format support, random seeds, and personal-best storage
-settings, see the [README](../README.md).
+settings, see the [README](https://github.com/unhappychoice/tapline/blob/main/README.md).

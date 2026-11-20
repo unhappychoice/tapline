@@ -1,32 +1,44 @@
 use super::{Crop, SIZE};
 use crate::chart::Chart;
 use image::{imageops, RgbaImage};
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 pub(super) fn prepare(
     chart: &Chart,
     mut load: impl FnMut(&Path) -> Option<RgbaImage>,
 ) -> HashMap<u32, RgbaImage> {
-    let mut groups = HashMap::<_, Vec<_>>::new();
-    chart.bga_extensions.crops.iter().for_each(|(&id, crop)| {
-        if let Some(path) = chart.bmp_paths.get(&crop.image) {
-            groups.entry(path).or_default().push((id, crop));
-        }
-    });
     let mut images = HashMap::new();
-    groups.into_iter().for_each(|(path, crops)| {
-        if let Some(source) = load(path) {
-            images.extend(
-                crops
-                    .into_iter()
-                    .map(|(id, crop)| (id, render(&source, crop))),
-            );
-        }
-    });
+    group(&chart.bmp_paths, &chart.bga_extensions.crops)
+        .into_iter()
+        .for_each(|(path, crops)| {
+            if let Some(source) = load(path) {
+                images.extend(
+                    crops
+                        .into_iter()
+                        .map(|(id, crop)| (id, render(&source, crop))),
+                );
+            }
+        });
     images
 }
 
-fn render(source: &RgbaImage, crop: &Crop) -> RgbaImage {
+pub(super) fn group<'a>(
+    paths: &'a HashMap<u32, PathBuf>,
+    crops: &'a HashMap<u32, Crop>,
+) -> HashMap<&'a Path, Vec<(u32, &'a Crop)>> {
+    let mut groups = HashMap::<_, Vec<_>>::new();
+    crops.iter().for_each(|(&id, crop)| {
+        if let Some(path) = paths.get(&crop.image) {
+            groups.entry(path.as_path()).or_default().push((id, crop));
+        }
+    });
+    groups
+}
+
+pub(super) fn render(source: &RgbaImage, crop: &Crop) -> RgbaImage {
     let [x1, y1, x2, y2, dx, dy] = crop.rect;
     let mut canvas = RgbaImage::new(256, 256);
     canvas.enumerate_pixels_mut().for_each(|(x, y, pixel)| {

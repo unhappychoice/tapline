@@ -48,9 +48,7 @@ impl Presentation {
     }
 
     pub fn load_assets(chart: &Chart) -> ImageBank {
-        let mut bank = ImageBank::load(&chart.bmp_paths, &chart.bga, &chart.bga_extensions);
-        bank.prepare_crops(chart);
-        bank
+        ImageBank::load(&chart.bmp_paths, &chart.bga, &chart.bga_extensions)
     }
 
     fn start_loading(
