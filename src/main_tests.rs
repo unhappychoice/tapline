@@ -35,7 +35,7 @@ fn selected_chart_returns_to_selector_after_playback() {
     run_session(
         &mut stdout(),
         &Args::parse_from(["tapline", "--no-audio"]),
-        |_, _| {
+        |_, _, _| {
             selections += 1;
             Ok(choices.next().expect("unexpected selector restart"))
         },
@@ -51,16 +51,60 @@ fn selected_chart_returns_to_selector_after_playback() {
     assert_eq!(plays, 1);
 }
 
+#[test]
+fn replaced_chart_requires_a_new_selection_before_playback() {
+    let dir = std::env::temp_dir().join(format!("tapline-stale-selection-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("chart.bms");
+    std::fs::write(&path, "#TITLE Original\n#00111:01\n").unwrap();
+
+    let mut selections = 0;
+    let mut played = Vec::new();
+    run_session(
+        &mut stdout(),
+        &Args::parse_from(["tapline", "--no-audio"]),
+        |_, _, state| {
+            selections += 1;
+            let entry = match selections {
+                1 => {
+                    let entry = state.scan(&dir).remove(0);
+                    assert_eq!(entry.title, "Original");
+                    std::fs::write(&path, "#TITLE Replacement\n#00111:01\n").unwrap();
+                    entry
+                }
+                2 => {
+                    let entry = state.scan(&dir).remove(0);
+                    assert_eq!(entry.title, "Replacement");
+                    entry
+                }
+                3 => return Ok(ChartChoice::Cancelled),
+                _ => panic!("unexpected selector restart"),
+            };
+            Ok(ChartChoice::Selected(Box::new(entry)))
+        },
+        |_, _, chart, _, destination| {
+            assert_eq!(destination, ResultDestination::Selector);
+            played.push(chart.title);
+            Ok(())
+        },
+        |_, error| panic!("unexpected load error: {error}"),
+    )
+    .unwrap();
+    assert_eq!(selections, 3);
+    assert_eq!(played, ["Replacement"]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn assert_single_play(args: &Args) {
     let mut selections = 0;
     let mut plays = 0;
     run_session(
         &mut stdout(),
         args,
-        |out, args| {
+        |out, args, state| {
             selections += 1;
             assert_eq!(selections, 1, "chart restarted after results closed");
-            cli::choose_chart(out, args)
+            cli::choose_chart_with_selector(out, args, state)
         },
         |_, _, _, _, destination| {
             assert_eq!(destination, ResultDestination::Exit);
@@ -94,7 +138,7 @@ fn failed_selection_returns_to_selector_then_plays_and_cancels() {
     run_session(
         &mut stdout(),
         &Args::parse_from(["tapline", "--no-audio"]),
-        |_, _| {
+        |_, _, _| {
             selections += 1;
             Ok(choices.next().expect("unexpected selector restart"))
         },
@@ -124,7 +168,7 @@ fn explicit_invalid_file_returns_error_without_playback_or_recovery() {
     let error = run_session(
         &mut stdout(),
         &args,
-        cli::choose_chart,
+        cli::choose_chart_with_selector,
         |_, _, _, _, _| panic!("invalid chart must not play"),
         |_, _| panic!("explicit file must not recover"),
     )
