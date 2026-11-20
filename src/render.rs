@@ -652,18 +652,32 @@ pub fn draw(
     Ok(())
 }
 
-fn draw_stagefile(
-    out: &mut impl Write,
-    chart: &crate::chart::Chart,
-    cols: u16,
-    rows: u16,
-) -> std::io::Result<()> {
-    crate::artwork::draw(
-        out,
-        &chart.asset_dir,
-        &chart.stagefile,
-        (0, 0, cols, (rows / 2).saturating_sub(4)),
-    )
+#[derive(Default)]
+pub(crate) struct IntroArtwork {
+    size: (u16, u16),
+    pixels: Option<image::RgbaImage>,
+}
+
+impl IntroArtwork {
+    pub(crate) fn prepare(&mut self, chart: &crate::chart::Chart, size: (u16, u16)) {
+        if self.size != size {
+            self.size = size;
+            let (_, _, width, height) = stagefile_area(size);
+            self.pixels =
+                crate::artwork::prepare(&chart.asset_dir, &chart.stagefile, (width, height));
+        }
+    }
+
+    fn draw(&self, out: &mut impl Write) -> std::io::Result<()> {
+        if let Some(pixels) = &self.pixels {
+            crate::artwork::draw_pixels(out, pixels, stagefile_area(self.size))?;
+        }
+        Ok(())
+    }
+}
+
+fn stagefile_area((cols, rows): (u16, u16)) -> (u16, u16, u16, u16) {
+    (0, 0, cols, (rows / 2).saturating_sub(4))
 }
 
 pub fn draw_intro(
@@ -684,9 +698,56 @@ pub fn draw_intro_full(
     samples_loaded: usize,
     decode_failures: usize,
 ) -> anyhow::Result<()> {
-    let (cols, rows) = terminal::size()?;
+    let size = terminal::size()?;
     queue!(out, terminal::BeginSynchronizedUpdate)?;
-    draw_stagefile(out, &game.chart, cols, rows)?;
+    crate::artwork::draw(
+        out,
+        &game.chart.asset_dir,
+        &game.chart.stagefile,
+        stagefile_area(size),
+    )?;
+    draw_intro_content(
+        out,
+        game,
+        countdown_ms,
+        mode,
+        audio_on,
+        (samples_loaded, decode_failures),
+        size,
+    )
+}
+
+pub(crate) fn draw_prepared_intro(
+    out: &mut impl Write,
+    game: &Game,
+    countdown_ms: f64,
+    mode: AudioMode,
+    audio_on: bool,
+    samples: (usize, usize),
+    artwork: &IntroArtwork,
+) -> anyhow::Result<()> {
+    queue!(out, terminal::BeginSynchronizedUpdate)?;
+    artwork.draw(out)?;
+    draw_intro_content(
+        out,
+        game,
+        countdown_ms,
+        mode,
+        audio_on,
+        samples,
+        artwork.size,
+    )
+}
+
+fn draw_intro_content(
+    out: &mut impl Write,
+    game: &Game,
+    countdown_ms: f64,
+    mode: AudioMode,
+    audio_on: bool,
+    (samples_loaded, decode_failures): (usize, usize),
+    (cols, rows): (u16, u16),
+) -> anyhow::Result<()> {
     let title = format_title_line(&game.chart.title, &game.chart.subtitle);
     queue!(
         out,
@@ -1466,28 +1527,53 @@ mod tests {
     }
 
     #[test]
-    fn intro_draws_stagefile_relative_to_chart_directory() {
+    fn intro_reuses_stagefile_until_resize_or_replay() {
+        use crate::assets::DIRECTORY_VISITS;
+
         crossterm::style::force_color_output(true);
-        let dir = std::env::current_dir()
-            .unwrap()
-            .join("target/intro-artwork-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        image::RgbImage::from_pixel(4, 4, image::Rgb([0, 255, 0]))
-            .save(dir.join("stage.png"))
-            .unwrap();
+        let dir = std::path::PathBuf::from("target/intro-artwork-test");
+        std::fs::create_dir_all(dir.join("art")).unwrap();
+        let stage = dir.join("art/stage.png");
+        let save = |color| {
+            image::RgbImage::from_pixel(16, 16, image::Rgb(color))
+                .save(&stage)
+                .unwrap();
+        };
         let chart = crate::chart::Chart {
             asset_dir: dir,
-            stagefile: "stage.png".into(),
+            stagefile: "art/stage.png".into(),
             ..Default::default()
         };
-        let mut out = Vec::new();
-        draw_stagefile(&mut out, &chart, 80, 24).unwrap();
-        let output = String::from_utf8(out).unwrap();
-        assert!(output.contains('▀'));
-        assert!(output.contains("38;2;0;255;0"));
-        let mut tiny = Vec::new();
-        draw_stagefile(&mut tiny, &chart, 10, 8).unwrap();
-        assert!(tiny.is_empty());
+        let draw = |artwork: &IntroArtwork| {
+            let mut out = Vec::new();
+            artwork.draw(&mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+
+        save([0, 255, 0]);
+        let mut artwork = IntroArtwork::default();
+        artwork.prepare(&chart, (80, 24));
+        let original = draw(&artwork);
+        assert_eq!(original.matches('▀').count(), 128);
+        assert!(original.contains("38;2;0;255;0"));
+
+        save([255, 0, 0]);
+        let visits = DIRECTORY_VISITS.get();
+        artwork.prepare(&chart, (80, 24));
+        assert_eq!(draw(&artwork), original);
+        assert_eq!(DIRECTORY_VISITS.get(), visits);
+
+        let mut replay = IntroArtwork::default();
+        replay.prepare(&chart, (80, 24));
+        assert!(draw(&replay).contains("38;2;255;0;0"));
+
+        artwork.prepare(&chart, (80, 16));
+        let resized = draw(&artwork);
+        assert_eq!(resized.matches('▀').count(), 32);
+        assert!(resized.contains("38;2;255;0;0"));
+        artwork.prepare(&chart, (10, 8));
+        assert!(draw(&artwork).is_empty());
+        std::fs::remove_file(stage).unwrap();
     }
 
     #[test]

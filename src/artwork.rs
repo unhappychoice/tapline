@@ -49,6 +49,14 @@ pub(crate) fn draw(
     })
 }
 
+pub(crate) fn prepare(dir: &Path, name: &str, size: (u16, u16)) -> Option<RgbaImage> {
+    if name.is_empty() || size.0 == 0 || size.1 == 0 {
+        return None;
+    }
+    let path = AssetIndex::new(dir).resolve_path(name, &[])?;
+    load_image(&path).map(|image| resize(&image, size))
+}
+
 struct ArtworkCache {
     thumbnails: VecDeque<Thumbnail>,
     paths: VecDeque<PathLookup>,
@@ -218,7 +226,7 @@ fn load_image(path: &Path) -> Option<DynamicImage> {
         .ok()
 }
 
-fn draw_pixels(
+pub(crate) fn draw_pixels(
     out: &mut impl Write,
     pixels: &RgbaImage,
     (x, y, width, _height): (u16, u16, u16, u16),
