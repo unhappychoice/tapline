@@ -6,6 +6,7 @@ mod timing;
 use crate::assets::AssetIndex;
 use crate::bms::ChartMeta;
 use crate::chart::{BgaEvent, BgaLayer, BgmEvent, Chart, Lane, SampleSlice};
+use crate::game::JudgmentWindows;
 use anyhow::{ensure, Context, Result};
 use model::{Bmson, SoundChannel};
 use std::path::{Path, PathBuf};
@@ -42,6 +43,10 @@ pub(crate) fn load_bytes(path: &Path, bytes: &[u8], lead_in_ms: f64) -> Result<C
         banner: meta.banner,
         playlevel: meta.playlevel,
         difficulty: meta.difficulty,
+        def_exrank: data
+            .info
+            .judge_rank
+            .filter(|&rank| JudgmentWindows::valid_percent(rank)),
         lane_count: meta.lane_count,
         keys: Lane::bindings(&lanes),
         lanes,

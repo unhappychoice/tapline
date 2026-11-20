@@ -62,6 +62,45 @@ fn fixture_loads_through_cli_and_can_be_played() {
 }
 
 #[test]
+fn judge_rank_scales_taps_releases_and_deadlines() {
+    let mut value: Value = serde_json::from_str(include_str!("fixtures/minimal.bmson")).unwrap();
+    value["info"]["judge_rank"] = json!(50);
+    let mut game = Game::new(load_value(value.clone()).unwrap());
+    game.hit(0, 1100.0);
+    assert!(!game.chart.notes[0].hit);
+
+    game.hit(1, 1500.0);
+    game.release(1, 1850.0);
+    assert_eq!((game.good, game.perfect, game.miss), (0, 1, 1));
+
+    let mut game = Game::new(load_value(value).unwrap());
+    game.check_misses(1080.0);
+    assert_eq!(game.miss, 0);
+    game.check_misses(1081.0);
+    assert_eq!(game.miss, 1);
+    game.hit(1, 1500.0);
+    game.check_misses(1830.0);
+    assert!(!game.chart.notes[1].hit);
+    game.check_misses(1831.0);
+    assert!(game.chart.notes[1].hit);
+    assert_eq!(game.perfect, 2);
+}
+
+#[test]
+fn missing_or_invalid_judge_rank_uses_normal_windows() {
+    let mut value: Value = serde_json::from_str(include_str!("fixtures/minimal.bmson")).unwrap();
+    let mut game = Game::new(load_value(value.clone()).unwrap());
+    game.hit(0, 1100.0);
+    assert_eq!(game.good, 1);
+
+    for invalid in [0.0, -50.0, 1.7e308] {
+        value["info"]["judge_rank"] = json!(invalid);
+        let chart = load_value(value.clone()).unwrap();
+        assert_eq!(chart.judgment_scale(1000.0), 1.0);
+    }
+}
+
+#[test]
 fn selector_discovers_bmson_metadata() {
     let charts = select::scan(Path::new("tests/fixtures"));
     let meta = charts.iter().find(|m| m.path == fixture()).unwrap();
