@@ -247,10 +247,6 @@ fn build_chart(
     let mut p2_notes = p2_acc.notes;
     let mut p2_invisible_notes = p2_acc.invisible_notes;
     let mut p2_mines = p2_acc.mines;
-    if let Some(lnobj) = pass.lnobj {
-        promote_lnobj(&mut notes, lnobj);
-        promote_lnobj(&mut p2_notes, lnobj);
-    }
     notes.retain(|n| n.lane < p1_lane_count || n.lane == 7);
     mines.retain(|n| n.lane < p1_lane_count || n.lane == 7);
     p2_notes.retain(|n| n.lane < p2_lane_count || n.lane == 7);
@@ -342,11 +338,11 @@ fn collect_chart_sides(
 ) -> Result<(Timeline, ChartAcc, ChartAcc)> {
     let timeline = build_timeline(raw, pass, lead_in_ms)?;
     let lanes = if pms { PMS_LANES } else { P1_LANES };
-    let acc = accumulate_side(raw, &timeline, lanes, collect_bgm, pass.lntype, pass.base);
+    let acc = accumulate_side(raw, &timeline, lanes, collect_bgm, pass);
     let p2_acc = if pms {
         ChartAcc::default()
     } else {
-        accumulate_side(raw, &timeline, P2_LANES, false, pass.lntype, pass.base)
+        accumulate_side(raw, &timeline, P2_LANES, false, pass)
     };
     Ok((timeline, acc, p2_acc))
 }
@@ -525,11 +521,11 @@ fn accumulate_side(
     timeline: &Timeline,
     lanes: LaneMap,
     collect_bgm: bool,
-    lntype: u8,
-    base: u32,
+    pass: &HeaderPass,
 ) -> ChartAcc {
     #[cfg(test)]
     MATERIALIZATION_CALLS.with(|calls| calls.set(calls.get() + 1));
+    let base = pass.base;
     let raw = merge_note_lines(raw, lanes, base);
     let raw = raw.as_slice();
     let mut acc = ChartAcc::default();
@@ -554,7 +550,10 @@ fn accumulate_side(
             push_bgm_slots(&mut acc, *measure, data, timeline, base);
         }
     }
-    if lntype == 2 {
+    if let Some(lnobj) = pass.lnobj {
+        promote_lnobj(&mut acc.notes, lnobj);
+    }
+    if pass.lntype == 2 {
         materialize_continuous_long_notes(&mut acc, raw, timeline, lanes.long, base);
     } else {
         materialize_long_notes_with(&mut acc, raw, timeline, lanes.long, base);
