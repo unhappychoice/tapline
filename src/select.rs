@@ -1,5 +1,6 @@
 mod discovery;
 mod identities;
+use crate::artwork;
 use crate::bms::ChartMeta;
 use crate::chart::difficulty_label;
 use anyhow::Result;
@@ -10,12 +11,16 @@ use crossterm::{
     style::{self, Color, Print, ResetColor, SetForegroundColor},
     terminal,
 };
+use image::RgbaImage;
 use std::io::{Stdout, Write};
 use std::path::Path;
+use std::rc::Rc;
 use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
 const CHART_ROW_LEFT: u16 = 2;
+const MIN_DETAIL_ROWS: u16 = 16;
+const BANNER_HEIGHT: u16 = 4;
 
 pub fn scan(root: &Path) -> Vec<ChartMeta> {
     SelectorState::default().scan(root)
@@ -80,7 +85,24 @@ impl SelectorState {
         self.indices.get(self.cursor).copied()
     }
 
-    fn key(&mut self, key: KeyCode, charts: &[ChartMeta]) {
+    fn key(&mut self, key: KeyCode, charts: &[ChartMeta]) -> bool {
+        let before = self.visible_state();
+        self.apply_key(key, charts);
+        before != self.visible_state()
+    }
+
+    fn visible_state(&self) -> (usize, usize, Option<usize>, bool, usize) {
+        // Key edits only append, remove, or clear query characters.
+        (
+            self.cursor,
+            self.scroll,
+            self.lanes,
+            self.editing,
+            self.query.len(),
+        )
+    }
+
+    fn apply_key(&mut self, key: KeyCode, charts: &[ChartMeta]) {
         if self.editing {
             match key {
                 KeyCode::Esc | KeyCode::Enter => self.editing = false,
@@ -149,6 +171,7 @@ pub fn run_with_state(
     state.refresh(charts);
     let audio = crate::audio::preview_output(!no_audio);
     let mut preview = crate::preview::SelectionPreview::default();
+    let mut frame = SelectorFrame::default();
     loop {
         let selected = state.selected();
         preview.update(
@@ -156,12 +179,13 @@ pub fn run_with_state(
             selected.and_then(|i| charts[i].preview.as_deref()),
             |path| crate::preview::play(audio.as_ref(), path),
         );
-        draw(out, charts, state, &progress)?;
-        if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(k) = event::read()? {
-                if k.kind == KeyEventKind::Release {
-                    continue;
-                }
+        frame.draw_if_changed(out, charts, state, &progress, terminal::size()?)?;
+        if !event::poll(Duration::from_millis(200))? {
+            continue;
+        }
+        match event::read()? {
+            Event::Resize(..) => frame.invalidate(),
+            Event::Key(k) if k.kind != KeyEventKind::Release => {
                 if !state.editing {
                     match k.code {
                         KeyCode::Esc | KeyCode::Char('q' | 'Q') => return Ok(None),
@@ -171,8 +195,11 @@ pub fn run_with_state(
                         _ => {}
                     }
                 }
-                state.key(k.code, charts);
+                if state.key(k.code, charts) {
+                    frame.invalidate();
+                }
             }
+            _ => {}
         }
     }
 }
@@ -194,13 +221,46 @@ fn load_progress(
         .collect()
 }
 
-fn draw(
-    out: &mut Stdout,
-    charts: &[ChartMeta],
-    state: &mut SelectorState,
-    progress: &[String],
-) -> Result<()> {
-    draw_frame(out, charts, state, progress, terminal::size()?)
+#[derive(Default)]
+struct SelectorFrame {
+    size: Option<(u16, u16)>,
+    banner: Option<Rc<RgbaImage>>,
+}
+
+impl SelectorFrame {
+    fn invalidate(&mut self) {
+        self.size = None;
+    }
+
+    fn draw_if_changed(
+        &mut self,
+        out: &mut impl Write,
+        charts: &[ChartMeta],
+        state: &mut SelectorState,
+        progress: &[String],
+        size: (u16, u16),
+    ) -> Result<()> {
+        let banner = state
+            .selected()
+            .filter(|_| size.1 >= MIN_DETAIL_ROWS)
+            .and_then(|i| chart_banner(&charts[i], size.0));
+        let same_banner = match (&self.banner, &banner) {
+            (Some(previous), Some(current)) => Rc::ptr_eq(previous, current),
+            (None, None) => true,
+            _ => false,
+        };
+        if self.size != Some(size) || !same_banner {
+            draw_frame(out, charts, state, progress, size, banner.as_deref())?;
+            self.size = Some(size);
+            self.banner = banner;
+        }
+        Ok(())
+    }
+}
+
+fn chart_banner(chart: &ChartMeta, width: u16) -> Option<Rc<RgbaImage>> {
+    let dir = chart.path.parent().unwrap_or(Path::new("."));
+    artwork::thumbnail(dir, &chart.banner, (width, BANNER_HEIGHT))
 }
 
 fn draw_frame(
@@ -209,6 +269,7 @@ fn draw_frame(
     state: &mut SelectorState,
     progress: &[String],
     (cols, rows): (u16, u16),
+    banner: Option<&RgbaImage>,
 ) -> Result<()> {
     let cursor_i = state.cursor;
     let scroll = &mut state.scroll;
@@ -255,7 +316,11 @@ fn draw_frame(
         .collect();
     queue!(out, cursor::MoveTo(2, 3), Print(status))?;
     let list_top = 5u16;
-    let detail_rows = if rows >= 16 { 6 } else { 0 };
+    let detail_rows = if rows >= MIN_DETAIL_ROWS {
+        BANNER_HEIGHT + 2
+    } else {
+        0
+    };
     let list_bottom = rows.saturating_sub(2 + detail_rows);
     let view_rows = list_bottom.saturating_sub(list_top) as usize;
     if view_rows == 0 {
@@ -310,7 +375,13 @@ fn draw_frame(
             Print("No matching charts. Edit / search or press c to clear.")
         )?;
     } else if detail_rows > 0 {
-        draw_details(out, &charts[state.indices[cursor_i]], cols, list_bottom)?;
+        draw_details(
+            out,
+            &charts[state.indices[cursor_i]],
+            cols,
+            list_bottom,
+            banner,
+        )?;
     }
 
     let hint = if state.editing {
@@ -345,14 +416,21 @@ fn clip_to_width(text: &str, mut remaining: usize) -> &str {
     text
 }
 
-fn draw_details(out: &mut impl Write, chart: &ChartMeta, cols: u16, top: u16) -> Result<()> {
+fn draw_details(
+    out: &mut impl Write,
+    chart: &ChartMeta,
+    cols: u16,
+    top: u16,
+    banner: Option<&RgbaImage>,
+) -> Result<()> {
     let comment: String = crate::terminal_text::sanitize(&chart.comment)
         .chars()
         .take(cols.saturating_sub(4) as usize)
         .collect();
     queue!(out, cursor::MoveTo(2, top), Print(comment))?;
-    let dir = chart.path.parent().unwrap_or(Path::new("."));
-    crate::artwork::draw(out, dir, &chart.banner, (0, top + 1, cols, 4))?;
+    if let Some(banner) = banner {
+        artwork::draw_pixels(out, banner, (0, top + 1, cols, BANNER_HEIGHT))?;
+    }
     Ok(())
 }
 
@@ -426,6 +504,97 @@ mod tests {
     }
 
     #[test]
+    fn idle_frames_emit_no_output_and_input_or_resize_redraws() {
+        let mut charts = [meta("Alpha"), meta("Beta")];
+        charts[1].lane_count = 7;
+        let progress = ["[UNPLAYED]".into(), "[UNPLAYED]".into()];
+        let mut state = SelectorState::default();
+        state.refresh(&charts);
+        let mut frame = SelectorFrame::default();
+        let mut render = |state: &mut SelectorState, key: Option<KeyCode>, size| {
+            if key.is_some_and(|key| state.key(key, &charts)) {
+                frame.invalidate();
+            }
+            let mut out = Vec::new();
+            frame
+                .draw_if_changed(&mut out, &charts, state, &progress, size)
+                .unwrap();
+            String::from_utf8(out).unwrap()
+        };
+
+        let size = (100, 24);
+        let initial = render(&mut state, None, size);
+        #[cfg(not(windows))]
+        assert!(initial.contains("\x1b[2J"));
+        assert!(initial.contains("Alpha"));
+        for _ in 0..3 {
+            assert!(render(&mut state, None, size).is_empty());
+        }
+        let moved = render(&mut state, Some(KeyCode::Down), size);
+        assert!(moved.contains("▸ [7K NORMAL Lv3 BPM140]  Beta"));
+        assert!(render(&mut state, Some(KeyCode::Down), size).is_empty());
+        assert!(render(&mut state, Some(KeyCode::Char('/')), size).contains("/ editing"));
+        let filtered = render(&mut state, Some(KeyCode::Char('A')), size);
+        assert!(filtered.contains("Query: A"));
+        assert!(render(&mut state, Some(KeyCode::Char('l')), size).contains("1 / 2 matches"));
+        assert!(!render(&mut state, Some(KeyCode::Enter), size).contains("/ editing"));
+        assert!(render(&mut state, Some(KeyCode::Char('l')), size).contains("Lanes: 5K"));
+        assert!(render(&mut state, None, (80, 12)).contains("Alpha"));
+        assert!(render(&mut state, None, (80, 12)).is_empty());
+    }
+
+    #[test]
+    fn banner_changes_redraw_without_input() {
+        let dir = tempdir();
+        let banner = dir.join("banner.png");
+        let mut chart = meta("Song");
+        chart.path = dir.join("song.bms");
+        chart.banner = "banner.png".into();
+        let charts = [chart];
+        let mut state = SelectorState::default();
+        state.refresh(&charts);
+        let mut frame = SelectorFrame::default();
+        let mut render = || {
+            let mut out = Vec::new();
+            frame
+                .draw_if_changed(
+                    &mut out,
+                    &charts,
+                    &mut state,
+                    &["[UNPLAYED]".into()],
+                    (80, 24),
+                )
+                .unwrap();
+            String::from_utf8(out).unwrap()
+        };
+
+        let save_banner = |width, color| {
+            image::RgbImage::from_pixel(width, 2, image::Rgb(color))
+                .save(&banner)
+                .unwrap();
+        };
+        save_banner(4, [255, 0, 0]);
+        assert!(render().contains('▀'));
+        assert!(render().is_empty());
+
+        // Change the encoded length so detection does not depend on timestamp resolution.
+        let original_len = std::fs::metadata(&banner).unwrap().len();
+        save_banner(32, [0, 255, 0]);
+        assert_ne!(std::fs::metadata(&banner).unwrap().len(), original_len);
+        assert!(render().contains('▀'));
+        assert!(render().is_empty());
+
+        std::fs::remove_file(&banner).unwrap();
+        let removed = render();
+        #[cfg(not(windows))]
+        assert!(removed.contains("\x1b[2J"));
+        assert!(removed.contains("Song"));
+        assert!(!removed.contains('▀'));
+        assert!(render().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn empty_results_render_conditions_and_no_stale_chart_details() {
         let mut chart = meta("Alpha");
         chart.comment = "Selected chart comment".into();
@@ -437,14 +606,15 @@ mod tests {
         };
         state.refresh(&charts);
         let mut out = Vec::new();
-        draw_frame(
-            &mut out,
-            &charts,
-            &mut state,
-            &["[UNPLAYED]".into()],
-            (100, 24),
-        )
-        .unwrap();
+        SelectorFrame::default()
+            .draw_if_changed(
+                &mut out,
+                &charts,
+                &mut state,
+                &["[UNPLAYED]".into()],
+                (100, 24),
+            )
+            .unwrap();
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("0 / 1 matches | Lanes: 7K | Query: missing"));
         assert!(output.contains("No matching charts"));
@@ -462,7 +632,9 @@ mod tests {
         };
         state.refresh(&charts);
         let mut out = Vec::new();
-        draw_frame(&mut out, &charts, &mut state, &progress, (100, 12)).unwrap();
+        SelectorFrame::default()
+            .draw_if_changed(&mut out, &charts, &mut state, &progress, (100, 12))
+            .unwrap();
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("[BEST 7.0% CLEAR] ▸ [5K NORMAL Lv3 BPM140]  Song 7"));
         assert!(!output.contains("[BEST 0.0% CLEAR]"));
@@ -471,7 +643,9 @@ mod tests {
         state.refresh(&charts);
         state.key(KeyCode::End, &charts);
         let mut out = Vec::new();
-        draw_frame(&mut out, &charts, &mut state, &progress, (100, 12)).unwrap();
+        SelectorFrame::default()
+            .draw_if_changed(&mut out, &charts, &mut state, &progress, (100, 12))
+            .unwrap();
         let output = String::from_utf8(out).unwrap();
         assert!(state.scroll > 0);
         assert!(output.contains("[BEST 7.0% CLEAR] ▸ [5K NORMAL Lv3 BPM140]  Song 7"));
@@ -491,14 +665,15 @@ mod tests {
             state.refresh(&charts);
             let mut out = Vec::new();
             let cols = 2 + prefix.chars().count() as u16 + 5;
-            draw_frame(
-                &mut out,
-                &charts,
-                &mut state,
-                &["[UNPLAYED]".into()],
-                (cols, 12),
-            )
-            .unwrap();
+            SelectorFrame::default()
+                .draw_if_changed(
+                    &mut out,
+                    &charts,
+                    &mut state,
+                    &["[UNPLAYED]".into()],
+                    (cols, 12),
+                )
+                .unwrap();
             let output = String::from_utf8(out).unwrap();
             assert!(output.contains(&format!("{prefix}{visible}\x1b[")));
         }
@@ -662,7 +837,14 @@ mod tests {
         chart.banner = "banner.png".into();
         chart.comment = "Great song!\x1b\x07".into();
         let mut out = Vec::new();
-        draw_details(&mut out, &chart, 40, 10).unwrap();
+        draw_details(
+            &mut out,
+            &chart,
+            40,
+            10,
+            chart_banner(&chart, 40).as_deref(),
+        )
+        .unwrap();
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("Great song!"));
         assert!(!output.contains('\x07'));
@@ -817,6 +999,32 @@ mod tests {
         m.difficulty = None;
         m.playlevel = None;
         assert_eq!(format_badge(&m), "[5K BPM140]");
+    }
+
+    #[test]
+    fn bmson_levels_survive_discovery_and_loading_and_display_in_badges() {
+        let dir = tempdir();
+        let path = dir.join("chart.bmson");
+        let fixture = include_str!("../tests/fixtures/minimal.bmson");
+        for (level, badge) in [
+            (Some(256), "[4K Lv256 BPM120]"),
+            (Some(u32::MAX), "[4K Lv4294967295 BPM120]"),
+            (None, "[4K BPM120]"),
+        ] {
+            let mut data: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            let info = data["info"].as_object_mut().unwrap();
+            match level {
+                Some(level) => info.insert("level".into(), level.into()),
+                None => info.remove("level"),
+            };
+            std::fs::write(&path, data.to_string()).unwrap();
+            let charts = scan(&dir);
+            assert_eq!(charts.len(), 1);
+            assert_eq!(charts[0].playlevel, level);
+            assert_eq!(format_badge(&charts[0]), badge);
+            assert_eq!(crate::bmson::load(&path, 0.0).unwrap().playlevel, level);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -257,6 +257,7 @@ impl SampleBank {
                 end.max(judgment_end + 32.0)
                     .max(invisible_end)
                     .max(visual_end)
+                    .max(chart.trailing_stop_completion_ms.unwrap_or(0.0))
             })
             .unwrap_or(chart.duration_ms)
     }
@@ -753,6 +754,32 @@ mod tests {
         assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 14032.0);
         chart.duration_ms = 60000.0;
         assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 14032.0);
+    }
+
+    #[test]
+    fn duration_preserves_trailing_bms_stops_with_audio() {
+        let bank = duration_bank();
+        let dir =
+            std::env::temp_dir().join(format!("tapline-trailing-stops-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("song.bms");
+        for stop in ["#STP 002.500 1000", "#STOP01 96\n#00209:0001"] {
+            std::fs::write(&path, format!("#BPM 120\n#00011:01\n{stop}\n")).unwrap();
+            let mut chart = crate::bms::load(&path, 0.0).unwrap();
+            assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 10172.0);
+            chart.duration_ms = bank.chart_duration_ms(&chart, false, true, 0.0);
+            assert_eq!(chart.duration_ms, 9500.0);
+            let mut game = crate::game::Game::new(chart);
+            assert!(!game.advance_completion(5000.0));
+            assert!(!game.advance_completion(9499.0));
+            assert!(game.advance_completion(9500.0));
+        }
+        for (stop, expected) in [("", 1252.0), ("#STP 000.000 1000", 2252.0)] {
+            std::fs::write(&path, format!("#BPM 120\n#00011:0001\n{stop}\n")).unwrap();
+            let chart = crate::bms::load(&path, 0.0).unwrap();
+            assert_eq!(bank.chart_duration_ms(&chart, false, true, 0.0), expected);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

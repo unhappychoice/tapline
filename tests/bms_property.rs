@@ -56,7 +56,7 @@ proptest! {
         );
         let path = write_text(&text);
         let m = bms::read_meta(&path).unwrap();
-        prop_assert_eq!(m.playlevel, Some(level));
+        prop_assert_eq!(m.playlevel, Some(u32::from(level)));
         prop_assert_eq!(m.difficulty, Some(difficulty));
     }
 

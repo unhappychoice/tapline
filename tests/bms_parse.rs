@@ -27,7 +27,7 @@ fn help_lists_dir_flag() {
 fn sample_charts_have_expected_shape() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let expected = [
-        ("songs/01-first-steps.bmson", "First Steps", 4, 1u8, 1u8),
+        ("songs/01-first-steps.bmson", "First Steps", 4, 1u32, 1u8),
         ("songs/02-steady-rain.bms", "Steady Rain", 5, 4, 2),
         ("songs/03-rolling-thunder.bms", "Rolling Thunder", 7, 8, 3),
         ("songs/04-neon-drive.bmson", "Neon Drive", 4, 3, 2),

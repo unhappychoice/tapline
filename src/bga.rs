@@ -149,21 +149,14 @@ impl ImageBank {
 
     fn rendered_frame(&self, game: &Game, now_ms: f64, width: u32) -> RefMut<'_, RgbaImage> {
         let layers = self.visible_layers(game, now_ms);
-        let bitmaps = layers.each_ref().map(|layer| match layer {
-            Some((LayerImage::Bitmap(id), style)) => Some((*id, *style)),
-            _ => None,
-        });
-        let has_video = layers
-            .iter()
-            .any(|layer| matches!(layer, Some((LayerImage::Video(_), _))));
-        let key = (!has_video).then_some(FrameKey { width, bitmaps });
+        let key = FrameKey { width, layers };
         let mut cached = self.5.borrow_mut();
-        if key.is_none() || !cached.as_ref().is_some_and(|frame| frame.key == key) {
+        if !cached.as_ref().is_some_and(|frame| frame.key == key) {
             let mut frame = RgbaImage::from_pixel(SIZE, SIZE, Rgba([0, 0, 0, 255]));
-            for (image, style) in layers.iter().flatten() {
+            for (image, style) in key.layers.iter().flatten() {
                 let image = match image {
                     LayerImage::Bitmap(id) => self.0[id].as_ref(),
-                    LayerImage::Video(image) => image,
+                    LayerImage::Video(frame) => frame.0.as_ref(),
                 };
                 composite(&mut frame, image, style.alpha, style.key);
             }
@@ -307,9 +300,10 @@ mod tests;
 
 type Layer = (LayerImage, LayerStyle);
 
+#[derive(PartialEq, Eq)]
 enum LayerImage {
     Bitmap(u32),
-    Video(RgbaImage),
+    Video(video::Frame),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -321,11 +315,11 @@ struct LayerStyle {
 #[derive(PartialEq, Eq)]
 struct FrameKey {
     width: u32,
-    bitmaps: [Option<(u32, LayerStyle)>; 5],
+    layers: [Option<Layer>; 5],
 }
 
 struct RenderedFrame {
-    key: Option<FrameKey>,
+    key: FrameKey,
     pixels: RgbaImage,
 }
 
