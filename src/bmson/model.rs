@@ -24,6 +24,7 @@ pub struct Info {
     #[serde(default)]
     pub genre: String,
     pub init_bpm: f64,
+    pub total: Option<f64>,
     pub judge_rank: Option<f64>,
     pub resolution: Option<u32>,
     pub mode_hint: Option<String>,
