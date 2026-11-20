@@ -40,6 +40,7 @@ pub(crate) fn load_bytes(path: &Path, bytes: &[u8], lead_in_ms: f64) -> Result<C
         subartist: meta.subartist,
         genre: meta.genre,
         bpm: meta.bpm,
+        gauge_recovery_multiplier: data.info.total.unwrap_or(100.0).abs() / 100.0,
         stagefile: data.info.eyecatch_image.clone().unwrap_or_default(),
         banner: meta.banner,
         playlevel: meta.playlevel,

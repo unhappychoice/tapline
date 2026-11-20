@@ -38,11 +38,9 @@ fn run(out: &mut Stdout, args: &Args, keymap: &cli::Keymap) -> Result<()> {
     run_session(
         out,
         args,
+        keymap,
         cli::choose_chart_with_selector,
-        |out, args, mut chart, identity, destination| {
-            keymap.apply(&mut chart);
-            runtime::play_chart_with_destination(out, args, chart, identity, destination)
-        },
+        runtime::play_attempt,
         terminal::show_load_error,
     )
 }
@@ -50,6 +48,7 @@ fn run(out: &mut Stdout, args: &Args, keymap: &cli::Keymap) -> Result<()> {
 fn run_session(
     out: &mut Stdout,
     args: &Args,
+    keymap: &cli::Keymap,
     mut choose: impl FnMut(
         &mut Stdout,
         &Args,
@@ -58,10 +57,10 @@ fn run_session(
     mut play: impl FnMut(
         &mut Stdout,
         &Args,
-        tapline::chart::Chart,
-        Option<tapline::results::Identity>,
+        &tapline::chart::Chart,
+        Option<&tapline::results::Identity>,
         ResultDestination,
-    ) -> Result<()>,
+    ) -> Result<runtime::ResultAction>,
     mut report_error: impl FnMut(&mut Stdout, &anyhow::Error) -> Result<()>,
 ) -> Result<()> {
     let mut selector = tapline::select::SelectorState::default();
@@ -71,7 +70,7 @@ fn run_session(
             cli::ChartChoice::Selected(_) => ResultDestination::Selector,
             _ => ResultDestination::Exit,
         };
-        let (chart, identity) = match cli::load_session(&choice, args) {
+        let (mut chart, identity) = match cli::load_session(&choice, args) {
             Ok(Some(chart)) => chart,
             Ok(None) => return Ok(()),
             Err(error) => {
@@ -85,7 +84,11 @@ fn run_session(
                 continue;
             }
         };
-        play(out, args, chart, identity, destination)?;
+        keymap.apply(&mut chart);
+        while play(out, args, &chart, identity.as_ref(), destination)?
+            == runtime::ResultAction::Retry
+        {}
+
         if destination == ResultDestination::Exit {
             return Ok(());
         }

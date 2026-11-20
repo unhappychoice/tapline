@@ -104,6 +104,7 @@ pub struct SampleSlice {
     pub duration_ms: Option<f64>,
 }
 
+#[derive(Clone)]
 pub struct Chart {
     pub title: String,
     pub subtitle: String,
@@ -124,6 +125,7 @@ pub struct Chart {
     pub exrank_defs: std::collections::HashMap<u32, f64>,
     pub exrank_events: Vec<ExRankEvent>,
     pub total: Option<f64>,
+    pub gauge_recovery_multiplier: f64,
     pub vol_wav: Option<u8>,
     pub ln_mode: LnMode,
     pub volume_events: Vec<VolumeEvent>,
@@ -154,6 +156,25 @@ pub struct Chart {
 }
 
 impl Chart {
+    pub fn visual_deadline_ms(&self) -> f64 {
+        let layer_effects = self
+            .bga_extensions
+            .events
+            .iter()
+            .filter(|event| match event.effect {
+                crate::bga::Effect::Opacity(..) => true,
+                crate::bga::Effect::Color(_, id) => self.bga_extensions.argb.contains_key(&id),
+                crate::bga::Effect::Switch(_) => false,
+            });
+        self.bga
+            .iter()
+            .map(|event| event.time_ms)
+            .chain(self.text_events.iter().map(|event| event.time_ms))
+            .chain(layer_effects.map(|event| event.time_ms))
+            .map(|time_ms| time_ms + 2500.0)
+            .fold(0.0, f64::max)
+    }
+
     pub fn judgment_scale(&self, time_ms: f64) -> f64 {
         let index = self.exrank_events.partition_point(|e| e.time_ms <= time_ms);
         if index > 0 {
@@ -190,6 +211,7 @@ impl Default for Chart {
             exrank_defs: std::collections::HashMap::new(),
             exrank_events: Vec::new(),
             total: None,
+            gauge_recovery_multiplier: 1.0,
             vol_wav: None,
             ln_mode: LnMode::default(),
             volume_events: Vec::new(),

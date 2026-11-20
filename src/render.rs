@@ -939,13 +939,9 @@ fn result_lines(
         lines.push((format!("chart by {}", game.chart.maker), Color::DarkGrey));
     }
     lines.extend(progress_lines(progress, cols).map(|line| (line, Color::Yellow)));
-    let selector_prompt = "press any key to return to the selector";
     let prompt = match destination {
-        ResultDestination::Selector if usize::from(cols) < selector_prompt.len() => {
-            "any key: return to selector"
-        }
-        ResultDestination::Selector => selector_prompt,
-        ResultDestination::Exit => "press any key to exit",
+        ResultDestination::Selector => "R: retry / other: selector",
+        ResultDestination::Exit => "R: retry / other: exit",
     };
     lines.push((prompt.into(), Color::DarkGrey));
     lines
@@ -1046,11 +1042,8 @@ mod tests {
     fn result_prompts_for_its_dismissal_destination() {
         let game = Game::new(base_chart(4));
         for (destination, prompt) in [
-            (
-                ResultDestination::Selector,
-                "press any key to return to the selector",
-            ),
-            (ResultDestination::Exit, "press any key to exit"),
+            (ResultDestination::Selector, "R: retry / other: selector"),
+            (ResultDestination::Exit, "R: retry / other: exit"),
         ] {
             let mut out = Vec::new();
             draw_result_content(
@@ -1064,7 +1057,7 @@ mod tests {
             .unwrap();
             let rendered = String::from_utf8(out).unwrap();
             assert!(rendered.contains(prompt));
-            assert_eq!(rendered.matches("press any key").count(), 1);
+            assert_eq!(rendered.matches("R: retry").count(), 1);
         }
     }
 
@@ -2269,12 +2262,8 @@ mod progress_tests {
         let progress = format_progress(&game, store.get(&identity));
         let progress = format!("Storage error: result unsaved | {progress}");
         for (destination, prompt, prompt_column) in [
-            (
-                ResultDestination::Selector,
-                "any key: return to selector",
-                2,
-            ),
-            (ResultDestination::Exit, "press any key to exit", 5),
+            (ResultDestination::Selector, "R: retry / other: selector", 2),
+            (ResultDestination::Exit, "R: retry / other: exit", 4),
         ] {
             let mut output = Vec::new();
             draw_result_content(&mut output, &game, 29, 13, &progress, destination).unwrap();

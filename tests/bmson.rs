@@ -62,6 +62,31 @@ fn fixture_loads_through_cli_and_can_be_played() {
 }
 
 #[test]
+fn total_scales_gauge_recovery_from_a_perfect_hit() {
+    [
+        (None, 65.0),
+        (Some(100.0), 65.0),
+        (Some(50.0), 32.5),
+        (Some(0.0), 0.0),
+        (Some(-50.0), 32.5),
+    ]
+    .into_iter()
+    .for_each(|(total, gain)| {
+        let mut data = base();
+        if let Some(total) = total {
+            data["info"]["total"] = json!(total);
+        }
+        data["sound_channels"] = json!([{"name":"sound.wav","notes":[
+            {"x":1,"y":0}, {"x":1,"y":240}, {"x":1,"y":480}, {"x":1,"y":720}
+        ]}]);
+        let mut game = Game::new(load_value(data).unwrap());
+        assert_eq!(game.hit(0, 1000.0), Some(0));
+        assert_eq!(game.perfect, 1);
+        assert_eq!(game.gauge.value(), 20.0 + gain, "total: {total:?}");
+    });
+}
+
+#[test]
 fn judge_rank_scales_taps_releases_and_deadlines() {
     let mut value: Value = serde_json::from_str(include_str!("fixtures/minimal.bmson")).unwrap();
     value["info"]["judge_rank"] = json!(50);

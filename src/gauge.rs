@@ -30,7 +30,7 @@ impl Gauge {
             recovery: if count == 0 {
                 0.0
             } else {
-                total / count as f64
+                total / count as f64 * chart.gauge_recovery_multiplier
             },
         }
     }
