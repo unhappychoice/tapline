@@ -54,8 +54,8 @@ fn gameplay_decodes_only_referenced_bms_wavs() {
 
     let (mixer, _output) = rodio::mixer::mixer(rodio::nz!(2), rodio::nz!(44_100));
     bank.bus = Some(master::master_bus(&mixer));
-    assert!(bank.play_sound(chart.bgm[0].keysound, 1.0).is_some());
-    assert!(bank.play_sound(chart.bgm[1].keysound, 1.0).is_none());
+    assert!(bank.start_sound(chart.bgm[0].keysound, 1.0).is_some());
+    assert!(bank.start_sound(chart.bgm[1].keysound, 1.0).is_none());
     let note = chart.notes[0];
     assert!(bank
         .start_hit(note.lane, note.keysound, false, 1.0)
@@ -92,11 +92,11 @@ fn gameplay_loads_only_reachable_layer_members_and_preserves_slices() {
     );
     let mut bank = SampleBank::load_chart_with(&chart, |path| {
         assert_eq!(path, &chart.wav_paths[&1]);
-        Ok(DecodedSample {
-            channels: 1,
-            sample_rate: 1000,
-            data: Arc::new((0..10).map(|i| i as f32).collect()),
-        })
+        Ok(DecodedSample::new(
+            1,
+            1000,
+            Arc::new((0..10).map(|i| i as f32).collect()),
+        ))
     });
     assert_eq!(bank.sample_count(), 2);
     assert_eq!(bank.decode_failures, 0);
