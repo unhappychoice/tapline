@@ -117,7 +117,7 @@ pub struct Chart {
     pub asset_dir: PathBuf,
     pub maker: String,
     pub bpm: f64,
-    pub playlevel: Option<u8>,
+    pub playlevel: Option<u32>,
     pub difficulty: Option<u8>,
     pub rank: Option<u8>,
     pub def_exrank: Option<f64>,

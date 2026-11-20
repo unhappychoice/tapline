@@ -2025,7 +2025,7 @@ mod tests {
         fn format_difficulty_badge_always_contains_bpm_and_lane_marker(
             bpm in 30.0f64..300.0,
             lane_count in prop_oneof![Just(4usize), Just(5), Just(7)],
-            playlevel in prop::option::of(1u8..=12),
+            playlevel in prop::option::of(1u32..=12),
             difficulty in prop::option::of(1u8..=5),
         ) {
             let mut chart = base_chart(lane_count);

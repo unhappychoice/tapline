@@ -34,10 +34,16 @@ fn base() -> Value {
 
 #[test]
 fn fixture_loads_through_cli_and_can_be_played() {
-    let args = cli::Args::parse_from(["tapline", "--countdown-ms", "1000"]);
-    let chart = cli::load_chart(&cli::ChartChoice::File(fixture().into()), &args)
-        .unwrap()
-        .unwrap();
+    let args = cli::Args::parse_from([
+        "tapline",
+        "--file",
+        fixture().to_str().unwrap(),
+        "--countdown-ms",
+        "1000",
+    ]);
+    let choice = cli::choose_chart(&mut std::io::stdout(), &args).unwrap();
+    let chart = cli::load_chart(&choice, &args).unwrap().unwrap();
+    assert_eq!(chart.playlevel, Some(256));
     assert_eq!(chart.lane_count, 4);
     assert_eq!(chart.notes.len(), 2);
     assert_eq!(chart.notes[1].time_ms, 1500.0);
@@ -62,13 +68,14 @@ fn selector_discovers_bmson_metadata() {
     assert_eq!(meta.title, "Minimal bmson");
     assert_eq!(meta.bpm, 120.0);
     assert!(meta.preview.is_none());
-    assert_eq!(meta.playlevel, Some(1));
+    assert_eq!(meta.playlevel, Some(256));
     assert_eq!(meta.random_seed, 0);
     let args = cli::Args::parse_from(["tapline", "--countdown-ms", "1000"]);
     let chart = cli::load_chart(&cli::ChartChoice::Selected(Box::new(meta.clone())), &args)
         .unwrap()
         .unwrap();
     assert_eq!(chart.title, meta.title);
+    assert_eq!(chart.playlevel, meta.playlevel);
     assert_eq!(chart.notes.len(), 2);
     assert_eq!(chart.notes[0].time_ms, 1000.0);
     assert!(bmson::is_bmson(Path::new("chart.BMSON")));
