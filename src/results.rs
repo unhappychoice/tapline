@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
+    fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
 };
 
@@ -71,6 +72,48 @@ pub struct Store {
     records: BTreeMap<String, Record>,
 }
 
+#[derive(Debug)]
+pub enum UpdateError {
+    Read,
+    Lock,
+    Write(Option<Record>),
+}
+
+pub fn update(
+    path: &Path,
+    identity: &Identity,
+    game: &Game,
+    auto_keysound: bool,
+) -> Result<Option<Record>, UpdateError> {
+    let _lock = game
+        .completed
+        .then(|| lock_results(path))
+        .transpose()
+        .map_err(|_| UpdateError::Lock)?;
+    let mut store = Store::load(path).map_err(|_| UpdateError::Read)?;
+    let previous = store.get(identity).cloned();
+    if game.completed {
+        store.record(identity, game, auto_keysound);
+        if store.save(path).is_err() {
+            return Err(UpdateError::Write(previous));
+        }
+    }
+    Ok(previous)
+}
+
+fn lock_results(path: &Path) -> std::io::Result<File> {
+    fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
+    // Keep the lock file in place so replacing the results cannot split the lock.
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path.with_added_extension("lock"))?;
+    file.lock()?;
+    Ok(file)
+}
+
 impl Store {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         use std::io::Read;
@@ -122,11 +165,12 @@ impl Store {
             });
     }
 
+    /// Replaces the file with this snapshot. Use [`update`] to merge a completed run.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         use std::io::Write;
-        std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
+        fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
         let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-        let mut file = std::fs::OpenOptions::new()
+        let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temporary)?;
@@ -134,10 +178,10 @@ impl Store {
             file.write_all(&serde_json::to_vec_pretty(self)?)?;
             file.sync_all()?;
             drop(file);
-            std::fs::rename(&temporary, path)?;
+            fs::rename(&temporary, path)?;
             Ok(())
         })();
-        let _ = std::fs::remove_file(temporary);
+        let _ = fs::remove_file(temporary);
         result
     }
 }
