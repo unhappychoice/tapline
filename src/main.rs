@@ -39,7 +39,7 @@ fn run(out: &mut Stdout, args: &Args) -> Result<()> {
         out,
         args,
         |out, args| cli::choose_chart_with_selector(out, args, &mut selector),
-        runtime::play_chart_with_destination,
+        runtime::play_attempt,
         terminal::show_load_error,
     )
 }
@@ -51,10 +51,10 @@ fn run_session(
     mut play: impl FnMut(
         &mut Stdout,
         &Args,
-        tapline::chart::Chart,
-        Option<tapline::results::Identity>,
+        &tapline::chart::Chart,
+        Option<&tapline::results::Identity>,
         ResultDestination,
-    ) -> Result<()>,
+    ) -> Result<runtime::ResultAction>,
     mut report_error: impl FnMut(&mut Stdout, &anyhow::Error) -> Result<()>,
 ) -> Result<()> {
     loop {
@@ -72,7 +72,10 @@ fn run_session(
             }
             Err(error) => return Err(error),
         };
-        play(out, args, chart, identity, destination)?;
+        while play(out, args, &chart, identity.as_ref(), destination)?
+            == runtime::ResultAction::Retry
+        {}
+
         if destination == ResultDestination::Exit {
             return Ok(());
         }

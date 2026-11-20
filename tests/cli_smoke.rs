@@ -89,7 +89,7 @@ fn unknown_flag_fails_with_a_helpful_stderr() {
 
 // `--built-in` spawns the game loop and, on any platform where crossterm's
 // raw-mode setup does succeed without a PTY (Windows Actions runners are
-// one), it blocks in the result screen's `press any key to exit` loop. The
+// one), it blocks in the result screen's `R: retry / other: exit` loop. The
 // Linux/macOS runners fail at raw-mode setup and exit fast, but Windows
 // would hang indefinitely, so we don't spawn the interactive path here.
 

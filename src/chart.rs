@@ -104,6 +104,7 @@ pub struct SampleSlice {
     pub duration_ms: Option<f64>,
 }
 
+#[derive(Clone)]
 pub struct Chart {
     pub title: String,
     pub subtitle: String,

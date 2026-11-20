@@ -43,7 +43,8 @@ cross the line. Letter keys work in either case. Hits build your score and combo
 misses reset the combo and reduce the gauge.
 
 Finish the chart to see your score, accuracy, and gauge result. A final gauge of
-at least 80% clears the chart. Press any key on the result screen to exit.
+at least 80% clears the chart. Press `R` on the result screen to retry, or any
+other key to exit.
 Pressing `Esc` or `Q` during play ends the chart early with a FAILED result.
 
 For a slower practice chart, or silent play:
@@ -66,7 +67,8 @@ Start with `First Steps`, a four-lane beginner chart. The bundled charts use
 synthesized sounds and need no separate audio assets. Other charts use different
 lane counts; follow the keys shown below the lanes.
 
-After a song, press any key on the result screen to return to the selector.
+After a song, press `R` on the result screen to retry, or any other key to
+return to the selector.
 Use `Esc` or `q` in the selector to exit.
 
 ## Load your own charts

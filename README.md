@@ -137,9 +137,9 @@ PMS mode is selected by the `.pms` extension (case-insensitive) and always uses
 nine lanes. Long notes (`51–55 + 62–65`) and landmines (`D1–D5 + E2–E5`)
 follow the same button order as visible notes.
 
-`#RANDOM` branches are drawn afresh for each play. The selector and chart loader
-share the same draw so displayed metadata matches gameplay. Set
-`TAPLINE_RANDOM_SEED` to an unsigned 64-bit integer for reproducible branches.
+`#RANDOM` branches are drawn when a chart is selected or opened. The selector
+and chart loader share the same draw so displayed metadata matches gameplay.
+Set `TAPLINE_RANDOM_SEED` to an unsigned 64-bit integer for reproducible branches.
 
 Song text from `#TEXTxx` (or `#SONGxx`) appears at the top of the HUD when
 channel `99` triggers its object ID (base 36 by default, or base 62 with `#BASE 62`). It remains until the next defined text
@@ -329,6 +329,10 @@ whichever finger is closer.
 | 14    | `S D F SPACE J K L / Z X C V B N M` | 7K SP layout on the home row for P1, ZXCVBNM below for P2 |
 
 ## Personal bests
+
+Press `R` on the result screen to retry the same chart with the same pattern
+and the configured countdown. Any other key returns to the selector or exits
+when playing directly.
 
 Completed plays save the best score, accuracy, max combo, and CLEAR achievement
 independently, along with the latest completed result. The result screen compares
