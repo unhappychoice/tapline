@@ -10,9 +10,14 @@ pub(super) fn absorb(ext: &mut Extensions, cmd: &str, val: &str, base: u32) -> b
         return true;
     }
     let Some((prefix, id)) = ["SWBGA", "ARGB", "BGA"].iter().find_map(|prefix| {
-        up.strip_prefix(prefix)
-            .and_then(|_| parse_id(cmd.get(prefix.len()..)?, base))
-            .map(|id| (*prefix, id))
+        up.strip_prefix(prefix)?;
+        let suffix = cmd.get(prefix.len()..)?;
+        if *prefix == "BGA"
+            && (suffix.len() != 2 || !suffix.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+        {
+            return None;
+        }
+        parse_id(suffix, base).map(|id| (*prefix, id))
     }) else {
         return false;
     };
