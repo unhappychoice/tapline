@@ -51,6 +51,29 @@ fn built_in_practice_retries_from_interrupted_results() {
 }
 
 #[test]
+fn keymap_overrides_the_built_in_gameplay_labels_on_retry() {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tapline"));
+    command.args([
+        "--built-in",
+        "--countdown-ms",
+        "0",
+        "--keymap",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/keymap.json"),
+    ]);
+    let (status, output) = run_interactive(
+        command,
+        &[
+            (b"keys U I O P", b"q"),
+            (b"R: retry / other: exit", b"r"),
+            (b"keys U I O P", b"q"),
+            (b"R: retry / other: exit", b" "),
+        ],
+    );
+    assert_eq!(status.code(), Some(0), "{output:?}");
+    assert_eq!(output.matches("Interrupted: not saved").count(), 2);
+}
+
+#[test]
 fn completed_random_chart_retry_compares_with_the_saved_first_attempt() {
     use tapline::results::{Identity, Store};
 

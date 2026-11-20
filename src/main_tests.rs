@@ -39,6 +39,7 @@ fn selected_chart_retries_the_same_random_pattern_before_returning_to_selector()
     run_session(
         &mut stdout(),
         &Args::parse_from(["tapline", "--no-audio"]),
+        &cli::Keymap::default(),
         |_, _, _| {
             selections += 1;
             Ok(choices.next().expect("unexpected selector restart"))
@@ -75,6 +76,7 @@ fn replaced_chart_requires_a_new_selection_before_playback() {
     run_session(
         &mut stdout(),
         &Args::parse_from(["tapline", "--no-audio"]),
+        &cli::Keymap::default(),
         |_, _, state| {
             selections += 1;
             let entry = match selections {
@@ -113,6 +115,7 @@ fn assert_retry_then_exit(args: &Args) {
     run_session(
         &mut stdout(),
         args,
+        &cli::Keymap::default(),
         |out, args, state| {
             selections += 1;
             assert_eq!(selections, 1, "chart selection ran again");
@@ -153,6 +156,7 @@ fn failed_selection_returns_to_selector_then_plays_and_cancels() {
     run_session(
         &mut stdout(),
         &Args::parse_from(["tapline", "--no-audio"]),
+        &cli::Keymap::default(),
         |_, _, _| {
             selections += 1;
             Ok(choices.next().expect("unexpected selector restart"))
@@ -183,6 +187,7 @@ fn explicit_invalid_file_returns_error_without_playback_or_recovery() {
     let error = run_session(
         &mut stdout(),
         &args,
+        &cli::Keymap::default(),
         cli::choose_chart_with_selector,
         |_, _, _, _, _| panic!("invalid chart must not play"),
         |_, _| panic!("explicit file must not recover"),

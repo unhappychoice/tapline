@@ -20,6 +20,7 @@ mod artwork;
 mod assets;
 mod chart_file;
 mod fs_guard;
+mod keymap;
 mod mine_visibility;
 mod note_visibility;
 mod preview;

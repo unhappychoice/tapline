@@ -27,6 +27,11 @@ missing explicit `--dir`.
 Direct-file and built-in play exit after the result screen. Playing from the
 selector returns there after the result screen.
 
+## Gameplay keys
+
+Use `--keymap <FILE>` to load a local JSON file of gameplay bindings at
+startup. See the [keymap format and examples](https://github.com/unhappychoice/tapline/blob/main/README.md#custom-gameplay-keys).
+
 ## Timing
 
 | Option | Default | Behavior |

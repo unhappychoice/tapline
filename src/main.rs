@@ -30,13 +30,15 @@ fn run_app() -> Result<()> {
     if args.test_tone {
         return run_test_tone();
     }
-    terminal::with_alt_screen(&mut stdout(), |out| run(out, &args))
+    let keymap = cli::Keymap::load(args.keymap.as_deref())?;
+    terminal::with_alt_screen(&mut stdout(), |out| run(out, &args, &keymap))
 }
 
-fn run(out: &mut Stdout, args: &Args) -> Result<()> {
+fn run(out: &mut Stdout, args: &Args, keymap: &cli::Keymap) -> Result<()> {
     run_session(
         out,
         args,
+        keymap,
         cli::choose_chart_with_selector,
         runtime::play_attempt,
         terminal::show_load_error,
@@ -46,6 +48,7 @@ fn run(out: &mut Stdout, args: &Args) -> Result<()> {
 fn run_session(
     out: &mut Stdout,
     args: &Args,
+    keymap: &cli::Keymap,
     mut choose: impl FnMut(
         &mut Stdout,
         &Args,
@@ -67,7 +70,7 @@ fn run_session(
             cli::ChartChoice::Selected(_) => ResultDestination::Selector,
             _ => ResultDestination::Exit,
         };
-        let (chart, identity) = match cli::load_session(&choice, args) {
+        let (mut chart, identity) = match cli::load_session(&choice, args) {
             Ok(Some(chart)) => chart,
             Ok(None) => return Ok(()),
             Err(error) => {
@@ -81,6 +84,7 @@ fn run_session(
                 continue;
             }
         };
+        keymap.apply(&mut chart);
         while play(out, args, &chart, identity.as_ref(), destination)?
             == runtime::ResultAction::Retry
         {}

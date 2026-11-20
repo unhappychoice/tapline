@@ -48,6 +48,22 @@ impl Lane {
         .collect()
     }
 
+    pub(crate) fn binding_layout(lanes: &[Self]) -> String {
+        let mut layout = String::new();
+        let mut player = Player::One;
+        for lane in lanes {
+            if lane.player != player {
+                layout.push('/');
+                player = lane.player;
+            }
+            layout.push(match lane.role {
+                LaneRole::Key => 'K',
+                LaneRole::Scratch => 'S',
+            });
+        }
+        layout
+    }
+
     pub fn bindings(lanes: &[Self]) -> Vec<Vec<char>> {
         let double = lanes.iter().any(|lane| lane.player == Player::Two);
         [Player::One, Player::Two]

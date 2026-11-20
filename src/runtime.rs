@@ -1515,6 +1515,52 @@ mod tests {
     }
 
     #[test]
+    fn remapped_scratch_holds_until_both_aliases_are_released() {
+        let lanes = chart::Lane::sides(6, Some(7), true, false);
+        let mut chart = base_chart(
+            lanes.len(),
+            vec![Note {
+                time_ms: 3000.0,
+                end_ms: Some(5000.0),
+                lane: 5,
+                ..Note::default()
+            }],
+        );
+        chart.lanes = lanes;
+        let path = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/keymap.json"
+        ));
+        crate::cli::Keymap::load(Some(path))
+            .unwrap()
+            .apply(&mut chart);
+        let mut game = Game::new(chart);
+        let mut state = LoopState::new(Vec::new());
+        let bank = SampleBank::silent();
+        let options = opts(false);
+        let mut key = |game: &mut Game, c, kind, now| {
+            handle_key(
+                KeyCode::Char(c),
+                kind,
+                game,
+                &bank,
+                &options,
+                &mut state,
+                now,
+            );
+        };
+
+        key(&mut game, 'a', KeyEventKind::Press, 3000.0);
+        assert_eq!(game.perfect, 0);
+        key(&mut game, 'z', KeyEventKind::Press, 3000.0);
+        key(&mut game, '/', KeyEventKind::Press, 3200.0);
+        key(&mut game, 'Z', KeyEventKind::Release, 3400.0);
+        assert_eq!(game.chart.notes[0].held_since, Some(3000.0));
+        key(&mut game, '/', KeyEventKind::Release, 5000.0);
+        assert_eq!((game.perfect, game.miss), (2, 0));
+    }
+
+    #[test]
     fn double_play_scratch_long_notes_release_independently() {
         [12, 16].into_iter().for_each(|count| {
             let lanes = [count / 2 - 1, count - 1];
