@@ -91,6 +91,11 @@ impl Video {
     }
 
     #[cfg(test)]
+    pub fn reached_eof(&self) -> bool {
+        self.current.as_ref().is_some_and(|(_, _, eof)| *eof)
+    }
+
+    #[cfg(test)]
     pub fn test_frame(color: [u8; 4]) -> Self {
         let (sender, frames) = sync_channel(1);
         let image = RgbaImage::from_pixel(SIZE, SIZE, image::Rgba(color));
@@ -178,9 +183,11 @@ mod tests {
         let second = Frame(Arc::new(RgbaImage::new(SIZE, SIZE)));
         sender.send((1, second.clone(), false)).unwrap();
         assert!(video.frame(34.0) == Some(second.clone()));
+        assert!(!video.reached_eof());
         sender.send((1, second.clone(), true)).unwrap();
         drop(sender);
         assert!(video.frame(100.0) == Some(second.clone()));
+        assert!(video.reached_eof());
         assert!(video.frame(10000.0) == Some(second));
     }
 

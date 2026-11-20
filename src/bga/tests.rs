@@ -522,17 +522,22 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
             if layer == BgaLayer::Base {
                 let mut hidden = Vec::new();
                 draw(&mut hidden, &delayed, &delayed_bank, 1760.0, 17, 4, 16).unwrap();
-                // Reopening after EOF must retain the last frame.
                 let deadline = Instant::now() + Duration::from_secs(10);
                 loop {
                     draw(&mut hidden, &delayed, &delayed_bank, 10000.0, 18, 4, 16).unwrap();
-                    if delayed_bank.frame(&delayed, 10000.0).get_pixel(32, 32)[1] > 240 {
+                    let playback = &delayed_bank.2.borrow()[timeline::slot(layer)];
+                    if playback
+                        .video
+                        .as_ref()
+                        .is_some_and(video::Video::reached_eof)
+                    {
                         break;
                     }
-                    assert!(Instant::now() < deadline);
+                    assert!(Instant::now() < deadline, "Video decoder did not reach EOF");
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 let held = delayed_bank.rendered_frame(&delayed, 10001.0, 16);
+                assert!(held.get_pixel(8, 8)[1] > 240);
                 let pixels = held.as_raw().as_ptr();
                 drop(held);
                 assert_eq!(
