@@ -333,21 +333,30 @@ fn fire_scheduled_audio(
     now: f64,
 ) {
     let horizon = now + opts.audio_lead_ms;
-    while state.bgm_cursor < game.chart.bgm.len()
-        && game.chart.bgm[state.bgm_cursor].time_ms <= horizon
-    {
-        let event = &game.chart.bgm[state.bgm_cursor];
-        let gain = game.volume.gain(VolumeTarget::Bgm, event.time_ms);
-        state.track_playback(now, bank.start_sound(event.keysound, gain));
-        state.bgm_cursor += 1;
-    }
-    while state.note_snd_cursor < state.auto_notes.len()
-        && state.auto_notes[state.note_snd_cursor].0 <= horizon
-    {
-        let (time_ms, lane, ks) = state.auto_notes[state.note_snd_cursor];
-        let gain = game.volume.gain(VolumeTarget::Key, time_ms);
-        state.track_playback(now, bank.start_hit(lane, ks, opts.synth_mode, gain));
-        state.note_snd_cursor += 1;
+    loop {
+        let bgm = game
+            .chart
+            .bgm
+            .get(state.bgm_cursor)
+            .filter(|event| event.time_ms <= horizon);
+        let note = state
+            .auto_notes
+            .get(state.note_snd_cursor)
+            .filter(|note| note.0 <= horizon);
+        // BGM dispatches first at equal timestamps.
+        match (bgm, note) {
+            (Some(event), note) if note.is_none_or(|note| event.time_ms <= note.0) => {
+                let gain = game.volume.gain(VolumeTarget::Bgm, event.time_ms);
+                state.track_playback(now, bank.start_sound(event.keysound, gain));
+                state.bgm_cursor += 1;
+            }
+            (_, Some(&(time_ms, lane, ks))) => {
+                let gain = game.volume.gain(VolumeTarget::Key, time_ms);
+                state.track_playback(now, bank.start_hit(lane, ks, opts.synth_mode, gain));
+                state.note_snd_cursor += 1;
+            }
+            _ => break,
+        }
     }
 }
 
@@ -1173,6 +1182,59 @@ mod tests {
             duration_ms: 30_000.0,
             ..Chart::default()
         }
+    }
+
+    #[test]
+    fn later_bgm_replaces_automatic_keysound_in_one_or_two_frames() {
+        for frames in [&[1010.0][..], &[1000.0, 1010.0]] {
+            assert_shared_sample_gain(1010.0, frames, 1.0);
+        }
+    }
+
+    #[test]
+    fn simultaneous_automatic_keysound_replaces_bgm() {
+        assert_shared_sample_gain(1000.0, &[1000.0], 128.0 / 255.0);
+    }
+
+    fn assert_shared_sample_gain(bgm_time: f64, frames: &[f64], expected_gain: f32) {
+        let mut chart = base_chart(
+            4,
+            vec![Note {
+                time_ms: 1000.0,
+                keysound: Some(2),
+                ..Note::default()
+            }],
+        );
+        chart.bgm.push(BgmEvent {
+            time_ms: bgm_time,
+            keysound: 2,
+        });
+        chart.volume_events.push(crate::chart::VolumeEvent {
+            time_ms: 1000.0,
+            target: VolumeTarget::Key,
+            volume: 128,
+        });
+        let game = Game::new(chart);
+        let options = PlayOptions {
+            synth_mode: false,
+            ..opts(true)
+        };
+        let mut state = LoopState::new(build_auto_notes(&game, &options));
+        let (bank, mut output) = audio::playback_test_bank();
+        for &now in frames {
+            fire_scheduled_audio(&bank, &options, &mut state, &game, now);
+        }
+        // The mixer can emit startup silence and a few buffered samples from the old voice.
+        let surviving_sample = output
+            .by_ref()
+            .take(2048)
+            .filter(|&sample| sample != 0.0)
+            .last();
+        assert_eq!(
+            surviving_sample,
+            Some(0.25 * expected_gain),
+            "frames: {frames:?}"
+        );
     }
 
     #[test]
