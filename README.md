@@ -340,8 +340,8 @@ value in percentage points. Other gauge types are not implemented yet.
 DJMax-style layout. In 5K the center lane accepts either `F` or `J` — press
 whichever finger is closer.
 
-| lanes | keys                    | notes                             |
-| ----- | ----------------------- | --------------------------------- |
+| layout / lanes | keys                    | notes                             |
+| -------------- | ----------------------- | --------------------------------- |
 | 4     | `S D       K L`               | outer 2+2, index fingers rest     |
 | 5     | `S D  F/J  K L`               | center lane bound to both F and J |
 | 7     | `S D  F SPACE J  K L`         | spacebar is the center            |
@@ -349,10 +349,13 @@ whichever finger is closer.
 | 8     | `S D F SPACE J K L A/;` | 7K plus scratch on either A or ; |
 | 12    | `S D F/J K L A / Z X C V B ;` | 5K+scratch per side; P1 scratch uses A, P2 uses ; |
 | 16    | `S D F SPACE J K L A / Z X C V B N M ;` | 7K+scratch per side; P1 scratch uses A, P2 uses ; |
-| 9     | `A S D F SPACE J K L ;`        | PMS buttons 1–9; spacebar is the center |
+| PMS (9 buttons) | `A S D F SPACE J K L ;` | spacebar is the center |
 | 10    | `S D F K L / Z X C N M` | five keys per side |
-| asymmetric DP | P1: 5K or 7K keys; P2: `Z X C N M` (5K) or `Z X C V B N M` (7K) | each side keeps its own width; scratch uses A for P1 and ; for P2 (P2 5K with scratch uses ZXCVB) |
+| asymmetric DP | P1: `S D K L` (4K), 5K, or 7K keys; P2: `Z X N M` (4K), `Z X C N M` (5K), or `Z X C V B N M` (7K) | each side keeps its own width; scratch uses A for P1 and ; for P2 (P2 5K with scratch uses ZXCVB) |
 | 14    | `S D F SPACE J K L / Z X C V B N M` | 7K SP layout on the home row for P1, ZXCVBNM below for P2 |
+
+A 4+5 BMS double-play chart has nine lanes and uses `S D K L / Z X C N M`.
+Nine-button PMS uses the bindings in the PMS row.
 
 ### Custom gameplay keys
 
