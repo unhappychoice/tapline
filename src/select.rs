@@ -18,7 +18,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
-const CHART_ROW_LEFT: u16 = 2;
+const ROW_LEFT: u16 = 2;
 const MIN_DETAIL_ROWS: u16 = 16;
 const BANNER_HEIGHT: u16 = 4;
 
@@ -320,11 +320,12 @@ fn draw_frame(
         if state.editing { "/ editing | " } else { "" },
         crate::terminal_text::sanitize(&state.query),
     );
-    let status: String = status
-        .chars()
-        .take(cols.saturating_sub(4) as usize)
-        .collect();
-    queue!(out, cursor::MoveTo(2, 3), Print(status))?;
+    let row_width = cols.saturating_sub(ROW_LEFT) as usize;
+    queue!(
+        out,
+        cursor::MoveTo(ROW_LEFT, 3),
+        Print(clip_to_width(&status, row_width))
+    )?;
     let list_top = 5u16;
     let detail_rows = if rows >= MIN_DETAIL_ROWS {
         BANNER_HEIGHT + 2
@@ -360,13 +361,9 @@ fn draw_frame(
             progress[state.indices[i]],
             format_chart_row(m, arrow)
         );
-        let clipped = clip_to_width(&text, cols.saturating_sub(CHART_ROW_LEFT) as usize);
+        let clipped = clip_to_width(&text, row_width);
         let color = if selected { Color::White } else { Color::Grey };
-        queue!(
-            out,
-            cursor::MoveTo(CHART_ROW_LEFT, y),
-            SetForegroundColor(color)
-        )?;
+        queue!(out, cursor::MoveTo(ROW_LEFT, y), SetForegroundColor(color))?;
         if selected {
             queue!(out, style::SetAttribute(style::Attribute::Bold))?;
         }
@@ -433,11 +430,9 @@ fn draw_details(
     top: u16,
     banner: Option<&RgbaImage>,
 ) -> Result<()> {
-    let comment: String = crate::terminal_text::sanitize(&chart.comment)
-        .chars()
-        .take(cols.saturating_sub(4) as usize)
-        .collect();
-    queue!(out, cursor::MoveTo(2, top), Print(comment))?;
+    let comment = crate::terminal_text::sanitize(&chart.comment);
+    let clipped = clip_to_width(&comment, cols.saturating_sub(ROW_LEFT) as usize);
+    queue!(out, cursor::MoveTo(ROW_LEFT, top), Print(clipped))?;
     if let Some(banner) = banner {
         artwork::draw_pixels(out, banner, (0, top + 1, cols, BANNER_HEIGHT))?;
     }
@@ -513,6 +508,46 @@ mod tests {
         };
         let identity = Identity::from_bytes(&meta.path, title.as_bytes(), Some(meta.random_seed));
         ChartEntry { meta, identity }
+    }
+
+    #[test]
+    fn status_and_comment_clip_wide_text_at_the_terminal_edge() {
+        let status_prefix = "1 / 1 matches | Lanes: all | Query: ";
+        let query_cells = 78 - status_prefix.len();
+        let fitting_query = format!(
+            "{}{}",
+            "a".repeat(query_cells % 2),
+            "界".repeat(query_cells / 2)
+        );
+        let fitting_comment = "語".repeat(39);
+        for extra_chars in [0, 21] {
+            let query = format!("{fitting_query}{}", "界".repeat(extra_chars));
+            let mut chart = meta(&query);
+            chart.meta.comment = format!("{fitting_comment}{}", "語".repeat(extra_chars));
+            let charts = [chart];
+            let mut state = SelectorState {
+                query,
+                ..SelectorState::default()
+            };
+            state.refresh(&charts);
+            let mut out = Vec::new();
+            draw_frame(
+                &mut out,
+                &charts,
+                &mut state,
+                &["[UNPLAYED]".into()],
+                (80, 16),
+                None,
+            )
+            .unwrap();
+
+            let frame = String::from_utf8(out).unwrap();
+            let status = format!("{status_prefix}{fitting_query}");
+            assert!(frame.contains(&status));
+            assert!(!frame.contains(&format!("{status}界")));
+            assert!(frame.contains(&fitting_comment));
+            assert!(!frame.contains(&format!("{fitting_comment}語")));
+        }
     }
 
     #[test]
