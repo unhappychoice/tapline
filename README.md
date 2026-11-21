@@ -310,10 +310,19 @@ Quitting early always results in FAILED. Results wait for all pending judgments,
 including rank-dependent misses and held long-note endings. Displayed percentages
 are truncated to one decimal place so values below 80% never display as 80.0%.
 
-PERFECT and GREAT recover `#TOTAL / note count` percentage points; GOOD
-recovers half that amount. Each MISS subtracts
-6 percentage points. Missing, non-finite, or non-positive `#TOTAL` defaults
-to 260. Long-note starts and ends each count as one note because both are
+PERFECT and GREAT recover gauge percentage points according to the chart format.
+The formulas give the recovery before clamping.
+
+- **BMS** uses `#TOTAL / note count`. Missing, non-finite, or non-positive `#TOTAL`
+  defaults to 260.
+- **bmson** uses `(260 / note count) × (abs(info.total) / 100)`. Missing or null
+  `info.total` defaults to 100 (a multiplier of 1). Zero disables recovery,
+  and negative values use their absolute value. For ten tap notes with
+  `info.total: 50`, a PERFECT recovers `(260 / 10) × (50 / 100) = 13`
+  percentage points.
+
+GOOD recovers half the corresponding amount. Each MISS subtracts 6 percentage
+points. Long-note starts and ends each count as one note because both are
 judged separately; mines and background sounds do not count toward recovery.
 An empty chart has no recovery. Mines subtract half their base-36 damage
 value in percentage points. Other gauge types are not implemented yet.
