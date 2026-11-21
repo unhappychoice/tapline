@@ -62,6 +62,7 @@ struct PlayLayout {
     top: u16,
     bottom: u16,
     lane_height: u16,
+    approach_distance: f64,
 }
 
 impl PlayLayout {
@@ -80,7 +81,13 @@ impl PlayLayout {
             top,
             bottom,
             lane_height: bottom - top,
+            approach_distance: APPROACH_MS,
         })
+    }
+
+    fn with_scroll_speed(mut self, scroll_speed: f64) -> Self {
+        self.approach_distance = APPROACH_MS / scroll_speed;
+        self
     }
 
     fn judgment_row(&self) -> u16 {
@@ -114,10 +121,10 @@ fn note_screen_y(remain: f64, layout: &PlayLayout) -> Option<u16> {
 
 /// Fractional screen row of a note, used for sub-cell rendering.
 fn note_screen_pos(remain: f64, layout: &PlayLayout) -> Option<f64> {
-    if !(-60.0..=APPROACH_MS).contains(&remain) {
+    if !(-60.0..=layout.approach_distance).contains(&remain) {
         return None;
     }
-    let frac = (1.0 - (remain / APPROACH_MS)).clamp(0.0, 1.0);
+    let frac = (1.0 - (remain / layout.approach_distance)).clamp(0.0, 1.0);
     Some(layout.top as f64 + frac * (layout.lane_height - 1) as f64)
 }
 
@@ -141,14 +148,14 @@ fn long_note_screen_span(
     end_remain: f64,
     layout: &PlayLayout,
 ) -> Option<(f64, f64)> {
-    if start_remain > APPROACH_MS && end_remain > APPROACH_MS {
+    if start_remain > layout.approach_distance && end_remain > layout.approach_distance {
         return None;
     }
     if start_remain < -60.0 && end_remain < -60.0 {
         return None;
     }
-    let start_y = note_screen_pos(start_remain.clamp(0.0, APPROACH_MS), layout)?;
-    let end_y = note_screen_pos(end_remain.clamp(0.0, APPROACH_MS), layout)?;
+    let start_y = note_screen_pos(start_remain.clamp(0.0, layout.approach_distance), layout)?;
+    let end_y = note_screen_pos(end_remain.clamp(0.0, layout.approach_distance), layout)?;
     Some((start_y.min(end_y), start_y.max(end_y)))
 }
 
@@ -544,17 +551,28 @@ pub fn draw(
     bga: &crate::bga::Presentation,
     now_ms: f64,
 ) -> anyhow::Result<()> {
+    draw_with_scroll_speed(out, game, bga, now_ms, 1.0)
+}
+
+pub(crate) fn draw_with_scroll_speed(
+    out: &mut impl Write,
+    game: &Game,
+    bga: &crate::bga::Presentation,
+    now_ms: f64,
+    scroll_speed: f64,
+) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
     let lanes = game.chart.lane_count as u16;
     let Some(layout) = PlayLayout::compute(cols, rows, game.chart.lane_count) else {
         return Ok(());
     };
+    let layout = layout.with_scroll_speed(scroll_speed);
     let PlayLayout {
         x0,
         field_width,
         top,
         bottom,
-        lane_height: _,
+        ..
     } = layout;
 
     queue!(out, terminal::BeginSynchronizedUpdate)?;
@@ -633,55 +651,7 @@ pub fn draw(
         )?;
     }
 
-    let scroll = game.scroll.frame(&game.chart, now_ms);
-    for mine in game.visible_mines(now_ms, APPROACH_MS) {
-        let Some(y) = note_screen_y(scroll.distance(mine.time_ms), &layout) else {
-            continue;
-        };
-        let lx = x0 + 1 + mine.lane as u16 * LANE_WIDTH + 2;
-        queue!(
-            out,
-            cursor::MoveTo(lx, y),
-            SetForegroundColor(Color::Red),
-            style::SetAttribute(style::Attribute::Bold),
-            Print("[><]"),
-            style::SetAttribute(style::Attribute::Reset),
-            ResetColor
-        )?;
-    }
-
-    let mut bars = Vec::new();
-    for note in game.visible_notes(now_ms, APPROACH_MS) {
-        if note.hit {
-            continue;
-        }
-        let (offset, width, color) = note_style(game, note.lane, note.held_since.is_some());
-        let lx = x0 + 1 + note.lane as u16 * LANE_WIDTH + offset;
-        match note.end_ms {
-            None => {
-                let Some(y) = note_screen_pos(scroll.distance(note.time_ms), &layout) else {
-                    continue;
-                };
-                bars.push(note_span::Bar {
-                    x: lx,
-                    width,
-                    span: note_bar((y, y)),
-                    color,
-                });
-            }
-            Some(end_ms) => {
-                if let Some(span) = long_note_scroll_span(&scroll, note.time_ms, end_ms, &layout) {
-                    bars.push(note_span::Bar {
-                        x: lx,
-                        width,
-                        span: note_bar(span),
-                        color,
-                    });
-                }
-            }
-        }
-    }
-    note_span::draw_bars(out, &bars)?;
+    draw_notes_and_mines(out, game, now_ms, &layout)?;
 
     draw_judgment_flash(out, game, cols, layout.judgment_row(), now_ms)?;
 
@@ -706,6 +676,64 @@ pub fn draw(
     queue!(out, terminal::EndSynchronizedUpdate)?;
     out.flush()?;
     Ok(())
+}
+
+fn draw_notes_and_mines(
+    out: &mut impl Write,
+    game: &Game,
+    now_ms: f64,
+    layout: &PlayLayout,
+) -> anyhow::Result<()> {
+    let x0 = layout.x0;
+    let scroll = game.scroll.frame(&game.chart, now_ms);
+    for mine in game.visible_mines(now_ms, layout.approach_distance) {
+        let Some(y) = note_screen_y(scroll.distance(mine.time_ms), layout) else {
+            continue;
+        };
+        let lx = x0 + 1 + mine.lane as u16 * LANE_WIDTH + 2;
+        queue!(
+            out,
+            cursor::MoveTo(lx, y),
+            SetForegroundColor(Color::Red),
+            style::SetAttribute(style::Attribute::Bold),
+            Print("[><]"),
+            style::SetAttribute(style::Attribute::Reset),
+            ResetColor
+        )?;
+    }
+
+    let mut bars = Vec::new();
+    for note in game.visible_notes(now_ms, layout.approach_distance) {
+        if note.hit {
+            continue;
+        }
+        let (offset, width, color) = note_style(game, note.lane, note.held_since.is_some());
+        let lx = x0 + 1 + note.lane as u16 * LANE_WIDTH + offset;
+        match note.end_ms {
+            None => {
+                let Some(y) = note_screen_pos(scroll.distance(note.time_ms), layout) else {
+                    continue;
+                };
+                bars.push(note_span::Bar {
+                    x: lx,
+                    width,
+                    span: note_bar((y, y)),
+                    color,
+                });
+            }
+            Some(end_ms) => {
+                if let Some(span) = long_note_scroll_span(&scroll, note.time_ms, end_ms, layout) {
+                    bars.push(note_span::Bar {
+                        x: lx,
+                        width,
+                        span: note_bar(span),
+                        color,
+                    });
+                }
+            }
+        }
+    }
+    note_span::draw_bars(out, &bars)
 }
 
 #[derive(Default)]
@@ -1490,6 +1518,83 @@ mod tests {
         let rendered = String::from_utf8(out).unwrap();
         assert!(rendered.contains("\x1b[2K"));
         assert!(rendered.ends_with("Hello"));
+    }
+
+    #[test]
+    fn scroll_speed_changes_rendered_rows_and_visibility_without_changing_judgments() {
+        use crate::chart::{Mine, ScrollEvent};
+
+        for reversing in [false, true] {
+            let time = if reversing { 2450.0 } else { 750.0 };
+            let end = time + 100.0;
+            let mut chart = base_chart(4);
+            if reversing {
+                chart.scroll.push(ScrollEvent {
+                    time_ms: 1600.0,
+                    multiplier: -1.0,
+                });
+            }
+            chart.notes = vec![
+                Note {
+                    time_ms: time,
+                    ..Note::default()
+                },
+                Note {
+                    time_ms: time,
+                    lane: 1,
+                    end_ms: Some(end),
+                    ..Note::default()
+                },
+            ];
+            chart.mines = vec![
+                Mine {
+                    time_ms: time,
+                    lane: 2,
+                    damage: 10,
+                    exploded: false,
+                },
+                Mine {
+                    time_ms: 1500.0,
+                    lane: 3,
+                    damage: 10,
+                    exploded: false,
+                },
+            ];
+
+            let mut outcomes = Vec::new();
+            for speed in [0.5, 1.0, 2.0] {
+                let mut game = Game::new(chart.clone());
+                let layout = PlayLayout::compute(80, 24, 4)
+                    .unwrap()
+                    .with_scroll_speed(speed);
+                let mut output = Vec::new();
+                draw_notes_and_mines(&mut output, &game, 0.0, &layout).unwrap();
+                let rendered = String::from_utf8(output).unwrap();
+
+                if speed == 2.0 {
+                    assert!(rendered.is_empty());
+                } else {
+                    let row = if speed == 0.5 { 14 } else { 9 };
+                    for lane in 0..3 {
+                        let column = layout.x0 + 4 + lane * LANE_WIDTH;
+                        assert!(rendered.contains(&format!("\x1b[{row};{column}H")));
+                    }
+                    assert_eq!(
+                        rendered.matches("[><]").count(),
+                        if speed == 0.5 { 2 } else { 1 }
+                    );
+                }
+
+                game.hit(0, time + 60.0);
+                game.hit(1, time);
+                game.release(1, end);
+                game.hit(2, time);
+                assert_eq!((game.perfect, game.great, game.miss), (2, 1, 0));
+                assert!(game.chart.mines[0].exploded);
+                outcomes.push((game.score, game.max_combo, game.gauge.value()));
+            }
+            assert!(outcomes.windows(2).all(|pair| pair[0] == pair[1]));
+        }
     }
 
     #[test]

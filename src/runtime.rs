@@ -19,6 +19,7 @@ pub enum ResultAction {
 }
 
 pub struct PlayOptions {
+    pub scroll_speed: f64,
     pub countdown_ms: f64,
     pub synth_mode: bool,
     pub no_audio: bool,
@@ -29,6 +30,7 @@ pub struct PlayOptions {
 impl PlayOptions {
     pub fn from_args(args: &Args) -> Self {
         Self {
+            scroll_speed: args.scroll_speed,
             countdown_ms: args.countdown_ms,
             synth_mode: args.synth,
             no_audio: args.no_audio,
@@ -322,7 +324,7 @@ fn draw_mode(
         );
     }
     game.check_misses(now);
-    render::draw(&mut state.screen, game, bga, now)
+    render::draw_with_scroll_speed(&mut state.screen, game, bga, now, opts.scroll_speed)
 }
 
 fn fire_scheduled_audio(
@@ -867,6 +869,7 @@ mod tests {
 
     pub(super) fn opts(auto_ks: bool) -> PlayOptions {
         PlayOptions {
+            scroll_speed: 1.0,
             countdown_ms: 2000.0,
             synth_mode: true,
             no_audio: false,
@@ -1150,6 +1153,14 @@ mod tests {
             args.synth = synth;
             assert_eq!(PlayOptions::from_args(&args).synth_mode, synth);
         });
+    }
+
+    #[test]
+    fn play_options_use_scroll_speed_from_args() {
+        use clap::Parser;
+
+        let args = Args::parse_from(["tapline", "--scroll-speed", "2"]);
+        assert_eq!(PlayOptions::from_args(&args).scroll_speed, 2.0);
     }
 
     #[test]

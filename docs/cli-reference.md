@@ -54,6 +54,16 @@ tapline --file song.bms --auto-ks --audio-lead-ms 80
 tapline --built-in --bpm 90 --countdown-ms 500
 ```
 
+## Note display
+
+Use `--scroll-speed <SCROLL_SPEED>` to set the note scroll multiplier for
+built-in and imported charts. The default is `1.0` and the accepted range is
+`0.25` to `4.0` inclusive. For example, `--scroll-speed 2` spreads notes
+farther apart with less preview time, while `--scroll-speed 0.5` shows notes
+earlier. The multiplier combines with chart-authored scroll and spacing
+effects. Audio, judgments, and scoring follow the original chart timing.
+Retries use the same launch setting.
+
 ## Audio
 
 All of these flags default to off.
