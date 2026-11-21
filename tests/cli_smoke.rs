@@ -206,3 +206,48 @@ fn invalid_keymap_is_reported_before_entering_the_terminal() {
     assert!(stderr.contains("Invalid keymap"), "{stderr}");
     assert!(stderr.contains("Cargo.toml"), "{stderr}");
 }
+
+#[cfg(unix)]
+#[test]
+fn keymap_fifo_without_a_writer_is_rejected_before_entering_the_terminal() {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let dir = std::env::temp_dir().join(format!("tapline-keymap-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("keys.json");
+    let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+
+    let mut child = Command::new(tapline_bin())
+        .args(["--built-in", "--keymap"])
+        .arg(&path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let timed_out = loop {
+        if child.try_wait().unwrap().is_some() {
+            break false;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            break true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let output = child.wait_with_output().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!timed_out, "tapline blocked reading the keymap FIFO");
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert!(
+        stderr.contains(&format!("Cannot read keymap {}", path.display())),
+        "{stderr}"
+    );
+    assert!(stderr.contains("not a regular file"), "{stderr}");
+}
