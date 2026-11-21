@@ -358,6 +358,19 @@ fn invisible_notes_update_empty_press_sounds_without_judgment() {
 }
 
 #[test]
+fn first_invisible_note_sets_empty_press_sound_before_its_timestamp() {
+    let chart = write_and_load("#BPM 60\n#00131:02\n#00211:01\n");
+    assert_eq!(chart.invisible_notes[0].time_ms, 4000.0);
+    assert_eq!(chart.notes[0].time_ms, 8000.0);
+
+    let mut game = Game::new(chart);
+    assert_eq!(game.hit(0, 1000.0), Some(2));
+    assert_eq!(game.hit(0, 7859.0), Some(2));
+    assert_eq!(game.hit(0, 8141.0), Some(1));
+    assert_eq!((game.score, game.combo), (0, 0));
+}
+
+#[test]
 fn invisible_only_lanes_are_available_without_creating_playable_notes() {
     let chart = write_and_load("#BPM 60\n#00039:0Z\n#00049:02\n");
     assert_eq!(chart.lane_count, 7);
@@ -411,17 +424,18 @@ fn noncanonical_double_play_offsets_invisible_notes_by_the_first_side_width() {
 }
 
 #[test]
-fn inferred_asymmetric_double_play_binds_four_keys_on_either_side() {
-    [("11", "25", "SDKLZXCNM"), ("15", "21", "SDFKLZXNM")]
-        .into_iter()
-        .for_each(|(p1, p2, keys)| {
-            let chart = write_and_load(&format!("#BPM 60\n#000{p1}:01\n#000{p2}:02\n"));
-            assert_eq!(chart.lane_count, 9);
-            assert_eq!(
-                chart.keys,
-                keys.chars().map(|key| vec![key]).collect::<Vec<_>>()
-            );
-        });
+fn asymmetric_double_play_uses_four_key_bindings_on_either_side() {
+    for (channels, keys) in [
+        ("#00011:01\n#00025:02\n", "SDKLZXCNM"),
+        ("#00015:01\n#00021:02\n", "SDFKLZXNM"),
+    ] {
+        let chart = write_and_load(&format!("#BPM 60\n{channels}"));
+        assert_eq!(chart.lane_count, 9);
+        assert_eq!(
+            chart.keys,
+            keys.chars().map(|key| vec![key]).collect::<Vec<_>>()
+        );
+    }
 }
 
 #[test]

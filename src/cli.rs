@@ -42,7 +42,7 @@ pub struct Args {
     pub test_tone: bool,
 
     /// Play a synthesized beep on every note hit (per-lane pitch).
-    /// Used automatically if no BMS keysound is loaded.
+    /// Used automatically only when no chart samples decode, including BGM.
     #[arg(long)]
     pub synth: bool,
 

@@ -61,9 +61,13 @@ All of these flags default to off.
 | Option | Behavior |
 | ------ | -------- |
 | `--no-audio` | Disable gameplay audio and selector previews. |
-| `--synth` | Use per-lane synthesized beeps for note hits instead of chart keysounds; BGM still plays. Synth is also used automatically when no samples are loaded. |
+| `--synth` | Use per-lane synthesized beeps for note hits instead of chart keysounds; BGM still plays. |
 | `--auto-ks` | Play note sounds at their scheduled times instead of on key presses. Judgments still require player input. |
 | `--test-tone` | Check the audio backend, play a short sequence of beeps, and exit without entering the selector or game. |
+
+Automatic synth fallback applies only when no chart samples decode. Decoded
+background music (BGM) counts toward the sample bank. If only the BGM decodes,
+pass `--synth` to hear synthesized note sounds alongside the BGM.
 
 `--test-tone` takes precedence over chart selection and uses its own audio path,
 so `--no-audio` does not silence it. If the audio backend is unavailable, it

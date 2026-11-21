@@ -146,9 +146,16 @@ PMS mode is selected by the `.pms` extension (case-insensitive) and always uses
 nine lanes. Long notes (`51–55 + 62–65`) and landmines (`D1–D5 + E2–E5`)
 follow the same button order as visible notes.
 
-`#RANDOM` branches are drawn when a chart is selected or opened. The selector
-and chart loader share the same draw so displayed metadata matches gameplay.
-Set `TAPLINE_RANDOM_SEED` to an unsigned 64-bit integer for reproducible branches.
+On each visit, the selector draws `#RANDOM` branches while scanning charts,
+before displaying the list. Returning to the selector can therefore change
+branch-dependent metadata such as titles and BPM. Moving the highlight uses
+the entries from the current scan. Pressing Enter loads the chart with the
+entry's seed, so gameplay uses the same branch as the displayed metadata.
+
+With `--file`, tapline draws the branches when it opens the chart. In either
+mode, retrying uses the same loaded chart and branch. Set
+`TAPLINE_RANDOM_SEED` to the same unsigned 64-bit integer to reproduce the
+draw for an unchanged chart across selector visits and direct opens.
 
 Song text from `#TEXTxx` (or `#SONGxx`) appears at the top of the HUD when
 channel `99` triggers its object ID (base 36 by default, or base 62 with `#BASE 62`). It remains until the next defined text
@@ -174,8 +181,16 @@ for sounds triggered at or after each event: hexadecimal `01`–`FF`, with
 `FF` at full volume and `00` leaving the volume unchanged. These multipliers
 combine with `#VOLWAV`; already playing sounds retain their starting gain.
 
-Invisible notes update the lane keysound for empty presses without being drawn,
-judged, counted as notes, or played automatically.
+In manual audio mode, the first visible or invisible keysound event on each
+lane sets the sound for empty presses from the start of the chart. Later
+assignments take effect at their event timestamps. Invisible notes change the
+assigned sound without triggering playback. They are also hidden and excluded
+from judgments and note counts.
+
+For example, with `#BPM 60`, `#00131:02`, and `#00211:01`, an empty press in
+the first lane at 1,000 ms plays keysound `02` because the invisible `31` event
+at 4,000 ms is the lane's first keysound event. The visible `11` event changes
+the assignment to `01` at 8,000 ms.
 
 ### BGA
 
@@ -310,10 +325,19 @@ Quitting early always results in FAILED. Results wait for all pending judgments,
 including rank-dependent misses and held long-note endings. Displayed percentages
 are truncated to one decimal place so values below 80% never display as 80.0%.
 
-PERFECT and GREAT recover `#TOTAL / note count` percentage points; GOOD
-recovers half that amount. Each MISS subtracts
-6 percentage points. Missing, non-finite, or non-positive `#TOTAL` defaults
-to 260. Long-note starts and ends each count as one note because both are
+PERFECT and GREAT recover gauge percentage points according to the chart format.
+The formulas give the recovery before clamping.
+
+- **BMS** uses `#TOTAL / note count`. Missing, non-finite, or non-positive `#TOTAL`
+  defaults to 260.
+- **bmson** uses `(260 / note count) × (abs(info.total) / 100)`. Missing or null
+  `info.total` defaults to 100 (a multiplier of 1). Zero disables recovery,
+  and negative values use their absolute value. For ten tap notes with
+  `info.total: 50`, a PERFECT recovers `(260 / 10) × (50 / 100) = 13`
+  percentage points.
+
+GOOD recovers half the corresponding amount. Each MISS subtracts 6 percentage
+points. Long-note starts and ends each count as one note because both are
 judged separately; mines and background sounds do not count toward recovery.
 An empty chart has no recovery. Mines subtract half their base-36 damage
 value in percentage points. Other gauge types are not implemented yet.
@@ -323,8 +347,8 @@ value in percentage points. Other gauge types are not implemented yet.
 DJMax-style layout. In 5K the center lane accepts either `F` or `J` — press
 whichever finger is closer.
 
-| lanes | keys                    | notes                             |
-| ----- | ----------------------- | --------------------------------- |
+| layout / lanes | keys                    | notes                             |
+| -------------- | ----------------------- | --------------------------------- |
 | 4     | `S D       K L`               | outer 2+2, index fingers rest     |
 | 5     | `S D  F/J  K L`               | center lane bound to both F and J |
 | 7     | `S D  F SPACE J  K L`         | spacebar is the center            |
@@ -332,11 +356,14 @@ whichever finger is closer.
 | 8     | `S D F SPACE J K L A/;` | 7K plus scratch on either A or ; |
 | 12    | `S D F/J K L A / Z X C V B ;` | 5K+scratch per side; P1 scratch uses A, P2 uses ; |
 | 16    | `S D F SPACE J K L A / Z X C V B N M ;` | 7K+scratch per side; P1 scratch uses A, P2 uses ; |
-| 9 (PMS) | `A S D F SPACE J K L ;`      | PMS buttons 1–9; spacebar is the center |
+| PMS (9 buttons) | `A S D F SPACE J K L ;` | spacebar is the center |
 | 9 (4+5 BMS DP) | `S D K L / Z X C N M` | four P1 keys and five P2 keys |
 | 10    | `S D F K L / Z X C N M` | five keys per side |
 | asymmetric DP | P1: `S D K L` (4K), `S D F K L` (5K), or `S D F SPACE J K L` (7K); P2: `Z X N M` (4K), `Z X C N M` (5K), or `Z X C V B N M` (7K) | each side keeps its own width; scratch uses A for P1 and ; for P2 (5K with scratch uses F/J for the P1 center and `Z X C V B` for P2) |
 | 14    | `S D F SPACE J K L / Z X C V B N M` | 7K SP layout on the home row for P1, ZXCVBNM below for P2 |
+
+A 4+5 BMS double-play chart has nine lanes and uses `S D K L / Z X C N M`.
+Nine-button PMS uses the bindings in the PMS row.
 
 ### Custom gameplay keys
 
@@ -397,7 +424,9 @@ Results are stored in `results.json` inside:
 
 Set `TAPLINE_DATA_DIR` to override this directory. No accounts or network service
 are used. Writes replace the file only after a complete temporary file is flushed.
-Use one running instance when saving progress to the same directory.
+When multiple instances save completed plays to the same directory, an exclusive
+lock lets one instance at a time read, merge, and replace `results.json`. This
+preserves records for different charts and keeps the best values for each chart.
 
 ## License
 

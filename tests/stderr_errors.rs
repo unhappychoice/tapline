@@ -103,6 +103,47 @@ fn completed_random_chart_retry_compares_with_the_saved_first_attempt() {
 }
 
 #[test]
+fn replaced_chart_requires_reselection_in_the_terminal() {
+    let dir = std::env::temp_dir().join(format!("tapline-reselect-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("chart.bms");
+    std::fs::write(&path, "#TITLE Original\n#00111:01\n").unwrap();
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tapline"));
+    command
+        .args(["--countdown-ms", "0", "--dir"])
+        .arg(&dir)
+        .env("TAPLINE_DATA_DIR", "/dev/null");
+    let (status, output) = run_interactive_with(
+        command,
+        &[
+            (b"Original", b"\r"),
+            (b"Replacement", b"\r"),
+            (b"quit Esc / Q", b"q"),
+            (b"R: retry / other: selector", b" "),
+            (b"Replacement", b"q"),
+        ],
+        |prompt| {
+            if prompt == b"Original" {
+                std::fs::write(&path, "#TITLE Replacement\n#00111:01\n")?;
+            }
+            Ok(())
+        },
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+
+    assert!(status.success(), "{output:?}");
+    let (before_replacement, _) = output.split_once("Replacement").unwrap();
+    let (_, after_original) = before_replacement.split_once("Original").unwrap();
+    assert!(after_original.contains("select a chart"), "{output:?}");
+    assert!(!before_replacement.contains("quit Esc / Q"), "{output:?}");
+    assert!(
+        !output.contains("Press any key to return to the selector."),
+        "{output:?}"
+    );
+}
+
+#[test]
 fn oversized_replacement_returns_to_the_empty_selector() {
     let dir = std::env::temp_dir().join(format!(
         "tapline-oversized-selection-{}",

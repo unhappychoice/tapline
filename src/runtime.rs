@@ -54,7 +54,10 @@ pub fn play_chart_with_destination(
     identity: Option<crate::results::Identity>,
     destination: ResultDestination,
 ) -> Result<()> {
-    while play_attempt(out, args, &chart, identity.as_ref(), destination)? == ResultAction::Retry {}
+    let audio = audio::ChartAudio::load(&chart, args.no_audio);
+    while play_loaded_attempt(out, args, &chart, &audio, identity.as_ref(), destination)?
+        == ResultAction::Retry
+    {}
     Ok(())
 }
 
@@ -65,12 +68,21 @@ pub fn play_attempt(
     identity: Option<&crate::results::Identity>,
     destination: ResultDestination,
 ) -> Result<ResultAction> {
+    let audio = audio::ChartAudio::load(chart, args.no_audio);
+    play_loaded_attempt(out, args, chart, &audio, identity, destination)
+}
+
+/// Play one attempt using audio prepared for this loaded chart.
+pub fn play_loaded_attempt(
+    out: &mut Stdout,
+    args: &Args,
+    chart: &chart::Chart,
+    audio: &audio::ChartAudio,
+    identity: Option<&crate::results::Identity>,
+    destination: ResultDestination,
+) -> Result<ResultAction> {
     let opts = PlayOptions::from_args(args);
-    let bank = if opts.no_audio {
-        audio::SampleBank::silent()
-    } else {
-        audio::SampleBank::for_chart(chart)
-    };
+    let bank = audio.start_attempt();
     let duration_ms =
         bank.chart_duration_ms(chart, opts.auto_ks, opts.synth_mode, opts.audio_lead_ms);
     let mut chart = chart.clone();
@@ -78,8 +90,10 @@ pub fn play_attempt(
     let mut game = game::Game::new(chart);
     execute!(out, terminal::Clear(terminal::ClearType::All))?;
     run_game(out, &mut game, &bank, &opts)?;
-    let progress = save_result(identity, &game, args.auto_ks);
-    after_playback(bank, || show_result(out, &game, &progress, destination))
+    after_playback(bank, || {
+        let progress = save_result(identity, &game, args.auto_ks);
+        show_result(out, &game, &progress, destination)
+    })
 }
 
 fn save_result(
@@ -319,21 +333,30 @@ fn fire_scheduled_audio(
     now: f64,
 ) {
     let horizon = now + opts.audio_lead_ms;
-    while state.bgm_cursor < game.chart.bgm.len()
-        && game.chart.bgm[state.bgm_cursor].time_ms <= horizon
-    {
-        let event = &game.chart.bgm[state.bgm_cursor];
-        let gain = game.volume.gain(VolumeTarget::Bgm, event.time_ms);
-        state.track_playback(now, bank.start_sound(event.keysound, gain));
-        state.bgm_cursor += 1;
-    }
-    while state.note_snd_cursor < state.auto_notes.len()
-        && state.auto_notes[state.note_snd_cursor].0 <= horizon
-    {
-        let (time_ms, lane, ks) = state.auto_notes[state.note_snd_cursor];
-        let gain = game.volume.gain(VolumeTarget::Key, time_ms);
-        state.track_playback(now, bank.start_hit(lane, ks, opts.synth_mode, gain));
-        state.note_snd_cursor += 1;
+    loop {
+        let bgm = game
+            .chart
+            .bgm
+            .get(state.bgm_cursor)
+            .filter(|event| event.time_ms <= horizon);
+        let note = state
+            .auto_notes
+            .get(state.note_snd_cursor)
+            .filter(|note| note.0 <= horizon);
+        // BGM dispatches first at equal timestamps.
+        match (bgm, note) {
+            (Some(event), note) if note.is_none_or(|note| event.time_ms <= note.0) => {
+                let gain = game.volume.gain(VolumeTarget::Bgm, event.time_ms);
+                state.track_playback(now, bank.start_sound(event.keysound, gain));
+                state.bgm_cursor += 1;
+            }
+            (_, Some(&(time_ms, lane, ks))) => {
+                let gain = game.volume.gain(VolumeTarget::Key, time_ms);
+                state.track_playback(now, bank.start_hit(lane, ks, opts.synth_mode, gain));
+                state.note_snd_cursor += 1;
+            }
+            _ => break,
+        }
     }
 }
 
@@ -1162,6 +1185,59 @@ mod tests {
     }
 
     #[test]
+    fn later_bgm_replaces_automatic_keysound_in_one_or_two_frames() {
+        for frames in [&[1010.0][..], &[1000.0, 1010.0]] {
+            assert_shared_sample_gain(1010.0, frames, 1.0);
+        }
+    }
+
+    #[test]
+    fn simultaneous_automatic_keysound_replaces_bgm() {
+        assert_shared_sample_gain(1000.0, &[1000.0], 128.0 / 255.0);
+    }
+
+    fn assert_shared_sample_gain(bgm_time: f64, frames: &[f64], expected_gain: f32) {
+        let mut chart = base_chart(
+            4,
+            vec![Note {
+                time_ms: 1000.0,
+                keysound: Some(2),
+                ..Note::default()
+            }],
+        );
+        chart.bgm.push(BgmEvent {
+            time_ms: bgm_time,
+            keysound: 2,
+        });
+        chart.volume_events.push(crate::chart::VolumeEvent {
+            time_ms: 1000.0,
+            target: VolumeTarget::Key,
+            volume: 128,
+        });
+        let game = Game::new(chart);
+        let options = PlayOptions {
+            synth_mode: false,
+            ..opts(true)
+        };
+        let mut state = LoopState::new(build_auto_notes(&game, &options));
+        let (bank, mut output) = audio::playback_test_bank();
+        for &now in frames {
+            fire_scheduled_audio(&bank, &options, &mut state, &game, now);
+        }
+        // The mixer can emit startup silence and a few buffered samples from the old voice.
+        let surviving_sample = output
+            .by_ref()
+            .take(2048)
+            .filter(|&sample| sample != 0.0)
+            .last();
+        assert_eq!(
+            surviving_sample,
+            Some(0.25 * expected_gain),
+            "frames: {frames:?}"
+        );
+    }
+
+    #[test]
     fn scheduled_audio_plays_during_countdown_at_each_lead_time() {
         for auto_ks in [false, true] {
             let times = [2000.0, 2032.0, 2064.0];
@@ -1615,19 +1691,10 @@ mod tests {
             .for_each(|code| {
                 let mut game = ready_game();
                 let mut state = LoopState::new(Vec::new());
-                let bank = SampleBank::silent();
-                let (sinks, mut outputs): (Vec<_>, Vec<_>) = (0..2)
-                    .map(|_| {
-                        let (sink, mut output) = rodio::Player::new();
-                        sink.append(rodio::buffer::SamplesBuffer::new(
-                            rodio::nz!(1),
-                            rodio::nz!(44_100),
-                            vec![0.5; 44_100 * 60],
-                        ));
-                        assert_eq!(output.next(), Some(0.5));
-                        (sink, output)
-                    })
-                    .unzip();
+                let (bank, mut output) = audio::playback_test_bank();
+                assert!(bank.start_sound(2, 1.0).is_some());
+                assert!(bank.start_hit(0, None, true, 1.0).is_some());
+                assert!(output.by_ref().take(2048).any(|sample| sample != 0.0));
                 assert!(handle_key(
                     code,
                     KeyEventKind::Press,
@@ -1639,11 +1706,8 @@ mod tests {
                 ));
                 assert!(state.quit);
 
-                after_playback((bank, sinks), || {
-                    outputs.iter_mut().for_each(|output| {
-                        assert!(output.by_ref().skip(1000).take(100).all(|s| s == 0.0));
-                        assert!(output.by_ref().take(100).all(|s| s == 0.0));
-                    });
+                after_playback(bank, || {
+                    assert!(output.skip(1000).take(100).all(|sample| sample == 0.0));
                 });
             });
     }
