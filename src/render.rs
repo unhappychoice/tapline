@@ -214,38 +214,58 @@ fn draw_judgment_flash(
     Ok(())
 }
 
-fn draw_judgment_counters(
-    out: &mut impl Write,
-    game: &Game,
-    cols: u16,
-    row: u16,
-    _now_ms: f64,
-) -> anyhow::Result<()> {
-    let cells: [(&str, u32, Color); 4] = [
-        ("PERFECT", game.perfect, Color::Magenta),
-        ("GREAT", game.great, Color::Green),
-        ("GOOD", game.good, Color::Yellow),
-        ("MISS", game.miss, Color::Red),
-    ];
-    let strs: Vec<String> = cells
-        .iter()
-        .map(|(l, n, _)| format!("{} {}", l, n))
-        .collect();
-    let gap: usize = 4;
-    let total_len: usize =
-        strs.iter().map(|s| s.chars().count()).sum::<usize>() + gap * (cells.len() - 1);
-    let mut x = cols.saturating_sub(total_len as u16) / 2;
-    for (i, (_, _, color)) in cells.iter().enumerate() {
+fn draw_judgment_counters(out: &mut impl Write, game: &Game, cols: u16) -> anyhow::Result<()> {
+    let counts = [game.perfect, game.great, game.good, game.miss];
+    let colors = [Color::Magenta, Color::Green, Color::Yellow, Color::Red];
+    let full = ["PERFECT", "GREAT", "GOOD", "MISS"];
+    let short = ["P", "Gr", "Gd", "M"];
+    let cells = |labels: [&str; 4], separator: &str| {
+        std::array::from_fn(|i| format!("{}{separator}{}", labels[i], counts[i]))
+    };
+    let width = |cells: &[String; 4], gap: u16| {
+        cells.iter().map(|cell| cell.len() as u16).sum::<u16>() + 3 * gap
+    };
+
+    let mut counters = cells(full, " ");
+    let mut gap = 4;
+    if width(&counters, gap) > cols {
+        gap = 1;
+    }
+    if width(&counters, gap) > cols {
+        counters = cells(["PERF", "GREAT", "GOOD", "MISS"], " ");
+    }
+    if width(&counters, gap) > cols {
+        counters = cells(short, "");
+    }
+    if width(&counters, gap) > cols {
+        counters = std::array::from_fn(|i| format!("{}{}", short[i], compact_count(counts[i])));
+    }
+
+    let mut x = cols.saturating_sub(width(&counters, gap)) / 2;
+    queue!(
+        out,
+        cursor::MoveTo(0, 3),
+        terminal::Clear(terminal::ClearType::CurrentLine)
+    )?;
+    for (counter, color) in counters.iter().zip(colors) {
         queue!(
             out,
-            cursor::MoveTo(x, row),
-            SetForegroundColor(*color),
-            Print(&strs[i]),
+            cursor::MoveTo(x, 3),
+            SetForegroundColor(color),
+            Print(counter),
             ResetColor
         )?;
-        x += strs[i].chars().count() as u16 + gap as u16;
+        x += counter.len() as u16 + gap;
     }
     Ok(())
+}
+
+fn compact_count(count: u32) -> String {
+    match count {
+        0..=99_999 => count.to_string(),
+        100_000..=999_999 => format!("{}k", count / 1_000),
+        _ => format!("{}M", count / 1_000_000),
+    }
 }
 
 fn format_lane_key(keys: &[char]) -> String {
@@ -464,6 +484,63 @@ pub(crate) fn bga_panel_visible(cols: u16, rows: u16, lanes: usize) -> bool {
         .is_some_and(|layout| crate::bga::panel_width(layout.x0, layout.lane_height).is_some())
 }
 
+fn format_gameplay_score(game: &Game, cols: u16) -> String {
+    let (score, combo, acc) = (game.score, game.combo, game.accuracy());
+    let full = format!("score {score:>6}    combo {combo:>3}    acc {acc:>5.1}%");
+    if full.len() <= usize::from(cols) {
+        return full;
+    }
+    let compact = format!("score {score} combo {combo} acc {acc:.1}%");
+    if compact.len() <= usize::from(cols) {
+        return compact;
+    }
+    let short = format!("S{score} C{combo} {acc:.1}%");
+    if short.len() <= usize::from(cols) {
+        return short;
+    }
+    format!("S{score}C{combo} {acc:.1}%")
+}
+
+fn draw_gameplay_stats(
+    out: &mut impl Write,
+    game: &Game,
+    bank: &crate::bga::ImageBank,
+    cols: u16,
+    now_ms: f64,
+) -> anyhow::Result<()> {
+    let hud = format_gameplay_score(game, cols);
+    let hud_width = hud.len() as u16;
+    let hud_x = cols.saturating_sub(hud_width) / 2;
+    queue!(
+        out,
+        cursor::MoveTo(hud_x, 2),
+        terminal::Clear(terminal::ClearType::CurrentLine),
+        Print(hud)
+    )?;
+
+    if let Some(tag) = format_bga_badge(bank, &game.chart.bga, now_ms) {
+        let tag_x = cols.saturating_sub(tag.width() as u16 + 2);
+        if tag_x > hud_x + hud_width {
+            queue!(
+                out,
+                cursor::MoveTo(tag_x, 2),
+                SetForegroundColor(Color::Blue),
+                Print(tag),
+                ResetColor
+            )?;
+        }
+    }
+
+    draw_judgment_counters(out, game, cols)?;
+    let gauge = format_gauge(game);
+    queue!(
+        out,
+        cursor::MoveTo(cols.saturating_sub(gauge.len() as u16) / 2, 4),
+        Print(gauge)
+    )?;
+    Ok(())
+}
+
 /// Draw the play field using notes near the current time and active long notes.
 pub fn draw(
     out: &mut impl Write,
@@ -497,35 +574,7 @@ pub fn draw(
         ResetColor
     )?;
 
-    let hud = format!(
-        "score {:>6}    combo {:>3}    acc {:>5.1}%",
-        game.score,
-        game.combo,
-        game.accuracy()
-    );
-    queue!(
-        out,
-        cursor::MoveTo(cols.saturating_sub(hud.len() as u16) / 2, 2),
-        Print(hud)
-    )?;
-
-    draw_judgment_counters(out, game, cols, 3, now_ms)?;
-    let gauge = format_gauge(game);
-    queue!(
-        out,
-        cursor::MoveTo(cols.saturating_sub(gauge.len() as u16) / 2, 4),
-        Print(gauge)
-    )?;
-
-    if let Some(tag) = format_bga_badge(&bga.bank, &game.chart.bga, now_ms) {
-        queue!(
-            out,
-            cursor::MoveTo(cols.saturating_sub(tag.chars().count() as u16 + 2), 2),
-            SetForegroundColor(Color::Blue),
-            Print(&tag),
-            ResetColor
-        )?;
-    }
+    draw_gameplay_stats(out, game, &bga.bank, cols, now_ms)?;
 
     crate::bga::draw(out, game, &bga.bank, now_ms, x0, top, bottom - top)?;
 
@@ -1295,6 +1344,100 @@ mod tests {
                     assert!(SONG_TEXT_COMPARISONS.get() <= count.ilog2() as usize + 2);
                 });
         });
+    }
+
+    #[test]
+    fn gameplay_stats_fit_the_minimum_four_lane_terminal() {
+        let mut game = Game::new(crate::chart::built_in(120.0, 0.0));
+        assert!(playfield_fits(29, 13, game.chart.lane_count));
+        let bank = image_bank(&[]);
+        let mut screen = crate::screen::Screen::new();
+        screen.resize(29, 13);
+        draw_gameplay_stats(&mut screen, &game, &bank, 29, 0.0).unwrap();
+        let mut out = Vec::new();
+        screen.present(&mut out).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+        for expected in [
+            "score 0 combo 0 acc 100.0%",
+            "PERF 0",
+            "GREAT 0",
+            "GOOD 0",
+            "MISS 0",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected:?} in {rendered:?}"
+            );
+        }
+
+        game.score = 123456;
+        game.combo = 123;
+        game.perfect = 100;
+        game.great = 20;
+        game.good = 10;
+        game.miss = 5;
+        draw_gameplay_stats(&mut screen, &game, &bank, 29, 0.0).unwrap();
+        screen.invalidate();
+        let mut out = Vec::new();
+        screen.present(&mut out).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+        for expected in ["S123456 C123 85.9%", "P100", "Gr20", "Gd10", "M5"] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected:?} in {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gameplay_stats_fit_when_score_and_counts_have_many_digits() {
+        let mut game = Game::new(crate::chart::built_in(120.0, 0.0));
+        game.score = u32::MAX;
+        game.combo = u32::MAX;
+        game.perfect = 1_000_000_000;
+        let mut screen = crate::screen::Screen::new();
+        screen.resize(29, 13);
+        draw_gameplay_stats(&mut screen, &game, &image_bank(&[]), 29, 0.0).unwrap();
+        let mut out = Vec::new();
+        screen.present(&mut out).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+        assert!(rendered.contains("S4294967295C4294967295 100.0%"));
+
+        game.great = 100_000;
+        game.good = 100_000;
+        game.miss = 100_000;
+        draw_gameplay_stats(&mut screen, &game, &image_bank(&[]), 29, 0.0).unwrap();
+        screen.invalidate();
+        let mut out = Vec::new();
+        screen.present(&mut out).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+        for expected in ["P1000M", "Gr100k", "Gd100k", "M100k"] {
+            assert!(rendered.contains(expected));
+        }
+    }
+
+    #[test]
+    fn gameplay_bga_badge_requires_space_to_the_right_of_accuracy() {
+        let mut chart = base_chart(7);
+        chart.bga.push(BgaEvent {
+            time_ms: 0.0,
+            layer: BgaLayer::Base,
+            bmp_id: 1,
+        });
+        let game = Game::new(chart);
+        let bank = image_bank(&game.chart.bga);
+
+        for (cols, badge_visible) in [(50, false), (80, true)] {
+            assert!(playfield_fits(cols, 13, game.chart.lane_count));
+            let mut screen = crate::screen::Screen::new();
+            screen.resize(cols, 13);
+            draw_gameplay_stats(&mut screen, &game, &bank, cols, 0.0).unwrap();
+            let mut out = Vec::new();
+            screen.present(&mut out).unwrap();
+            let rendered = String::from_utf8(out).unwrap();
+            assert!(rendered.contains("acc 100.0%"));
+            assert_eq!(rendered.contains("BGA 01·--·--"), badge_visible);
+        }
     }
 
     #[test]
