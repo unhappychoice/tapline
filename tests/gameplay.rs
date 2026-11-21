@@ -411,12 +411,30 @@ fn noncanonical_double_play_offsets_invisible_notes_by_the_first_side_width() {
 }
 
 #[test]
+fn inferred_asymmetric_double_play_binds_four_keys_on_either_side() {
+    [("11", "25", "SDKLZXCNM"), ("15", "21", "SDFKLZXNM")]
+        .into_iter()
+        .for_each(|(p1, p2, keys)| {
+            let chart = write_and_load(&format!("#BPM 60\n#000{p1}:01\n#000{p2}:02\n"));
+            assert_eq!(chart.lane_count, 9);
+            assert_eq!(
+                chart.keys,
+                keys.chars().map(|key| vec![key]).collect::<Vec<_>>()
+            );
+        });
+}
+
+#[test]
 fn pms_invisible_notes_follow_the_nine_button_mapping() {
     let dir = tempdir();
     let path = dir.join("song.pms");
     std::fs::write(&path, "#BPM 60\n#00035:01\n#00042:02\n#00045:03\n").unwrap();
     let chart = bms::load(&path, 500.0).unwrap();
     assert_eq!(chart.lane_count, 9);
+    assert_eq!(
+        chart.keys,
+        "ASDF JKL;".chars().map(|key| vec![key]).collect::<Vec<_>>()
+    );
     assert!(chart.notes.is_empty());
     assert!(chart.p2_invisible_notes.is_empty());
     assert_eq!(
