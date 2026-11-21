@@ -24,6 +24,45 @@ fn chart(dir: &Path, name: &str) -> Chart {
 }
 
 #[test]
+fn gameplay_skips_decoding_when_audio_output_cannot_open() {
+    let mut chart = crate::chart::built_in(120.0, 0.0);
+    chart.notes[0].keysound = Some(1);
+    chart.wav_paths.insert(1, "required.wav".into());
+    let mut open_calls = 0;
+    let decode_calls = AtomicUsize::new(0);
+    let bank = SampleBank::for_chart_with(
+        &chart,
+        || {
+            open_calls += 1;
+            None
+        },
+        |path| {
+            decode_calls.fetch_add(1, Ordering::Relaxed);
+            decode(path)
+        },
+    );
+    assert_eq!(open_calls, 1);
+    assert_eq!(decode_calls.load(Ordering::Relaxed), 0);
+    assert!(!bank.enabled);
+    assert_eq!(bank.sample_count(), 0);
+    assert_eq!(bank.decode_failures, 0);
+    assert_eq!(
+        bank.chart_duration_ms(&chart, false, false, 0.0),
+        chart.duration_ms
+    );
+
+    let note = chart.notes[0];
+    let mut game = crate::game::Game::new(chart);
+    assert_eq!(game.hit(note.lane, note.time_ms), note.keysound);
+    assert!(bank
+        .start_hit(note.lane, note.keysound, false, 1.0)
+        .is_none());
+    assert!(bank
+        .start_hit(note.lane, note.keysound, true, 1.0)
+        .is_none());
+}
+
+#[test]
 fn gameplay_decodes_only_referenced_bms_wavs() {
     let dir = tempdir();
     let wav = include_bytes!("../../tests/fixtures/tone.wav");

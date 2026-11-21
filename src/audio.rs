@@ -136,12 +136,11 @@ impl SampleBank {
     }
 
     pub(crate) fn for_chart(chart: &Chart) -> Self {
-        let (stream, bus) = silence_stderr(open_master_bus).unzip();
-        let mut bank = Self::load_chart_with(chart, |path| decode(path));
-        bank.enabled = bus.is_some();
-        bank._stream = stream;
-        bank.bus = bus;
-        bank
+        Self::for_chart_with(
+            chart,
+            || silence_stderr(open_master_bus),
+            |path| decode(path),
+        )
     }
 
     pub fn with_settings(
@@ -329,6 +328,21 @@ impl SampleBank {
                 duration
             })
             .max()
+    }
+
+    fn for_chart_with(
+        chart: &Chart,
+        open: impl FnOnce() -> Option<(MixerDeviceSink, MasterBus)>,
+        decode_sample: impl Fn(&PathBuf) -> anyhow::Result<DecodedSample> + Sync,
+    ) -> Self {
+        let Some((stream, bus)) = open() else {
+            return Self::silent();
+        };
+        let mut bank = Self::load_chart_with(chart, decode_sample);
+        bank.enabled = true;
+        bank._stream = Some(stream);
+        bank.bus = Some(bus);
+        bank
     }
 
     fn load_chart_with(
