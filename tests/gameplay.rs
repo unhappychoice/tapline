@@ -263,6 +263,33 @@ fn ln_completes_at_the_end_without_a_release_event() {
 }
 
 #[test]
+fn ln_press_after_a_short_hold_ends_leaves_it_to_miss() {
+    let mut game = Game::new(write_and_load(
+        "#BPM 120\n#LNMODE 1\n#00102:0.02\n#00151:0101\n",
+    ));
+    game.check_misses(2030.0);
+    game.hit(0, 2030.0);
+    game.check_misses(2031.0);
+    assert_eq!((game.score, game.miss), (0, 0));
+
+    game.check_misses(2161.0);
+    assert_eq!((game.score, game.miss), (0, 1));
+}
+
+#[test]
+fn ln_short_hold_completes_automatically_at_its_tail() {
+    let mut game = Game::new(write_and_load(
+        "#BPM 120\n#LNMODE 1\n#00102:0.02\n#00151:0101\n",
+    ));
+    game.hit(0, 2000.0);
+    game.check_misses(2019.0);
+    assert_eq!((game.perfect, game.miss), (1, 0));
+
+    game.check_misses(2020.0);
+    assert_eq!((game.perfect, game.miss), (2, 0));
+}
+
+#[test]
 fn ln_requires_holding_through_the_end() {
     let mut game = long_note_game("#LNMODE 1", "#00151:0101");
     game.hit(0, 4000.0);
