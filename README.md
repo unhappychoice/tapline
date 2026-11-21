@@ -174,8 +174,16 @@ for sounds triggered at or after each event: hexadecimal `01`–`FF`, with
 `FF` at full volume and `00` leaving the volume unchanged. These multipliers
 combine with `#VOLWAV`; already playing sounds retain their starting gain.
 
-Invisible notes update the lane keysound for empty presses without being drawn,
-judged, counted as notes, or played automatically.
+In manual audio mode, the first visible or invisible keysound event on each
+lane sets the sound for empty presses from the start of the chart. Later
+assignments take effect at their event timestamps. Invisible notes change the
+assigned sound without triggering playback. They are also hidden and excluded
+from judgments and note counts.
+
+For example, with `#BPM 60`, `#00131:02`, and `#00211:01`, an empty press in
+the first lane at 1,000 ms plays keysound `02` because the invisible `31` event
+at 4,000 ms is the lane's first keysound event. The visible `11` event changes
+the assignment to `01` at 8,000 ms.
 
 ### BGA
 
