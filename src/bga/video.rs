@@ -39,19 +39,14 @@ impl Video {
     }
 
     fn with_decoder(path: &Path, decoder: &Path) -> Option<(Decoder, Self)> {
-        let mut child = Decoder(Command::new(decoder)
-            .args(["-v", "error", "-nostdin", "-i"])
-            .arg(path)
-            .args([
-                "-map", "0:v:0", "-an", "-vf",
-                "setpts=PTS-STARTPTS,fps=30,scale=64:64:force_original_aspect_ratio=decrease,format=rgba,pad=64:64:(ow-iw)/2:(oh-ih)/2:color=black@0",
-                "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1",
-            ])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .stdout(Stdio::piped())
-            .spawn()
-            .ok()?);
+        let mut child = Decoder(
+            decoder_command(path, decoder)
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .stdout(Stdio::piped())
+                .spawn()
+                .ok()?,
+        );
         let mut stdout = child.0.stdout.take()?;
         let (sender, frames) = sync_channel(2);
         let target = Arc::new(AtomicU64::new(0));
@@ -120,6 +115,24 @@ impl Video {
     }
 }
 
+fn decoder_command(path: &Path, decoder: &Path) -> Command {
+    let mut command = Command::new(decoder);
+    command
+        .args([
+            "-v", "error", "-nostdin",
+            "-format_whitelist", "mov,matroska,avi,mpeg,mpegvideo,mpegts,m4v",
+            "-protocol_whitelist", "file",
+            "-i",
+        ])
+        .arg(path)
+        .args([
+            "-map", "0:v:0", "-an", "-vf",
+            "setpts=PTS-STARTPTS,fps=30,scale=64:64:force_original_aspect_ratio=decrease,format=rgba,pad=64:64:(ow-iw)/2:(oh-ih)/2:color=black@0",
+            "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1",
+        ]);
+    command
+}
+
 impl Drop for Decoder {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -130,6 +143,26 @@ impl Drop for Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disguised_playlist_is_rejected_before_demuxing() {
+        let decoder = Path::new("ffmpeg");
+        if Command::new(decoder).arg("-version").output().is_err() {
+            eprintln!("Skipping video integration test: ffmpeg is not installed");
+            return;
+        }
+        let path =
+            std::env::temp_dir().join(format!("tapline-playlist-{}.mp4", std::process::id()));
+        std::fs::write(&path, "ffconcat version 1.0\n").unwrap();
+        let output = decoder_command(&path, decoder).output();
+        std::fs::remove_file(path).unwrap();
+        let output = output.unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        // FFmpeg checks the whitelist before calling the demuxer's header reader.
+        assert!(stderr.contains("Format not on whitelist"), "{stderr}");
+    }
 
     #[test]
     fn missing_decoder_is_silently_disabled() {
