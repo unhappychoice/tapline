@@ -12,6 +12,14 @@ If the selector is open but shows no matches, press `Enter` or `Esc` to
 finish editing the search if it is active, then press `c` to clear the search
 and lane filters.
 
+## A large chart is missing from the selector
+
+Tapline skips chart files larger than 16 MiB (16,777,216 bytes) during
+discovery. Opening the same file with `tapline --file path/to/chart.bms`
+reports the size limit. Use a chart file at or below the limit. Referenced
+audio and artwork files are separate from the chart file and do not count
+toward its size.
+
 ## The playfield disappeared after I resized my terminal
 
 Enlarge the terminal to the dimensions shown in the size notice. Gameplay
