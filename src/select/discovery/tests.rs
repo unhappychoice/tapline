@@ -145,7 +145,7 @@ fn seeded_branches_are_redrawn_and_match_gameplay_each_visit() {
     .unwrap();
     let args = Args::parse_from(["tapline"]);
     let mut discovery = Discovery::default();
-    let mut first_titles = HashMap::new();
+    let mut previous_titles = HashMap::new();
     for seed in [0, 1] {
         let before = counts();
         let charts = discovery.scan(&dir, &|| seed);
@@ -165,10 +165,18 @@ fn seeded_branches_are_redrawn_and_match_gameplay_each_visit() {
                 let replay = bms::load_with_seed(&random, args.countdown_ms, seed).unwrap();
                 assert_eq!(chart.notes[0].keysound, replay.notes[0].keysound);
             }
-            if let Some(first_title) = first_titles.insert(meta.path.clone(), meta.title.clone()) {
-                assert_ne!(first_title, meta.title);
+            if let Some(previous_title) =
+                previous_titles.insert(meta.path.clone(), meta.title.clone())
+            {
+                assert_ne!(previous_title, meta.title);
             }
         }
+    }
+    let repeated = discovery.scan(&dir, &|| 1);
+    assert_eq!(repeated.len(), previous_titles.len());
+    for entry in repeated {
+        assert_eq!(entry.random_seed, 1);
+        assert_eq!(previous_titles.get(&entry.path), Some(&entry.title));
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
