@@ -711,6 +711,45 @@ mod tests {
     }
 
     #[test]
+    fn duration_preserves_trailing_bmson_stops_with_and_without_audio() {
+        let mut bank = duration_bank_with_length(1000);
+        let sample = bank.samples.remove(&1).unwrap();
+        bank.samples.insert(0, sample);
+        for (note, stop_duration, expected_silent, expected_audio) in [
+            (0, 1920, 4500.0, 4500.0),
+            (240, 1920, 4500.0, 4500.0),
+            (480, 1920, 7500.0, 6032.0),
+            (0, 480, 2500.0, 1500.0),
+            (0, 0, 2500.0, 1032.0),
+        ] {
+            let data = serde_json::json!({
+                "version": "1.0.0",
+                "info": {"title": "Duration", "artist": "Test", "init_bpm": 120, "resolution": 240},
+                "sound_channels": [{"name": "sample.wav", "notes": [{"x": 1, "y": note}]}],
+                "stop_events": [{"y": 240, "duration": stop_duration}]
+            });
+            let chart = crate::bmson::load_bytes(
+                std::path::Path::new("song.bmson"),
+                data.to_string().as_bytes(),
+                0.0,
+            )
+            .unwrap();
+            for (bank, expected) in [
+                (&SampleBank::silent(), expected_silent),
+                (&bank, expected_audio),
+            ] {
+                let mut chart = chart.clone();
+                chart.duration_ms = bank.chart_duration_ms(&chart, true, false, 0.0);
+                let end = chart.duration_ms;
+                assert!((end - expected).abs() < 0.001, "{end} != {expected}");
+                let mut game = crate::game::Game::new(chart);
+                assert!(!game.advance_completion(expected - 1.0));
+                assert!(game.advance_completion(end));
+            }
+        }
+    }
+
+    #[test]
     fn bmson_duration_expands_layers_and_keeps_the_longest_decoded_sound() {
         let chart = bmson_duration_chart(serde_json::json!([
             {"name": "first.wav", "notes": [{"x": 1, "y": 0}]},

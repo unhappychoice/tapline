@@ -86,14 +86,16 @@ pub(crate) fn load_bytes(path: &Path, bytes: &[u8], lead_in_ms: f64) -> Result<C
     chart.notes.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
     chart.bgm.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
     chart.bga.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
-    chart.duration_ms = chart
+    let last_event_ms = chart
         .notes
         .iter()
         .map(|n| n.end_ms.unwrap_or(n.time_ms))
         .chain(chart.bgm.iter().map(|e| e.time_ms))
         .chain(chart.bga.iter().map(|e| e.time_ms))
-        .fold(lead_in_ms, f64::max)
-        + 2500.0;
+        .fold(lead_in_ms, f64::max);
+    chart.trailing_stop_completion_ms = timeline.trailing_stop_end(last_event_ms);
+    chart.duration_ms =
+        (last_event_ms + 2500.0).max(chart.trailing_stop_completion_ms.unwrap_or(0.0));
     ensure!(chart.duration_ms.is_finite(), "Chart duration overflow");
     Ok(chart)
 }
