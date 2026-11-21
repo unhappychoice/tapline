@@ -2,6 +2,7 @@ use crate::chart::{Chart, Lane};
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::Path;
 
 #[derive(Default)]
@@ -12,7 +13,9 @@ impl Keymap {
         let Some(path) = path else {
             return Ok(Self::default());
         };
-        let bytes = std::fs::read(path)
+        let mut bytes = Vec::new();
+        crate::fs_guard::open(path)
+            .and_then(|mut file| file.read_to_end(&mut bytes))
             .with_context(|| format!("Cannot read keymap {}", path.display()))?;
         Self::parse(&bytes).with_context(|| format!("Invalid keymap {}", path.display()))
     }
@@ -97,7 +100,8 @@ mod tests {
 
     #[test]
     fn applies_only_the_matching_player_boundaries_and_lane_roles() {
-        let keymap = Keymap::parse(include_bytes!("../tests/fixtures/keymap.json")).unwrap();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keymap.json");
+        let keymap = Keymap::load(Some(&path)).unwrap();
         let mut chart = crate::chart::built_in(120.0, 0.0);
         keymap.apply(&mut chart);
         assert_eq!(chart.keys, [vec!['U'], vec!['I'], vec!['O'], vec!['P']]);
