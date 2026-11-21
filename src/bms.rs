@@ -394,7 +394,7 @@ fn collect_lane_occupancy(
     pass: &HeaderPass,
     lanes: LaneMap,
 ) -> SideOccupancy {
-    let raw = merge_note_lines(raw, lanes, pass.base);
+    let raw = merge_note_lines(raw, lanes, pass);
     let mut occupancy = SideOccupancy::default();
     let mut long_counts = HashMap::<usize, usize>::new();
     for (_, ch, data) in &raw {
@@ -540,7 +540,7 @@ fn accumulate_side(
     #[cfg(test)]
     MATERIALIZATION_CALLS.with(|calls| calls.set(calls.get() + 1));
     let base = pass.base;
-    let raw = merge_note_lines(raw, lanes, base);
+    let raw = merge_note_lines(raw, lanes, pass);
     let raw = raw.as_slice();
     let mut acc = ChartAcc::default();
     for (measure, ch, data) in raw {
@@ -579,7 +579,7 @@ fn accumulate_side(
 fn merge_note_lines(
     raw: &[(u32, String, String)],
     lanes: LaneMap,
-    base: u32,
+    pass: &HeaderPass,
 ) -> Vec<(u32, String, String)> {
     let mut seen = HashSet::new();
     let mut merged = raw.to_vec();
@@ -587,10 +587,10 @@ fn merge_note_lines(
         let slots = if (lanes.mine)(ch).is_some() {
             parse_slots(data, 36)
         } else if (lanes.normal)(ch).is_some()
-            || (lanes.long)(ch).is_some()
+            || (pass.lntype != 2 && (lanes.long)(ch).is_some())
             || (lanes.invisible)(ch).is_some()
         {
-            parse_slots(data, base)
+            parse_slots(data, pass.base)
         } else {
             continue;
         };
@@ -721,7 +721,8 @@ fn materialize_continuous_long_notes(
     base: u32,
 ) {
     let mut per_lane: HashMap<usize, Vec<(f64, f64, u32)>> = HashMap::new();
-    for (measure, ch, data) in raw {
+    // The stable sort keeps the last-defined slot first among equal starts.
+    for (measure, ch, data) in raw.iter().rev() {
         let Some(lane) = lane_of(ch) else {
             continue;
         };
