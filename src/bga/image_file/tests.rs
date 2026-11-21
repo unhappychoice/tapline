@@ -1,5 +1,9 @@
 use super::*;
-use crate::{bga::Crop, chart::Chart, game::Game};
+use crate::{
+    bga::Crop,
+    chart::{BgaEvent, BgaLayer, Chart},
+    game::Game,
+};
 use std::{os::unix::fs::symlink, sync::mpsc, time::Duration};
 
 fn with_fifo(name: &str, check: impl FnOnce(&Path) + Send + 'static) {
@@ -49,11 +53,14 @@ fn chart_bga_skips_file_and_directory_links_to_other_directories() {
         "version": "1.0.0",
         "info": {"title": "BGA test", "artist": "tapline", "init_bpm": 120},
         "sound_channels": [],
-        "bga": {"bga_header": [
-            {"id": 1, "name": "cover.png"},
-            {"id": 2, "name": "linked/cover.png"},
-            {"id": 3, "name": "IMAGES/cover.png"}
-        ]}
+        "bga": {
+            "bga_header": [
+                {"id": 1, "name": "cover.png"},
+                {"id": 2, "name": "linked/cover.png"},
+                {"id": 3, "name": "IMAGES/cover.png"}
+            ],
+            "bga_events": [{"y": 0, "id": 1}, {"y": 240, "id": 2}, {"y": 480, "id": 3}]
+        }
     });
     std::fs::write(&bmson, data.to_string()).unwrap();
     let bms = song.join("chart.bms");
@@ -90,6 +97,13 @@ fn crops_skip_special_files_and_preserve_regular_images() {
                 (4, regular),
             ]
             .into(),
+            bga: [4, 11, 12, 13, 14]
+                .map(|bmp_id| BgaEvent {
+                    time_ms: bmp_id as f64,
+                    layer: BgaLayer::Base,
+                    bmp_id,
+                })
+                .into(),
             ..Default::default()
         };
         chart.bga_extensions.crops = (1..=4)
