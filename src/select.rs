@@ -4,6 +4,7 @@ use crate::bms::ChartMeta;
 use crate::chart::difficulty_label;
 use crate::results::Identity;
 use anyhow::Result;
+use caseless::default_case_fold_str;
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
@@ -53,10 +54,10 @@ pub struct SelectorState {
     cursor: usize,
     scroll: usize,
     indices: Vec<usize>,
-    /// Lowercased title/subtitle/artist for each chart, keyed by index into
+    /// Case-folded title/subtitle/artist for each chart, keyed by index into
     /// the `charts` slice passed to `refresh`. Invalidated on each scan and
     /// reused across search keystrokes within the same collection.
-    lowercase_cache: Vec<(String, String, String)>,
+    case_folded_cache: Vec<(String, String, String)>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -69,7 +70,7 @@ enum SelectorAction {
 
 impl SelectorState {
     pub fn scan(&mut self, root: &Path) -> Vec<ChartEntry> {
-        self.lowercase_cache.clear();
+        self.case_folded_cache.clear();
         self.discovery.scan(root, &crate::bms::random_seed)
     }
 
@@ -83,25 +84,25 @@ impl SelectorState {
     }
 
     fn refresh(&mut self, charts: &[ChartEntry]) {
-        if self.lowercase_cache.len() != charts.len() {
-            self.lowercase_cache = charts
+        if self.case_folded_cache.len() != charts.len() {
+            self.case_folded_cache = charts
                 .iter()
                 .map(|chart| {
                     (
-                        chart.title.to_lowercase(),
-                        chart.subtitle.to_lowercase(),
-                        chart.artist.to_lowercase(),
+                        default_case_fold_str(&chart.title),
+                        default_case_fold_str(&chart.subtitle),
+                        default_case_fold_str(&chart.artist),
                     )
                 })
                 .collect();
         }
-        let query = self.query.to_lowercase();
+        let query = default_case_fold_str(&self.query);
         self.indices = charts
             .iter()
             .enumerate()
             .filter(|(i, chart)| {
                 self.lanes.is_none_or(|lanes| chart.lane_count == lanes) && {
-                    let (title, subtitle, artist) = &self.lowercase_cache[*i];
+                    let (title, subtitle, artist) = &self.case_folded_cache[*i];
                     [title, subtitle, artist]
                         .iter()
                         .any(|text| text.contains(&query))
@@ -842,6 +843,34 @@ mod tests {
     }
 
     #[test]
+    fn search_matches_unicode_case_folds_in_each_metadata_field() {
+        let mut charts = [meta("ΟΣ"), meta("Other"), meta("Third"), meta("Unrelated")];
+        charts[1].meta.subtitle = "Remix ΟΣ".into();
+        charts[2].meta.artist = "DJ ΟΣ".into();
+        let mut state = SelectorState::default();
+
+        ["ΟΣ", "ος", "οσ"].into_iter().for_each(|query| {
+            state.query = query.into();
+            state.refresh(&charts);
+            assert_eq!(state.indices, [0, 1, 2], "query: {query}");
+        });
+    }
+
+    #[test]
+    fn search_matches_full_case_fold_expansions_and_ascii_case() {
+        let charts = [meta("Die Straße"), meta("Unrelated")];
+        let mut state = SelectorState::default();
+
+        ["strasse", "STRASSE", "sTrAsSe", "dIE"]
+            .into_iter()
+            .for_each(|query| {
+                state.query = query.into();
+                state.refresh(&charts);
+                assert_eq!(state.indices, [0], "query: {query}");
+            });
+    }
+
+    #[test]
     fn rescan_refreshes_metadata_and_reordered_search_entries_at_the_same_count() {
         let dir = tempdir();
         let path = dir.join("song.bms");
@@ -884,13 +913,13 @@ mod tests {
     }
 
     #[test]
-    fn search_keystrokes_reuse_cached_lowercase_string_allocations() {
+    fn search_keystrokes_reuse_cached_case_folded_string_allocations() {
         let charts = vec![meta("Alpha"), meta("Beta")];
         let mut state = SelectorState::default();
         state.refresh(&charts);
         let allocations = |state: &SelectorState| {
             state
-                .lowercase_cache
+                .case_folded_cache
                 .iter()
                 .map(|(title, subtitle, artist)| {
                     (
