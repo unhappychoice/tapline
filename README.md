@@ -423,7 +423,9 @@ Results are stored in `results.json` inside:
 
 Set `TAPLINE_DATA_DIR` to override this directory. No accounts or network service
 are used. Writes replace the file only after a complete temporary file is flushed.
-Use one running instance when saving progress to the same directory.
+When multiple instances save completed plays to the same directory, an exclusive
+lock lets one instance at a time read, merge, and replace `results.json`. This
+preserves records for different charts and keeps the best values for each chart.
 
 ## License
 
