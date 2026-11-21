@@ -358,6 +358,19 @@ fn invisible_notes_update_empty_press_sounds_without_judgment() {
 }
 
 #[test]
+fn first_invisible_note_sets_empty_press_sound_before_its_timestamp() {
+    let chart = write_and_load("#BPM 60\n#00131:02\n#00211:01\n");
+    assert_eq!(chart.invisible_notes[0].time_ms, 4000.0);
+    assert_eq!(chart.notes[0].time_ms, 8000.0);
+
+    let mut game = Game::new(chart);
+    assert_eq!(game.hit(0, 1000.0), Some(2));
+    assert_eq!(game.hit(0, 7859.0), Some(2));
+    assert_eq!(game.hit(0, 8141.0), Some(1));
+    assert_eq!((game.score, game.combo), (0, 0));
+}
+
+#[test]
 fn invisible_only_lanes_are_available_without_creating_playable_notes() {
     let chart = write_and_load("#BPM 60\n#00039:0Z\n#00049:02\n");
     assert_eq!(chart.lane_count, 7);
