@@ -146,9 +146,16 @@ PMS mode is selected by the `.pms` extension (case-insensitive) and always uses
 nine lanes. Long notes (`51–55 + 62–65`) and landmines (`D1–D5 + E2–E5`)
 follow the same button order as visible notes.
 
-`#RANDOM` branches are drawn when a chart is selected or opened. The selector
-and chart loader share the same draw so displayed metadata matches gameplay.
-Set `TAPLINE_RANDOM_SEED` to an unsigned 64-bit integer for reproducible branches.
+On each visit, the selector draws `#RANDOM` branches while scanning charts,
+before displaying the list. Returning to the selector can therefore change
+branch-dependent metadata such as titles and BPM. Moving the highlight uses
+the entries from the current scan. Pressing Enter loads the chart with the
+entry's seed, so gameplay uses the same branch as the displayed metadata.
+
+With `--file`, tapline draws the branches when it opens the chart. In either
+mode, retrying uses the same loaded chart and branch. Set
+`TAPLINE_RANDOM_SEED` to the same unsigned 64-bit integer to reproduce the
+draw for an unchanged chart across selector visits and direct opens.
 
 Song text from `#TEXTxx` (or `#SONGxx`) appears at the top of the HUD when
 channel `99` triggers its object ID (base 36 by default, or base 62 with `#BASE 62`). It remains until the next defined text
