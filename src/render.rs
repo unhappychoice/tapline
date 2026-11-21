@@ -1,4 +1,4 @@
-use crate::chart::{difficulty_label, BgaEvent, BgaLayer, TextEvent};
+use crate::chart::{difficulty_label, BgaLayer, TextEvent};
 use crate::game::{Game, Judgment};
 use crossterm::{
     cursor, queue,
@@ -331,17 +331,13 @@ pub fn format_audio_badge(
 /// Compact HUD tag summarising the base/overlay/poor BGA slots the way a
 /// real player would care about — one line, base36 IDs, dashes where a slot
 /// hasn't fired yet.
-pub fn format_bga_badge(
-    bga_bank: &crate::bga::ImageBank,
-    bga: &[BgaEvent],
-    now_ms: f64,
-) -> Option<String> {
-    if bga.is_empty() {
+pub fn format_bga_badge(bga_bank: &crate::bga::ImageBank, now_ms: f64) -> Option<String> {
+    if !bga_bank.has_bga_events() {
         return None;
     }
     let fmt = |layer: BgaLayer| -> String {
         bga_bank
-            .active_bga_id(bga, layer, now_ms)
+            .active_bga_id(layer, now_ms)
             .map(bmp_id_label)
             .unwrap_or_else(|| "--".to_string())
     };
@@ -518,7 +514,7 @@ fn draw_gameplay_stats(
         Print(hud)
     )?;
 
-    if let Some(tag) = format_bga_badge(bank, &game.chart.bga, now_ms) {
+    if let Some(tag) = format_bga_badge(bank, now_ms) {
         let tag_x = cols.saturating_sub(tag.width() as u16 + 2);
         if tag_x > hud_x + hud_width {
             queue!(
@@ -1047,7 +1043,7 @@ fn fit_terminal_line(text: &str, cols: u16) -> (String, u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chart::{keys_for, Chart, Note};
+    use crate::chart::{keys_for, BgaEvent, Chart, Note};
     use crate::game::Game;
 
     #[test]
@@ -1424,8 +1420,9 @@ mod tests {
             layer: BgaLayer::Base,
             bmp_id: 1,
         });
-        let game = Game::new(chart);
+        let mut game = Game::new(chart);
         let bank = image_bank(&game.chart.bga);
+        game.chart.bga.clear();
 
         for (cols, badge_visible) in [(50, false), (80, true)] {
             assert!(playfield_fits(cols, 13, game.chart.lane_count));
@@ -1992,7 +1989,7 @@ mod tests {
             bmp_id: 1,
         }];
         let bank = image_bank(&evs);
-        assert!(bank.active_bga_id(&evs, BgaLayer::Base, 500.0).is_none());
+        assert!(bank.active_bga_id(BgaLayer::Base, 500.0).is_none());
     }
 
     #[test]
@@ -2015,7 +2012,7 @@ mod tests {
             },
         ];
         let bank = image_bank(&evs);
-        assert_eq!(bank.active_bga_id(&evs, BgaLayer::Base, 2000.0), Some(2));
+        assert_eq!(bank.active_bga_id(BgaLayer::Base, 2000.0), Some(2));
     }
 
     #[test]
@@ -2033,14 +2030,14 @@ mod tests {
             },
         ];
         let bank = image_bank(&evs);
-        assert_eq!(bank.active_bga_id(&evs, BgaLayer::Base, 2000.0), Some(1));
-        assert_eq!(bank.active_bga_id(&evs, BgaLayer::Overlay, 2000.0), Some(7));
-        assert_eq!(bank.active_bga_id(&evs, BgaLayer::Poor, 2000.0), None);
+        assert_eq!(bank.active_bga_id(BgaLayer::Base, 2000.0), Some(1));
+        assert_eq!(bank.active_bga_id(BgaLayer::Overlay, 2000.0), Some(7));
+        assert_eq!(bank.active_bga_id(BgaLayer::Poor, 2000.0), None);
     }
 
     #[test]
     fn format_bga_badge_returns_none_when_the_chart_has_no_bga() {
-        assert!(format_bga_badge(&image_bank(&[]), &[], 0.0).is_none());
+        assert!(format_bga_badge(&image_bank(&[]), 0.0).is_none());
     }
 
     #[test]
@@ -2051,10 +2048,7 @@ mod tests {
             bmp_id: 1,
         }];
         let bank = image_bank(&evs);
-        assert_eq!(
-            format_bga_badge(&bank, &evs, 200.0).unwrap(),
-            "BGA 01·--·--"
-        );
+        assert_eq!(format_bga_badge(&bank, 200.0).unwrap(), "BGA 01·--·--");
     }
 
     #[test]

@@ -1,8 +1,15 @@
 use crate::chart::{BgaEvent, BgaLayer};
 
+#[derive(Debug, PartialEq)]
+pub(super) struct Event {
+    pub(super) identity: usize,
+    pub(super) time_ms: f64,
+    pub(super) bmp_id: u32,
+}
+
 #[derive(Default)]
 pub(super) struct Timeline {
-    layers: [Vec<(f64, usize)>; 4],
+    layers: [Vec<Event>; 4],
     #[cfg(test)]
     comparisons: std::cell::Cell<usize>,
 }
@@ -10,23 +17,32 @@ pub(super) struct Timeline {
 impl Timeline {
     pub(super) fn new(events: &[BgaEvent]) -> Self {
         let mut timeline = Self::default();
-        events.iter().enumerate().for_each(|(index, event)| {
-            timeline.layers[slot(event.layer)].push((event.time_ms, index));
+        events.iter().enumerate().for_each(|(identity, event)| {
+            timeline.layers[slot(event.layer)].push(Event {
+                identity,
+                time_ms: event.time_ms,
+                bmp_id: event.bmp_id,
+            });
         });
         timeline.layers.iter_mut().for_each(|events| {
-            events.sort_by(|a, b| a.0.total_cmp(&b.0));
+            // Keep chart order for events at the same time.
+            events.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
         });
         timeline
     }
 
-    pub(super) fn latest(&self, layer: BgaLayer, now_ms: f64) -> Option<usize> {
+    pub(super) fn is_empty(&self) -> bool {
+        self.layers.iter().all(Vec::is_empty)
+    }
+
+    pub(super) fn latest(&self, layer: BgaLayer, now_ms: f64) -> Option<&Event> {
         let events = &self.layers[slot(layer)];
-        let end = events.partition_point(|(time_ms, _)| {
+        let end = events.partition_point(|event| {
             #[cfg(test)]
             self.comparisons.set(self.comparisons.get() + 1);
-            *time_ms <= now_ms
+            event.time_ms <= now_ms
         });
-        end.checked_sub(1).map(|index| events[index].1)
+        end.checked_sub(1).map(|index| &events[index])
     }
 
     #[cfg(test)]
@@ -66,25 +82,32 @@ mod tests {
             (50.0, BgaLayer::Overlay2),
             (200.0, BgaLayer::Overlay2),
         ]
-        .map(|(time_ms, layer)| BgaEvent {
+        .into_iter()
+        .enumerate()
+        .map(|(index, (time_ms, layer))| BgaEvent {
             time_ms,
             layer,
-            bmp_id: 1,
-        });
+            bmp_id: index as u32 + 1,
+        })
+        .collect::<Vec<_>>();
         let timeline = Timeline::new(&events);
+        let latest = |layer, time| timeline.latest(layer, time).map(|event| event.bmp_id);
         for (layer, first, last) in [
             (BgaLayer::Base, 3, 4),
             (BgaLayer::Overlay, 2, 6),
             (BgaLayer::Poor, 1, 5),
             (BgaLayer::Overlay2, 7, 8),
         ] {
-            assert_eq!(timeline.latest(layer, -1.0), None);
-            assert_eq!(timeline.latest(layer, 200.0), Some(last));
+            assert_eq!(latest(layer, -1.0), None);
+            assert_eq!(latest(layer, 200.0), Some(events[last].bmp_id));
             assert_eq!(
-                timeline.latest(layer, 100.0),
-                Some(if layer == BgaLayer::Base { 4 } else { first })
+                latest(layer, 100.0),
+                Some(events[if layer == BgaLayer::Base { 4 } else { first }].bmp_id)
             );
-            assert_eq!(timeline.latest(layer, events[first].time_ms), Some(first));
+            assert_eq!(
+                latest(layer, events[first].time_ms),
+                Some(events[first].bmp_id)
+            );
         }
     }
 
@@ -105,7 +128,12 @@ mod tests {
             }
             for _ in 0..2 {
                 timeline.comparisons.set(0);
-                assert_eq!(timeline.latest(BgaLayer::Base, 0.0), Some(0));
+                assert_eq!(
+                    timeline
+                        .latest(BgaLayer::Base, 0.0)
+                        .map(|event| event.identity),
+                    Some(0)
+                );
                 assert!(timeline.comparisons.get() <= count.ilog2() as usize + 2);
             }
         }

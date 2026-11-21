@@ -63,11 +63,11 @@ fn active_bga_id_costs_logarithmic_work_for_large_charts() {
         let bank = ImageBank::load(&HashMap::new(), &events, &Extensions::default());
         for _ in 0..2 {
             bank.3.reset_comparisons();
-            assert_eq!(bank.active_bga_id(&events, BgaLayer::Base, 0.0), Some(0));
+            assert_eq!(bank.active_bga_id(BgaLayer::Base, 0.0), Some(0));
             assert!(bank.3.comparisons() <= count.ilog2() as usize + 2);
         }
         bank.3.reset_comparisons();
-        assert_eq!(bank.active_bga_id(&events, BgaLayer::Overlay, 0.0), None);
+        assert_eq!(bank.active_bga_id(BgaLayer::Overlay, 0.0), None);
         assert_eq!(bank.3.comparisons(), 0);
     }
 }
@@ -527,8 +527,10 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
             format!("#TITLE Video\n#BPM 120\n#BMP01 video.{extension}\n#00004:0101\n#00111:01\n"),
         )
         .unwrap();
-        let game = Game::new(crate::bms::load(&chart, 1000.0).unwrap());
+        let mut game = Game::new(crate::bms::load(&chart, 1000.0).unwrap());
         let bank = load_bank(&game.chart);
+        // The compositor must still play both events from the bank.
+        game.chart.bga.truncate(1);
         assert_eq!(bank.frame(&game, 999.0).get_pixel(32, 32).0, [0, 0, 0, 255]);
         let wait_for = |time, channel: usize| {
             let deadline = Instant::now() + Duration::from_secs(10);

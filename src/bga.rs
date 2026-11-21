@@ -88,35 +88,25 @@ impl ImageBank {
         );
     }
 
-    /// Return the BMP id currently active on a given BGA layer at `now_ms`,
-    /// or `None` if no event on that layer has fired yet. `events` must be
-    /// the same slice `self` was built from. Uses the per-layer timeline
-    /// built once in `ImageBank::load`, so the lookup is O(log n) per layer
-    /// rather than a per-frame linear scan.
-    pub fn active_bga_id(
-        &self,
-        events: &[crate::chart::BgaEvent],
-        layer: BgaLayer,
-        now_ms: f64,
-    ) -> Option<u32> {
-        self.3
-            .latest(layer, now_ms)
-            .map(|index| events[index].bmp_id)
+    pub(crate) fn has_bga_events(&self) -> bool {
+        !self.3.is_empty()
     }
 
-    fn layer(&self, game: &Game, layer: BgaLayer, now_ms: f64) -> Option<LayerImage> {
+    /// Return the BMP ID active on the layer at `now_ms` in O(log n).
+    pub fn active_bga_id(&self, layer: BgaLayer, now_ms: f64) -> Option<u32> {
+        self.3.latest(layer, now_ms).map(|event| event.bmp_id)
+    }
+
+    fn layer(&self, layer: BgaLayer, now_ms: f64) -> Option<LayerImage> {
         let slot = timeline::slot(layer);
-        let event = self
-            .3
-            .latest(layer, now_ms)
-            .map(|index| (index, &game.chart.bga[index]));
+        let event = self.3.latest(layer, now_ms);
         let mut states = self.2.borrow_mut();
         let state = &mut states[slot];
-        let index = event.map(|(index, _)| index);
-        if state.event != index {
-            state.event = index;
+        let identity = event.map(|event| event.identity);
+        if state.event != identity {
+            state.event = identity;
             state.video = None;
-            let path = event.and_then(|(_, event)| self.1.get(&event.bmp_id));
+            let path = event.and_then(|event| self.1.get(&event.bmp_id));
             if path.is_some() && state.worker.is_none() {
                 state.worker = video_worker::Worker::start(video::Video::open);
             }
@@ -130,7 +120,7 @@ impl ImageBank {
                 .as_ref()
                 .and_then(video_worker::Worker::take_video);
         }
-        let (_, event) = event?;
+        let event = event?;
         if self.0.contains_key(&event.bmp_id) {
             Some(LayerImage::Bitmap(event.bmp_id))
         } else {
@@ -191,7 +181,7 @@ impl ImageBank {
     }
 
     fn styled_layer(&self, game: &Game, layer: BgaLayer, now_ms: f64) -> Option<Layer> {
-        let image = self.layer(game, layer, now_ms)?;
+        let image = self.layer(layer, now_ms)?;
         let state = self.4.state(layer, now_ms);
         let extensions = &game.chart.bga_extensions;
         let key = state.key.or_else(|| {
