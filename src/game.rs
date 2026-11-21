@@ -219,6 +219,7 @@ impl Game {
     }
 
     /// Judge the nearest unhit note in the lane within the inclusive hit window.
+    /// In LN mode, skip holds whose tails have already passed.
     /// Equal timing distances prefer the earlier note in chart order.
     pub fn hit(&mut self, lane: usize, now_ms: f64) -> Option<u32> {
         if lane >= self.flash.last_lane_hit.len() {
@@ -231,6 +232,9 @@ impl Game {
         for &i in self.hit_candidates(lane, now_ms) {
             let n = &self.chart.notes[i];
             if n.hit || n.held_since.is_some() || n.lane != lane {
+                continue;
+            }
+            if self.chart.ln_mode == LnMode::Ln && n.end_ms.is_some_and(|end| end < now_ms) {
                 continue;
             }
             let dt = (n.time_ms - now_ms).abs();
