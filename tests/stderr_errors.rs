@@ -144,6 +144,58 @@ fn oversized_replacement_returns_to_the_empty_selector() {
     assert!(output.contains("select a chart  ·  0 loaded"), "{output:?}");
 }
 
+#[test]
+fn dismissing_results_reopens_the_selector_after_the_last_chart_is_deleted() {
+    let dir = std::env::temp_dir().join(format!("tapline-deleted-chart-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("chart.bms");
+    std::fs::write(&path, "#TITLE Last Chart\n#00111:01\n").unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tapline"));
+    command
+        .args(["--countdown-ms", "0"])
+        .arg("--dir")
+        .arg(&dir)
+        .env("TAPLINE_DATA_DIR", "/dev/null");
+
+    let (status, output) = run_interactive_with(
+        command,
+        &[
+            (b"Last Chart", b"\r"),
+            (b"quit Esc / Q", b"q"),
+            (b"R: retry / other: selector", b" "),
+            ("select a chart  ·  0 loaded".as_bytes(), b"\x1b"),
+        ],
+        |prompt| {
+            if prompt == b"quit Esc / Q" {
+                std::fs::remove_file(&path)?;
+            }
+            Ok(())
+        },
+    );
+    std::fs::remove_dir(&dir).unwrap();
+    assert!(status.success(), "{output:?}");
+    assert!(!output.contains("Built-in Practice"), "{output:?}");
+}
+
+#[test]
+fn starting_with_an_empty_directory_plays_built_in_practice() {
+    let dir = std::env::temp_dir().join(format!("tapline-empty-selector-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tapline"));
+    command
+        .args(["--countdown-ms", "0"])
+        .arg("--dir")
+        .arg(&dir)
+        .env("TAPLINE_DATA_DIR", "/dev/null");
+    let (status, output) = run_interactive(
+        command,
+        &[(b"quit Esc / Q", b"q"), (b"R: retry / other: exit", b" ")],
+    );
+    std::fs::remove_dir(&dir).unwrap();
+    assert!(status.success(), "{output:?}");
+    assert!(output.contains("Built-in Practice"), "{output:?}");
+}
+
 fn run_interactive(command: Command, steps: &[(&[u8], &[u8])]) -> (ExitStatus, String) {
     run_interactive_with(command, steps, |_| Ok(()))
 }

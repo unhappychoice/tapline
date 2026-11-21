@@ -67,6 +67,10 @@ impl SelectorState {
 
     pub fn refresh_changed_chart(&mut self, path: &Path) {
         self.discovery.invalidate(path);
+        self.reopen();
+    }
+
+    pub fn reopen(&mut self) {
         self.reopening_selector = true;
     }
 

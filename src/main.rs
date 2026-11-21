@@ -92,6 +92,7 @@ fn run_session(
         if destination == ResultDestination::Exit {
             return Ok(());
         }
+        selector.reopen();
     }
 }
 
