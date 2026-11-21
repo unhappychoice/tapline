@@ -22,6 +22,7 @@ impl Judgment {
 
 pub struct FlashState {
     pub last_judgment: Option<Judgment>,
+    pub(crate) last_offset_ms: Option<f64>,
     pub last_lane_hit: Vec<f64>,
     pub last_judgment_at: f64,
     pub last_miss_at: Option<f64>,
@@ -42,6 +43,8 @@ pub struct Game {
     pub good: u32,
     pub miss: u32,
     pub flash: FlashState,
+    timing_count: u64,
+    timing_sum_ms: f64,
     next_miss: usize,
     miss_order: Vec<usize>,
     next_deadline: usize,
@@ -196,8 +199,11 @@ impl Game {
             great: 0,
             good: 0,
             miss: 0,
+            timing_count: 0,
+            timing_sum_ms: 0.0,
             flash: FlashState {
                 last_judgment: None,
+                last_offset_ms: None,
                 last_lane_hit: vec![-9999.0; lane_count],
                 last_judgment_at: -9999.0,
                 last_miss_at: None,
@@ -237,21 +243,22 @@ impl Game {
             if self.chart.ln_mode == LnMode::Ln && n.end_ms.is_some_and(|end| end < now_ms) {
                 continue;
             }
-            let dt = (n.time_ms - now_ms).abs();
+            let offset_ms = now_ms - n.time_ms;
+            let dt = offset_ms.abs();
             if dt > JudgmentWindows::for_scale(self.chart.judgment_scale(n.time_ms)).good {
                 continue;
             }
-            if best.is_none_or(|(_, b)| dt < b) {
-                best = Some((i, dt));
+            if best.is_none_or(|(_, b)| dt < b.abs()) {
+                best = Some((i, offset_ms));
             }
         }
         self.flash.last_lane_hit[lane] = now_ms;
-        if let Some((i, dt)) = best {
+        if let Some((i, offset_ms)) = best {
             let keysound = self.chart.notes[i].keysound;
             let is_ln = self.chart.notes[i].end_ms.is_some();
             let j =
                 JudgmentWindows::for_scale(self.chart.judgment_scale(self.chart.notes[i].time_ms))
-                    .judge(dt);
+                    .judge(offset_ms.abs());
             if is_ln {
                 self.chart.notes[i].held_since = Some(now_ms);
                 self.held_notes.push(i);
@@ -259,7 +266,7 @@ impl Game {
             } else {
                 self.chart.notes[i].hit = true;
             }
-            self.apply(j, now_ms);
+            self.apply(j, now_ms, Some(offset_ms));
             return keysound;
         }
         self.lane_keysounds[lane]
@@ -320,19 +327,17 @@ impl Game {
         let Some(end_ms) = self.chart.notes[i].end_ms else {
             return;
         };
-        let dt = (end_ms - now_ms).abs();
-        let j = if self.chart.ln_mode == LnMode::Ln {
-            if now_ms >= end_ms {
-                Judgment::Perfect
-            } else {
-                Judgment::Miss
-            }
+        let offset_ms = (self.chart.ln_mode != LnMode::Ln).then_some(now_ms - end_ms);
+        let j = if let Some(offset_ms) = offset_ms {
+            JudgmentWindows::for_scale(self.chart.judgment_scale(end_ms)).judge(offset_ms.abs())
+        } else if now_ms >= end_ms {
+            Judgment::Perfect
         } else {
-            JudgmentWindows::for_scale(self.chart.judgment_scale(end_ms)).judge(dt)
+            Judgment::Miss
         };
         self.chart.notes[i].hit = true;
         self.chart.notes[i].held_since = None;
-        self.apply(j, now_ms);
+        self.apply(j, now_ms, offset_ms);
     }
 
     /// Advance pending starts once, then judge tails only for currently held LNs.
@@ -352,7 +357,7 @@ impl Game {
             self.next_deadline += 1;
             if !note.hit && note.held_since.is_none() {
                 self.chart.notes[i].hit = true;
-                self.apply(Judgment::Miss, now_ms);
+                self.apply(Judgment::Miss, now_ms, None);
             }
         }
         while self
@@ -381,7 +386,7 @@ impl Game {
                 self.held_notes.remove(position);
                 self.chart.notes[i].hit = true;
                 self.chart.notes[i].held_since = None;
-                self.apply(Judgment::Perfect, now_ms);
+                self.apply(Judgment::Perfect, now_ms, None);
             } else {
                 position += 1;
             }
@@ -445,8 +450,17 @@ impl Game {
             .filter(|note| !note.hit)
     }
 
+    pub(crate) fn average_offset_ms(&self) -> Option<f64> {
+        (self.timing_count > 0).then(|| self.timing_sum_ms / self.timing_count as f64)
+    }
+
     /// Record the judgment, updating score, combo, and visual feedback.
-    fn apply(&mut self, j: Judgment, now_ms: f64) {
+    fn apply(&mut self, j: Judgment, now_ms: f64, offset_ms: Option<f64>) {
+        if let Some(offset_ms) = offset_ms {
+            self.timing_count += 1;
+            self.timing_sum_ms += offset_ms;
+        }
+        self.flash.last_offset_ms = offset_ms;
         self.gauge.apply(j);
         match j {
             Judgment::Perfect => self.perfect += 1,
@@ -1187,6 +1201,52 @@ mod tests {
         g.hit(0, 1010.0);
         assert_eq!(g.miss, 0);
         assert_eq!(g.gauge.value(), 0.0);
+    }
+
+    #[test]
+    fn equal_early_and_late_taps_keep_their_sign_and_cancel_in_the_average() {
+        let mut game = Game::new(chart_with(vec![note(1000.0, 0), note(2000.0, 0)], 4));
+        for (now, offset) in [(980.0, -20.0), (2020.0, 20.0)] {
+            game.hit(0, now);
+            assert_eq!(game.flash.last_judgment, Some(Judgment::Perfect));
+            assert_eq!(game.flash.last_offset_ms, Some(offset));
+        }
+        assert_eq!(game.average_offset_ms(), Some(0.0));
+    }
+
+    #[test]
+    fn only_timing_judged_releases_contribute_to_the_press_average() {
+        for mode in [LnMode::Ln, LnMode::Cn, LnMode::Hcn] {
+            let mut chart = chart_with(vec![ln(1000.0, 2000.0, 0)], 4);
+            chart.ln_mode = mode;
+            let mut game = Game::new(chart);
+            game.hit(0, 990.0);
+            assert_eq!(game.flash.last_offset_ms, Some(-10.0));
+            game.release(0, 2030.0);
+
+            let timed = mode != LnMode::Ln;
+            assert_eq!(game.flash.last_offset_ms, timed.then_some(30.0));
+            assert_eq!(
+                game.average_offset_ms(),
+                Some(if timed { 10.0 } else { -10.0 })
+            );
+        }
+    }
+
+    #[test]
+    fn automatic_releases_and_misses_clear_timing_feedback_without_counting() {
+        let mut chart = chart_with(vec![ln(1000.0, 2000.0, 0), note(3000.0, 0)], 4);
+        chart.ln_mode = LnMode::Cn;
+        let mut game = Game::new(chart);
+        assert_eq!(game.average_offset_ms(), None);
+        game.hit(0, 1010.0);
+        game.check_misses(2200.0);
+        assert_eq!(game.flash.last_judgment, Some(Judgment::Perfect));
+        assert_eq!(game.flash.last_offset_ms, None);
+        game.check_misses(3200.0);
+        assert_eq!(game.flash.last_judgment, Some(Judgment::Miss));
+        assert_eq!(game.flash.last_offset_ms, None);
+        assert_eq!(game.average_offset_ms(), Some(10.0));
     }
 
     #[test]

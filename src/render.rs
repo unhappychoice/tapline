@@ -197,7 +197,12 @@ fn draw_judgment_flash(
         Judgment::Miss => ("M I S S", Color::Red),
     };
     let row = judgment_row.saturating_sub(2);
-    let width = label.chars().count() as u16;
+    let timing = match game.flash.last_offset_ms {
+        Some(offset) if offset < 0.0 => " EARLY",
+        Some(offset) if offset > 0.0 => " LATE",
+        _ => "",
+    };
+    let width = (label.len() + timing.len()) as u16;
     let x = cols.saturating_sub(width) / 2;
     let fade = elapsed < 120.0;
     queue!(out, cursor::MoveTo(x, row), SetForegroundColor(color))?;
@@ -208,6 +213,7 @@ fn draw_judgment_flash(
         out,
         style::SetAttribute(style::Attribute::Bold),
         Print(label),
+        Print(timing),
         style::SetAttribute(style::Attribute::Reset),
         ResetColor
     )?;
@@ -980,6 +986,15 @@ fn result_lines(
         (format_result_gauge(game, cols), Color::Yellow),
     ];
     lines.extend(judgment_lines(game, cols).map(|line| (line, Color::DarkGrey)));
+    if let Some(offset) = game.average_offset_ms() {
+        let summary = if offset.abs() < 0.05 {
+            "Avg timing: 0.0 ms".into()
+        } else {
+            let direction = if offset < 0.0 { "early" } else { "late" };
+            format!("Avg timing: {:.1} ms {direction}", offset.abs())
+        };
+        lines.push((summary, Color::DarkGrey));
+    }
     if !game.chart.maker.is_empty() {
         lines.push((format!("chart by {}", game.chart.maker), Color::DarkGrey));
     }
@@ -1340,6 +1355,27 @@ mod tests {
                     assert!(SONG_TEXT_COMPARISONS.get() <= count.ilog2() as usize + 2);
                 });
         });
+    }
+
+    #[test]
+    fn judgment_timing_flash_fits_the_minimum_playfield() {
+        let layout = PlayLayout::compute(29, 13, 4).unwrap();
+        for (offset, expected, column) in [
+            (-20.0, "P E R F E C T EARLY", 6),
+            (20.0, "P E R F E C T LATE", 6),
+            (0.0, "P E R F E C T", 9),
+        ] {
+            let mut game = Game::new(crate::chart::built_in(120.0, 0.0));
+            let note = &game.chart.notes[0];
+            let now = note.time_ms + offset;
+            game.hit(note.lane, now);
+
+            let mut out = Vec::new();
+            draw_judgment_flash(&mut out, &game, 29, layout.judgment_row(), now).unwrap();
+            let rendered = String::from_utf8(out).unwrap();
+            assert!(rendered.contains(&format!("\x1b[7;{column}H")));
+            assert!(rendered.contains(&format!("{expected}\x1b[")));
+        }
     }
 
     #[test]
@@ -2387,6 +2423,8 @@ mod progress_tests {
         let identity = Identity::built_in(120.0);
         game.miss = 1;
         store.record(&identity, &game, false);
+        let note = &game.chart.notes[0];
+        game.hit(note.lane, note.time_ms - 20.0);
         game.score = 100;
         game.max_combo = u32::MAX;
         game.perfect = 100000;
@@ -2414,6 +2452,7 @@ mod progress_tests {
                 "Gd 300000 M 400000",
                 "Storage error: result unsaved",
                 "chart by Chart Author 日本語",
+                "Avg timing: 20.0 ms early",
             ] {
                 assert!(
                     rendered.contains(expected),
