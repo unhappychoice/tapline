@@ -51,16 +51,11 @@ pub(crate) fn parse_meta(
 ) -> Result<(ChartMeta, Option<String>, bool)> {
     #[cfg(test)]
     crate::select::count_metadata_parse();
-    let (text, draws_random) = resolve_branches(&decode_text(bytes), seed);
-    let mut pass = HeaderPass::for_text(&text);
-    let mut raw = Vec::new();
-    for line in header_lines(&text) {
-        if let Some(parsed) = parse_channel_line(line) {
-            raw.push(parsed);
-        } else {
-            pass.absorb(line)?;
-        }
-    }
+    let ParsedSource {
+        headers: pass,
+        channels: raw,
+        draws_random,
+    } = parse_source(bytes, seed)?;
     build_timeline(&raw, &pass, 0.0)?;
     let acc = collect_lane_occupancy(&raw, &pass, if is_pms(path) { PMS_LANES } else { P1_LANES });
     let p2_acc = if is_pms(path) {
@@ -103,18 +98,34 @@ pub fn load_with_seed(path: &Path, lead_in_ms: f64, seed: u64) -> Result<Chart> 
 }
 
 pub(crate) fn load_bytes(path: &Path, bytes: &[u8], lead_in_ms: f64, seed: u64) -> Result<Chart> {
-    let text = decode_text(bytes);
-    let text = resolve_control_flow(&text, seed);
+    let ParsedSource {
+        headers, channels, ..
+    } = parse_source(bytes, seed)?;
     let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let mut pass = HeaderPass::for_text(&text);
-    let mut raw: Vec<(u32, String, String)> = Vec::new();
+    build_chart(headers, channels, dir, path, lead_in_ms)
+}
+
+struct ParsedSource {
+    headers: HeaderPass,
+    channels: Vec<(u32, String, String)>,
+    draws_random: bool,
+}
+
+fn parse_source(bytes: &[u8], seed: u64) -> Result<ParsedSource> {
+    let (text, draws_random) = resolve_branches(&decode_text(bytes), seed);
+    let mut headers = HeaderPass::for_text(&text);
+    let mut channels = Vec::new();
     for line in header_lines(&text) {
         match parse_channel_line(line) {
-            Some(parsed) => raw.push(parsed),
-            None => pass.absorb(line)?,
+            Some(parsed) => channels.push(parsed),
+            None => headers.absorb(line)?,
         }
     }
-    build_chart(pass, raw, dir, path, lead_in_ms)
+    Ok(ParsedSource {
+        headers,
+        channels,
+        draws_random,
+    })
 }
 
 fn is_pms(path: &Path) -> bool {
@@ -1624,6 +1635,7 @@ pub(crate) fn random_seed() -> u64 {
 
 const RNG_OFFSET: u64 = 0x9E3779B97F4A7C15;
 
+#[cfg(test)]
 fn resolve_control_flow(text: &str, seed: u64) -> String {
     resolve_branches(text, seed).0
 }
@@ -3371,6 +3383,41 @@ mod tests {
 ";
         let out = resolve_control_flow(text, 0);
         assert!(out.contains("#TITLE Inner"));
+    }
+
+    #[test]
+    fn metadata_and_loading_use_the_same_random_headers_and_channels() {
+        let bytes = b"\
+#BPM 120
+#RANDOM 2
+#IF 1
+#TITLE First branch
+#PREVIEW first.ogg
+#00111:01
+#ELSE
+#TITLE Second branch
+#PREVIEW second.ogg
+#00118:0101
+#ENDIF
+";
+        let path = Path::new("random.bms");
+        let mut seen = HashSet::new();
+        for seed in 0..32 {
+            let (meta, preview, draws_random) = parse_meta(path, bytes, seed).unwrap();
+            let chart = load_bytes(path, bytes, 0.0, seed).unwrap();
+            let (expected_preview, expected_notes) = match meta.title.as_str() {
+                "First branch" => ("first.ogg", 1),
+                "Second branch" => ("second.ogg", 2),
+                title => panic!("Unexpected title: {title}"),
+            };
+            assert!(draws_random);
+            assert_eq!(meta.random_seed, seed);
+            assert_eq!(chart.title, meta.title);
+            assert_eq!(preview.as_deref(), Some(expected_preview));
+            assert_eq!(chart.notes.len(), expected_notes);
+            seen.insert(meta.title);
+        }
+        assert_eq!(seen.len(), 2);
     }
 
     #[test]
