@@ -34,6 +34,15 @@ impl Timeline {
         }
     }
 
+    pub fn trailing_stop_end(&self, last_event_ms: f64) -> Option<f64> {
+        self.points
+            .iter()
+            .rev()
+            .take_while(|&&(_, arrival, _, _)| arrival >= last_event_ms)
+            .find(|&&(_, arrival, departure, _)| departure > arrival)
+            .map(|&(_, _, departure, _)| departure)
+    }
+
     fn from_events<'a>(
         bpms: impl Iterator<Item = &'a super::model::Bpm>,
         stops: impl Iterator<Item = &'a super::model::Stop>,
