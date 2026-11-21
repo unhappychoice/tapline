@@ -99,16 +99,70 @@ impl Source for SharedSamples {
     }
 }
 
+#[derive(Clone, Default)]
+struct SampleData {
+    samples: HashMap<u32, DecodedSample>,
+    layers: HashMap<u32, Vec<u32>>,
+    slices: HashMap<u32, crate::chart::SampleSlice>,
+    decode_failures: usize,
+}
+
+/// Decoded samples and settings shared by all attempts of a loaded chart.
+#[derive(Default)]
+pub struct ChartAudio {
+    data: Arc<SampleData>,
+    muted: bool,
+}
+
+impl ChartAudio {
+    pub fn load(chart: &Chart, no_audio: bool) -> Self {
+        if no_audio {
+            return Self {
+                muted: true,
+                ..Self::default()
+            };
+        }
+        Self::load_with(chart, |path| decode(path))
+    }
+
+    pub(crate) fn start_attempt(&self) -> SampleBank {
+        let (stream, bus) = if self.muted {
+            (None, None)
+        } else {
+            silence_stderr(open_master_bus).unzip()
+        };
+        self.playback(stream, bus)
+    }
+
+    fn load_with(
+        chart: &Chart,
+        decode_sample: impl Fn(&PathBuf) -> anyhow::Result<DecodedSample> + Sync,
+    ) -> Self {
+        let (mut samples, decode_failures) = decode_all_with(gameplay_paths(chart), decode_sample);
+        apply_sample_settings(&mut samples, &chart.sample_settings);
+        Self {
+            data: Arc::new(SampleData {
+                samples,
+                layers: chart.sound_layers.clone(),
+                slices: chart.sample_slices.clone(),
+                decode_failures,
+            }),
+            muted: false,
+        }
+    }
+
+    fn playback(&self, stream: Option<MixerDeviceSink>, bus: Option<MasterBus>) -> SampleBank {
+        SampleBank::with_output(Arc::clone(&self.data), stream, bus)
+    }
+}
+
 pub struct SampleBank {
     _stream: Option<MixerDeviceSink>,
     bus: Option<MasterBus>,
-    samples: HashMap<u32, DecodedSample>,
-    layers: HashMap<u32, Vec<u32>>,
+    data: Arc<SampleData>,
     playing: RefCell<HashMap<u32, voice::VoiceHandle>>,
-    slices: HashMap<u32, crate::chart::SampleSlice>,
     pub enabled: bool,
-    /// Number of `wav_paths` entries that failed to decode. Surfaced on the
-    /// intro screen so charts that end up unexpectedly silent are diagnosable.
+    /// Number of `wav_paths` entries that failed to decode.
     pub decode_failures: usize,
 }
 
@@ -121,27 +175,13 @@ impl SampleBank {
 
     pub fn new(wav_paths: &HashMap<u32, PathBuf>) -> Self {
         let (stream, bus) = silence_stderr(open_master_bus).unzip();
-        let enabled = bus.is_some();
-        let (samples, failures) = decode_all(wav_paths);
-        Self {
-            layers: HashMap::new(),
-            playing: RefCell::new(HashMap::new()),
-            slices: HashMap::new(),
-            _stream: stream,
-            bus,
+        let (samples, decode_failures) = decode_all(wav_paths);
+        let data = SampleData {
             samples,
-            enabled,
-            decode_failures: failures,
-        }
-    }
-
-    pub(crate) fn for_chart(chart: &Chart) -> Self {
-        let (stream, bus) = silence_stderr(open_master_bus).unzip();
-        let mut bank = Self::load_chart_with(chart, |path| decode(path));
-        bank.enabled = bus.is_some();
-        bank._stream = stream;
-        bank.bus = bus;
-        bank
+            decode_failures,
+            ..SampleData::default()
+        };
+        Self::with_output(Arc::new(data), stream, bus)
     }
 
     pub fn with_settings(
@@ -149,30 +189,36 @@ impl SampleBank {
         settings: &HashMap<u32, crate::sample_settings::SampleSettings>,
     ) -> Self {
         let mut bank = Self::new(wav_paths);
-        bank.apply_sample_settings(settings);
+        apply_sample_settings(&mut Arc::make_mut(&mut bank.data).samples, settings);
         bank
     }
 
     pub fn with_slices(mut self, slices: &HashMap<u32, crate::chart::SampleSlice>) -> Self {
-        self.slices = slices.clone();
+        Arc::make_mut(&mut self.data).slices = slices.clone();
         self
     }
 
     pub fn with_layers(mut self, layers: &HashMap<u32, Vec<u32>>) -> Self {
-        self.layers = layers.clone();
+        Arc::make_mut(&mut self.data).layers = layers.clone();
         self
     }
 
     pub fn silent() -> Self {
+        Self::with_output(Arc::default(), None, None)
+    }
+
+    fn with_output(
+        data: Arc<SampleData>,
+        stream: Option<MixerDeviceSink>,
+        bus: Option<MasterBus>,
+    ) -> Self {
         Self {
-            layers: HashMap::new(),
+            enabled: bus.is_some(),
+            decode_failures: data.decode_failures,
+            _stream: stream,
+            bus,
+            data,
             playing: RefCell::new(HashMap::new()),
-            slices: HashMap::new(),
-            _stream: None,
-            bus: None,
-            samples: HashMap::new(),
-            enabled: false,
-            decode_failures: 0,
         }
     }
 
@@ -219,8 +265,8 @@ impl SampleBank {
                     self.sound_ids(&id)
                         .iter()
                         .map(|id| {
-                            self.samples.get(id).map_or(fallback_end, |sample| {
-                                let source = sample_source(sample, self.slices.get(id));
+                            self.data.samples.get(id).map_or(fallback_end, |sample| {
+                                let source = sample_source(sample, self.data.slices.get(id));
                                 time + source.remaining_seconds() * 1000.0 + 32.0
                             })
                         })
@@ -260,7 +306,7 @@ impl SampleBank {
     }
 
     pub fn sample_count(&self) -> usize {
-        self.samples.len()
+        self.data.samples.len()
     }
 
     pub fn play(&self, id: u32) {
@@ -331,35 +377,8 @@ impl SampleBank {
             .max()
     }
 
-    fn load_chart_with(
-        chart: &Chart,
-        decode_sample: impl Fn(&PathBuf) -> anyhow::Result<DecodedSample> + Sync,
-    ) -> Self {
-        let (samples, decode_failures) = decode_all_with(gameplay_paths(chart), decode_sample);
-        let mut bank = Self {
-            samples,
-            decode_failures,
-            ..Self::silent()
-        }
-        .with_slices(&chart.sample_slices)
-        .with_layers(&chart.sound_layers);
-        bank.apply_sample_settings(&chart.sample_settings);
-        bank
-    }
-
-    fn apply_sample_settings(
-        &mut self,
-        settings: &HashMap<u32, crate::sample_settings::SampleSettings>,
-    ) {
-        self.samples.iter_mut().for_each(|(id, sample)| {
-            if let Some(settings) = settings.get(id) {
-                apply_settings(sample, settings);
-            }
-        });
-    }
-
     fn sound_ids<'a>(&'a self, id: &'a u32) -> &'a [u32] {
-        sound_ids(&self.layers, id)
+        sound_ids(&self.data.layers, id)
     }
 
     fn start_voice(&self, id: u32, gain: f32) -> Option<impl Source<Item = f32> + Send> {
@@ -369,9 +388,10 @@ impl SampleBank {
     }
 
     fn sample_with_gain(&self, id: u32, gain: f32) -> Option<impl Source<Item = f32> + Send> {
-        self.samples
+        self.data
+            .samples
             .get(&id)
-            .map(|sample| sample_source(sample, self.slices.get(&id)).amplify(gain))
+            .map(|sample| sample_source(sample, self.data.slices.get(&id)).amplify(gain))
     }
 
     fn replace_sample(&self, id: u32, handle: voice::VoiceHandle) {
@@ -381,18 +401,29 @@ impl SampleBank {
     }
 
     fn hit_sound(&self, keysound: Option<u32>, synth_mode: bool) -> HitSound {
-        if synth_mode || self.samples.is_empty() {
+        if synth_mode || self.data.samples.is_empty() {
             return HitSound::Synth;
         }
         match keysound.filter(|id| {
             self.sound_ids(id)
                 .iter()
-                .any(|id| self.samples.contains_key(id))
+                .any(|id| self.data.samples.contains_key(id))
         }) {
             Some(id) => HitSound::Sample(id),
             None => HitSound::Silent,
         }
     }
+}
+
+fn apply_sample_settings(
+    samples: &mut HashMap<u32, DecodedSample>,
+    settings: &HashMap<u32, crate::sample_settings::SampleSettings>,
+) {
+    samples.iter_mut().for_each(|(id, sample)| {
+        if let Some(settings) = settings.get(id) {
+            apply_settings(sample, settings);
+        }
+    });
 }
 
 fn gameplay_paths(chart: &Chart) -> impl Iterator<Item = (&u32, &PathBuf)> {
@@ -586,12 +617,9 @@ where
 pub(crate) fn playback_test_bank() -> (SampleBank, rodio::mixer::MixerSource) {
     let (mixer, output) = rodio::mixer::mixer(rodio::nz!(2), rodio::nz!(44_100));
     let mut bank = tests::duration_bank_with_length(12_000);
-    let mut short = tests::duration_bank_with_length(80)
-        .samples
-        .remove(&1)
-        .unwrap();
+    let mut short = tests::duration_bank_with_length(80).data.samples[&1].clone();
     Arc::make_mut(&mut short.data).fill(0.25);
-    bank.samples.insert(2, short);
+    Arc::make_mut(&mut bank.data).samples.insert(2, short);
     bank.bus = Some(master::master_bus(&mixer));
     (bank, output)
 }
@@ -629,7 +657,10 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         SampleBank {
             enabled: true,
-            samples: HashMap::from([(1, sample)]),
+            data: Arc::new(SampleData {
+                samples: HashMap::from([(1, sample)]),
+                ..SampleData::default()
+            }),
             ..SampleBank::silent()
         }
     }
@@ -658,8 +689,8 @@ mod tests {
         let mut bank = duration_bank()
             .with_layers(&chart.sound_layers)
             .with_slices(&chart.sample_slices);
-        let sample = bank.samples[&1].clone();
-        bank.samples = chart
+        let sample = bank.data.samples[&1].clone();
+        Arc::make_mut(&mut bank.data).samples = chart
             .sample_slices
             .keys()
             .map(|id| (*id, sample.clone()))
@@ -673,8 +704,9 @@ mod tests {
             {"name": "long.wav", "notes": [{"x": 1, "y": 0}]}
         ]));
         let mut bank = bank_for_bmson(&chart);
-        let sample = duration_bank_with_length(60000).samples.remove(&1).unwrap();
-        bank.samples
+        let sample = duration_bank_with_length(60000).data.samples[&1].clone();
+        Arc::make_mut(&mut bank.data)
+            .samples
             .values_mut()
             .for_each(|value| *value = sample.clone());
         [false, true].into_iter().for_each(|auto_ks| {
@@ -713,8 +745,8 @@ mod tests {
     #[test]
     fn duration_preserves_trailing_bmson_stops_with_and_without_audio() {
         let mut bank = duration_bank_with_length(1000);
-        let sample = bank.samples.remove(&1).unwrap();
-        bank.samples.insert(0, sample);
+        let sample = Arc::make_mut(&mut bank.data).samples.remove(&1).unwrap();
+        Arc::make_mut(&mut bank.data).samples.insert(0, sample);
         for (note, stop_duration, expected_silent, expected_audio) in [
             (0, 1920, 4500.0, 4500.0),
             (240, 1920, 4500.0, 4500.0),
@@ -765,8 +797,13 @@ mod tests {
         });
         let short_id = chart.sound_layers.values().next().unwrap()[0];
         let short_sample = DecodedSample::new(2, 8000, Arc::new(vec![0.0; 16000]));
-        bank.samples.insert(short_id, short_sample);
-        let short_source = sample_source(&bank.samples[&short_id], bank.slices.get(&short_id));
+        Arc::make_mut(&mut bank.data)
+            .samples
+            .insert(short_id, short_sample);
+        let short_source = sample_source(
+            &bank.data.samples[&short_id],
+            bank.data.slices.get(&short_id),
+        );
         assert_eq!(short_source.remaining_seconds(), 1.0);
         [false, true].into_iter().for_each(|auto_ks| {
             assert_eq!(
@@ -774,9 +811,9 @@ mod tests {
                 10032.0 + if auto_ks { 0.0 } else { 140.0 }
             );
         });
-        bank.samples.remove(&short_id);
+        Arc::make_mut(&mut bank.data).samples.remove(&short_id);
         assert_eq!(bank.chart_duration_ms(&chart, true, false, 0.0), 10032.0);
-        bank.samples.clear();
+        Arc::make_mut(&mut bank.data).samples.clear();
         assert_eq!(bank.chart_duration_ms(&chart, true, false, 0.0), 192.0);
     }
 
@@ -813,7 +850,7 @@ mod tests {
         ]
         .into_iter()
         .for_each(|(start_ms, duration_ms, expected)| {
-            bank.slices.insert(
+            Arc::make_mut(&mut bank.data).slices.insert(
                 0,
                 crate::chart::SampleSlice {
                     start_ms,
@@ -900,8 +937,10 @@ mod tests {
                 std::fs::remove_file(path).unwrap();
                 assert_eq!(chart.bga.len(), 1);
                 assert_eq!(chart.bga[0].time_ms, 20000.0);
-                let sample = bank.samples.values().next().unwrap().clone();
-                bank.samples.insert(chart.bgm[0].keysound, sample);
+                let sample = bank.data.samples.values().next().unwrap().clone();
+                Arc::make_mut(&mut bank.data)
+                    .samples
+                    .insert(chart.bgm[0].keysound, sample);
                 let loaded_duration = chart.duration_ms;
                 for enabled in [false, true] {
                     bank.enabled = enabled;
@@ -972,7 +1011,8 @@ mod tests {
         chart.mines.clear();
         chart.bgm[0].time_ms = 1000.0;
         assert_eq!(bank.chart_duration_ms(&chart, true, false, 0.0), 11032.0);
-        bank.samples
+        Arc::make_mut(&mut bank.data)
+            .samples
             .insert(2, DecodedSample::new(1, 8000, Arc::new(vec![0.0; 800])));
         chart.notes[0].time_ms = 9000.0;
         chart.notes[0].keysound = Some(2);
@@ -1200,7 +1240,7 @@ mod tests {
         assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 30000.0);
         chart.notes[0].keysound = None;
         assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 30000.0);
-        bank.samples.clear();
+        Arc::make_mut(&mut bank.data).samples.clear();
         assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 30000.0);
     }
 
@@ -1232,7 +1272,7 @@ mod tests {
     fn duration_uses_processed_sample_rate_channels_and_length() {
         let mut bank = duration_bank();
         apply_settings(
-            bank.samples.get_mut(&1).unwrap(),
+            Arc::make_mut(&mut bank.data).samples.get_mut(&1).unwrap(),
             &crate::sample_settings::SampleSettings {
                 frequency: Some(16000),
                 pitch: Some(72),
@@ -1374,7 +1414,10 @@ mod tests {
             ),
         ]));
         let bank = SampleBank {
-            samples,
+            data: Arc::new(SampleData {
+                samples,
+                ..SampleData::default()
+            }),
             ..SampleBank::silent()
         }
         .with_layers(&HashMap::from([(3, vec![0, 1, 2])]));
@@ -1396,7 +1439,7 @@ mod tests {
                 },
             )]));
         [1, 2].into_iter().for_each(|id| {
-            bank.samples.insert(
+            Arc::make_mut(&mut bank.data).samples.insert(
                 id,
                 DecodedSample::new(1, 1000, Arc::new(vec![0.0, 0.4, 0.8, 1.0])),
             );
@@ -1510,7 +1553,10 @@ mod tests {
             let loaded = samples.contains_key(&1);
             assert_eq!(loaded, paths.len() == 2);
             let bank = SampleBank {
-                samples,
+                data: Arc::new(SampleData {
+                    samples,
+                    ..SampleData::default()
+                }),
                 ..SampleBank::silent()
             };
             [None, Some(1), Some(999)].into_iter().for_each(|keysound| {
@@ -1534,7 +1580,7 @@ mod tests {
     fn replaying_same_id_stops_previous_sink_and_restarts_sample() {
         let mut bank = SampleBank::silent();
         let sample = sustained_sample();
-        bank.samples.insert(1, sample);
+        Arc::make_mut(&mut bank.data).samples.insert(1, sample);
         let mut first = bank.start_voice(1, 1.0).unwrap();
         assert_eq!(first.next(), Some(0.5));
 
@@ -1549,8 +1595,10 @@ mod tests {
     fn different_ids_keep_playing_even_when_they_share_sample_data() {
         let mut bank = SampleBank::silent();
         let sample = sustained_sample();
-        bank.samples.insert(1, sample.clone());
-        bank.samples.insert(2, sample);
+        Arc::make_mut(&mut bank.data)
+            .samples
+            .insert(1, sample.clone());
+        Arc::make_mut(&mut bank.data).samples.insert(2, sample);
         let mut first = bank.start_voice(1, 1.0).unwrap();
         let mut second = bank.start_voice(2, 1.0).unwrap();
 
@@ -1689,10 +1737,10 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         assert_eq!(bank.sample_count(), 64);
         assert_eq!(bank.decode_failures, 0);
-        let shared_pcm = &bank.samples[&1].data;
+        let shared_pcm = &bank.data.samples[&1].data;
         assert_eq!(shared_pcm.as_slice(), [0.5, -0.25]);
         (1..=64).for_each(|id| {
-            assert!(Arc::ptr_eq(&bank.samples[&id].data, shared_pcm));
+            assert!(Arc::ptr_eq(&bank.data.samples[&id].data, shared_pcm));
             let gain = id as f32 / 100.0 * 0.5;
             let expected = if id % 2 == 0 {
                 [0.0, 0.5 * gain, 0.0, -0.25 * gain]

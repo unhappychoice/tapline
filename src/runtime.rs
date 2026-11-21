@@ -54,7 +54,10 @@ pub fn play_chart_with_destination(
     identity: Option<crate::results::Identity>,
     destination: ResultDestination,
 ) -> Result<()> {
-    while play_attempt(out, args, &chart, identity.as_ref(), destination)? == ResultAction::Retry {}
+    let audio = audio::ChartAudio::load(&chart, args.no_audio);
+    while play_loaded_attempt(out, args, &chart, &audio, identity.as_ref(), destination)?
+        == ResultAction::Retry
+    {}
     Ok(())
 }
 
@@ -65,12 +68,21 @@ pub fn play_attempt(
     identity: Option<&crate::results::Identity>,
     destination: ResultDestination,
 ) -> Result<ResultAction> {
+    let audio = audio::ChartAudio::load(chart, args.no_audio);
+    play_loaded_attempt(out, args, chart, &audio, identity, destination)
+}
+
+/// Play one attempt using audio prepared for this loaded chart.
+pub fn play_loaded_attempt(
+    out: &mut Stdout,
+    args: &Args,
+    chart: &chart::Chart,
+    audio: &audio::ChartAudio,
+    identity: Option<&crate::results::Identity>,
+    destination: ResultDestination,
+) -> Result<ResultAction> {
     let opts = PlayOptions::from_args(args);
-    let bank = if opts.no_audio {
-        audio::SampleBank::silent()
-    } else {
-        audio::SampleBank::for_chart(chart)
-    };
+    let bank = audio.start_attempt();
     let duration_ms =
         bank.chart_duration_ms(chart, opts.auto_ks, opts.synth_mode, opts.audio_lead_ms);
     let mut chart = chart.clone();
@@ -78,8 +90,10 @@ pub fn play_attempt(
     let mut game = game::Game::new(chart);
     execute!(out, terminal::Clear(terminal::ClearType::All))?;
     run_game(out, &mut game, &bank, &opts)?;
-    let progress = save_result(identity, &game, args.auto_ks);
-    after_playback(bank, || show_result(out, &game, &progress, destination))
+    after_playback(bank, || {
+        let progress = save_result(identity, &game, args.auto_ks);
+        show_result(out, &game, &progress, destination)
+    })
 }
 
 fn save_result(
@@ -1615,19 +1629,10 @@ mod tests {
             .for_each(|code| {
                 let mut game = ready_game();
                 let mut state = LoopState::new(Vec::new());
-                let bank = SampleBank::silent();
-                let (sinks, mut outputs): (Vec<_>, Vec<_>) = (0..2)
-                    .map(|_| {
-                        let (sink, mut output) = rodio::Player::new();
-                        sink.append(rodio::buffer::SamplesBuffer::new(
-                            rodio::nz!(1),
-                            rodio::nz!(44_100),
-                            vec![0.5; 44_100 * 60],
-                        ));
-                        assert_eq!(output.next(), Some(0.5));
-                        (sink, output)
-                    })
-                    .unzip();
+                let (bank, mut output) = audio::playback_test_bank();
+                assert!(bank.start_sound(2, 1.0).is_some());
+                assert!(bank.start_hit(0, None, true, 1.0).is_some());
+                assert!(output.by_ref().take(2048).any(|sample| sample != 0.0));
                 assert!(handle_key(
                     code,
                     KeyEventKind::Press,
@@ -1639,11 +1644,8 @@ mod tests {
                 ));
                 assert!(state.quit);
 
-                after_playback((bank, sinks), || {
-                    outputs.iter_mut().for_each(|output| {
-                        assert!(output.by_ref().skip(1000).take(100).all(|s| s == 0.0));
-                        assert!(output.by_ref().take(100).all(|s| s == 0.0));
-                    });
+                after_playback(bank, || {
+                    assert!(output.skip(1000).take(100).all(|sample| sample == 0.0));
                 });
             });
     }
