@@ -555,6 +555,38 @@ fn lntype_two_duplicate_slots_preserve_the_last_keysound() {
 }
 
 #[test]
+fn lntype_two_shared_start_preserves_wider_slot_and_uses_last_keysound() {
+    for lines in ["#00151:01\n#00151:0200", "#00151:0100\n#00151:02"] {
+        let path = write_text(&format!("#BPM 60\n#LNTYPE 2\n{lines}\n"));
+        let chart = bms::load(&path, 0.0).unwrap();
+        assert_eq!(chart.notes.len(), 1);
+        assert_eq!(chart.notes[0].time_ms, 4000.0);
+        assert_eq!(chart.notes[0].end_ms, Some(8000.0));
+        assert_eq!(chart.notes[0].keysound, Some(2));
+    }
+}
+
+#[test]
+fn lntype_two_shared_interior_slot_extends_hold_without_changing_its_keysound() {
+    let path = write_text("#BPM 60\n#LNTYPE 2\n#00151:0102\n#00151:00000300\n");
+    let chart = bms::load(&path, 0.0).unwrap();
+    assert_eq!(chart.notes.len(), 1);
+    assert_eq!(chart.notes[0].time_ms, 4000.0);
+    assert_eq!(chart.notes[0].end_ms, Some(8000.0));
+    assert_eq!(chart.notes[0].keysound, Some(1));
+}
+
+#[test]
+fn lntype_one_shared_start_uses_last_keysound_and_pairs_distinct_endpoints() {
+    let path = write_text("#BPM 60\n#LNTYPE 1\n#00151:0103\n#00151:02000000\n");
+    let chart = bms::load(&path, 0.0).unwrap();
+    assert_eq!(chart.notes.len(), 1);
+    assert_eq!(chart.notes[0].time_ms, 4000.0);
+    assert_eq!(chart.notes[0].end_ms, Some(6000.0));
+    assert_eq!(chart.notes[0].keysound, Some(2));
+}
+
+#[test]
 fn lntype_two_endpoints_include_millisecond_stops() {
     let path = write_text("#BPM 60\n#LNTYPE 2\n#STP 001.500 750\n#00151:01020300\n");
     let chart = bms::load(&path, 250.0).unwrap();
