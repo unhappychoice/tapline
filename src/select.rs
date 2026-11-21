@@ -6,7 +6,7 @@ use crate::results::Identity;
 use anyhow::Result;
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
     queue,
     style::{self, Color, Print, ResetColor, SetForegroundColor},
     terminal,
@@ -59,6 +59,14 @@ pub struct SelectorState {
     lowercase_cache: Vec<(String, String, String)>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum SelectorAction {
+    None,
+    Redraw,
+    Play(usize),
+    Quit,
+}
+
 impl SelectorState {
     pub fn scan(&mut self, root: &Path) -> Vec<ChartEntry> {
         self.lowercase_cache.clear();
@@ -103,6 +111,30 @@ impl SelectorState {
 
     fn selected(&self) -> Option<usize> {
         self.indices.get(self.cursor).copied()
+    }
+
+    fn handle_key(&mut self, key: KeyEvent, charts: &[ChartEntry]) -> SelectorAction {
+        match (key.kind, key.code, self.editing) {
+            (KeyEventKind::Release, _, _) => return SelectorAction::None,
+            (KeyEventKind::Repeat, KeyCode::Enter | KeyCode::Esc, true)
+            | (KeyEventKind::Repeat, KeyCode::Char('/' | 'l' | 'c'), false) => {
+                return SelectorAction::None;
+            }
+            (KeyEventKind::Press, KeyCode::Esc | KeyCode::Char('q' | 'Q'), false) => {
+                return SelectorAction::Quit;
+            }
+            (KeyEventKind::Press, KeyCode::Enter, false) => {
+                return self
+                    .selected()
+                    .map_or(SelectorAction::None, SelectorAction::Play);
+            }
+            _ => {}
+        }
+        if self.key(key.code, charts) {
+            SelectorAction::Redraw
+        } else {
+            SelectorAction::None
+        }
     }
 
     fn key(&mut self, key: KeyCode, charts: &[ChartEntry]) -> bool {
@@ -202,20 +234,12 @@ pub fn run_with_state(
         }
         match event::read()? {
             Event::Resize(..) => frame.invalidate(),
-            Event::Key(k) if k.kind != KeyEventKind::Release => {
-                if !state.editing {
-                    match k.code {
-                        KeyCode::Esc | KeyCode::Char('q' | 'Q') => return Ok(None),
-                        KeyCode::Enter if selected.is_some() => {
-                            return Ok(selected.map(|i| charts[i].clone()))
-                        }
-                        _ => {}
-                    }
-                }
-                if state.key(k.code, charts) {
-                    frame.invalidate();
-                }
-            }
+            Event::Key(key) => match state.handle_key(key, charts) {
+                SelectorAction::None => {}
+                SelectorAction::Redraw => frame.invalidate(),
+                SelectorAction::Play(i) => return Ok(Some(charts[i].clone())),
+                SelectorAction::Quit => return Ok(None),
+            },
             _ => {}
         }
     }
@@ -513,6 +537,74 @@ mod tests {
         };
         let identity = Identity::from_bytes(&meta.path, title.as_bytes(), Some(meta.random_seed));
         ChartEntry { meta, identity }
+    }
+
+    fn key_event(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent::new_with_kind(code, event::KeyModifiers::NONE, kind)
+    }
+
+    #[test]
+    fn finishing_search_requires_a_fresh_enter_to_play() {
+        let charts = [meta("Alpha")];
+        let mut state = SelectorState {
+            query: "Al".into(),
+            editing: true,
+            ..Default::default()
+        };
+        state.refresh(&charts);
+        let press = key_event(KeyCode::Enter, KeyEventKind::Press);
+        let repeat = key_event(KeyCode::Enter, KeyEventKind::Repeat);
+
+        assert_eq!(state.handle_key(repeat, &charts), SelectorAction::None);
+        assert!(state.editing);
+        assert_eq!(state.handle_key(press, &charts), SelectorAction::Redraw);
+        assert!(!state.editing);
+        assert_eq!(state.handle_key(repeat, &charts), SelectorAction::None);
+        assert_eq!(state.handle_key(repeat, &charts), SelectorAction::None);
+        assert_eq!(state.handle_key(press, &charts), SelectorAction::Play(0));
+    }
+
+    #[test]
+    fn selector_ignores_enter_repeat_on_return_from_results_and_accepts_navigation_repeats() {
+        let charts = [meta("Alpha"), meta("Beta"), meta("Gamma")];
+        let mut state = SelectorState::default();
+        state.refresh(&charts);
+        let mut handle = |code, kind| state.handle_key(key_event(code, kind), &charts);
+        use KeyEventKind::{Press, Repeat};
+
+        assert_eq!(handle(KeyCode::Enter, Repeat), SelectorAction::None);
+        assert_eq!(handle(KeyCode::Down, Press), SelectorAction::Redraw);
+        assert_eq!(handle(KeyCode::Down, Repeat), SelectorAction::Redraw);
+        assert_eq!(handle(KeyCode::Enter, Press), SelectorAction::Play(2));
+    }
+
+    #[test]
+    fn selector_repeats_edit_text_without_triggering_transitions_or_filters() {
+        let charts = [meta("Alpha")];
+        let mut state = SelectorState::default();
+        state.refresh(&charts);
+        let mut handle = |code, kind| state.handle_key(key_event(code, kind), &charts);
+        use KeyEventKind::{Press, Release, Repeat};
+
+        for code in [
+            KeyCode::Char('/'),
+            KeyCode::Char('l'),
+            KeyCode::Esc,
+            KeyCode::Char('q'),
+            KeyCode::Char('Q'),
+        ] {
+            assert_eq!(handle(code, Repeat), SelectorAction::None);
+        }
+        assert_eq!(handle(KeyCode::Char('/'), Press), SelectorAction::Redraw);
+        assert_eq!(handle(KeyCode::Char('/'), Repeat), SelectorAction::Redraw);
+        assert_eq!(handle(KeyCode::Char('c'), Repeat), SelectorAction::Redraw);
+        assert_eq!(handle(KeyCode::Backspace, Repeat), SelectorAction::Redraw);
+        assert_eq!(handle(KeyCode::Backspace, Release), SelectorAction::None);
+        assert_eq!(handle(KeyCode::Esc, Repeat), SelectorAction::None);
+        assert_eq!(handle(KeyCode::Esc, Press), SelectorAction::Redraw);
+        assert_eq!(handle(KeyCode::Char('c'), Repeat), SelectorAction::None);
+        assert_eq!(handle(KeyCode::Esc, Press), SelectorAction::Quit);
+        assert_eq!(state.query, "/");
     }
 
     #[test]
