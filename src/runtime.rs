@@ -77,7 +77,7 @@ pub fn play_loaded_attempt(
     out: &mut Stdout,
     args: &Args,
     chart: &chart::Chart,
-    audio: &audio::ChartAudio,
+    audio: &audio::ChartAudio<'_>,
     identity: Option<&crate::results::Identity>,
     destination: ResultDestination,
 ) -> Result<ResultAction> {
