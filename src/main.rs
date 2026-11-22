@@ -58,7 +58,7 @@ fn run_session(
         &mut Stdout,
         &Args,
         &tapline::chart::Chart,
-        &audio::ChartAudio,
+        &audio::ChartAudio<'_>,
         Option<&tapline::results::Identity>,
         ResultDestination,
     ) -> Result<runtime::ResultAction>,

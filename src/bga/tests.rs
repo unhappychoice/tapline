@@ -2,6 +2,10 @@ use super::*;
 use crate::chart::{BgaEvent, Chart, Note};
 
 fn game() -> (Game, ImageBank) {
+    game_with_chart(|_| {})
+}
+
+fn game_with_chart(configure: impl FnOnce(&mut Chart)) -> (Game, ImageBank) {
     let bga = [
         (0.0, BgaLayer::Base, 1),
         (100.0, BgaLayer::Base, 2),
@@ -14,7 +18,7 @@ fn game() -> (Game, ImageBank) {
         bmp_id,
     })
     .to_vec();
-    let game = Game::new(Chart {
+    let mut chart = Chart {
         bga,
         notes: vec![
             Note {
@@ -28,7 +32,9 @@ fn game() -> (Game, ImageBank) {
             },
         ],
         ..Default::default()
-    });
+    };
+    configure(&mut chart);
+    let game = Game::new(chart);
     let mut bank = ImageBank(
         [
             (1, [255, 0, 0, 255]),
@@ -40,8 +46,8 @@ fn game() -> (Game, ImageBank) {
         .into(),
         HashMap::new(),
         RefCell::default(),
-        timeline::Timeline::new(&game.chart.bga),
-        effect_timeline::Timeline::new(&game.chart.bga_extensions),
+        timeline::Timeline::new(&game.chart().bga),
+        effect_timeline::Timeline::new(&game.chart().bga_extensions),
         RefCell::default(),
     );
     Arc::get_mut(bank.0.get_mut(&3).unwrap())
@@ -74,16 +80,16 @@ fn active_bga_id_costs_logarithmic_work_for_large_charts() {
 
 #[test]
 fn reuses_static_pixels_across_frames_and_repeated_bitmap_events() {
-    let (mut game, mut bank) = game();
-    game.chart.bga.insert(
-        1,
-        BgaEvent {
-            time_ms: 50.0,
-            layer: BgaLayer::Base,
-            bmp_id: 1,
-        },
-    );
-    bank.3 = timeline::Timeline::new(&game.chart.bga);
+    let (game, bank) = game_with_chart(|chart| {
+        chart.bga.insert(
+            1,
+            BgaEvent {
+                time_ms: 50.0,
+                layer: BgaLayer::Base,
+                bmp_id: 1,
+            },
+        );
+    });
 
     let pixels = bank.rendered_frame(&game, 0.0, 16).as_ptr();
     assert_eq!(bank.rendered_frame(&game, 16.0, 16).as_ptr(), pixels);
@@ -171,9 +177,10 @@ fn trailing_layer_effects_render_before_completion_with_and_without_audio() {
                 parsed_duration,
             ),
         ];
-        let mut game = Game::new(chart);
         for (duration, expected_duration) in durations {
-            game.chart.duration_ms = duration;
+            let mut chart = chart.clone();
+            chart.duration_ms = duration;
+            let mut game = Game::new(chart);
             assert!(!game.advance_completion(9984.0));
             assert_eq!(images.frame(&game, 9984.0).get_pixel(0, 0)[0], 255);
             assert!(!game.advance_completion(10000.0));
@@ -203,6 +210,13 @@ fn preloaded_images_survive_deleted_files_and_bad_files_are_skipped() {
     .into();
     let mut game = Game::new(Chart {
         bmp_paths: paths,
+        bga: [1, 2, 3]
+            .map(|bmp_id| BgaEvent {
+                time_ms: bmp_id as f64,
+                layer: BgaLayer::Base,
+                bmp_id,
+            })
+            .into(),
         notes: vec![Note {
             time_ms: 1000.0,
             keysound: Some(7),
@@ -210,7 +224,7 @@ fn preloaded_images_survive_deleted_files_and_bad_files_are_skipped() {
         }],
         ..Default::default()
     });
-    let bank = load_bank(&game.chart);
+    let bank = load_bank(game.chart());
     assert_eq!(game.hit(0, 0.0), Some(7));
     std::fs::remove_file(path).unwrap();
     std::fs::remove_file(invalid).unwrap();
@@ -236,13 +250,13 @@ fn bmson_images_are_loaded_and_rendered_through_presentation() {
     )
     .unwrap();
     let game = Game::new(crate::bmson::load(&path, 1000.0).unwrap());
-    let presentation = Presentation::new(&game.chart, true);
+    let presentation = Presentation::new(game.chart(), true);
     let bank = presentation.bank;
 
-    let mut deferred = Presentation::new(&game.chart, false);
+    let mut deferred = Presentation::new(game.chart(), false);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while deferred.bank.0.is_empty() {
-        deferred.prepare_deferred(&game.chart, true, Presentation::load_assets);
+        deferred.prepare_deferred(game.chart(), true, Presentation::load_assets);
         assert!(std::time::Instant::now() < deadline, "BGA worker timed out");
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
@@ -306,31 +320,92 @@ fn overlay_transparency_follows_chart_format() {
 
 #[test]
 fn extended_layers_opacity_and_poor_modes() {
-    let (mut game, mut bank) = game();
-    game.chart.bga.push(BgaEvent {
-        time_ms: 0.0,
-        layer: BgaLayer::Overlay2,
-        bmp_id: 4,
+    let (mut game, mut bank) = game_with_chart(|chart| {
+        chart.bga.push(BgaEvent {
+            time_ms: 0.0,
+            layer: BgaLayer::Overlay2,
+            bmp_id: 4,
+        });
+        chart.bga_extensions.events.push(EffectEvent {
+            time_ms: 50.0,
+            effect: Effect::Opacity(BgaLayer::Overlay2, 128),
+        });
     });
-    bank.3 = timeline::Timeline::new(&game.chart.bga);
-    game.chart.bga_extensions.events.push(EffectEvent {
-        time_ms: 50.0,
-        effect: Effect::Opacity(BgaLayer::Overlay2, 128),
-    });
-    bank.4 = effect_timeline::Timeline::new(&game.chart.bga_extensions);
     assert_eq!(bank.frame(&game, 0.0).get_pixel(1, 1).0, [0, 0, 255, 255]);
     let pixel = bank.frame(&game, 50.0).get_pixel(1, 1).0;
     assert_eq!(pixel[..3], [127, 0, 128]);
     game.flash.last_miss_at = Some(50.0);
     assert_eq!(bank.frame(&game, 50.0).get_pixel(1, 1).0, [0, 0, 255, 255]);
-    game.chart.bga_extensions.poor_mode = 2;
-    assert_eq!(bank.frame(&game, 50.0).get_pixel(1, 1).0, pixel);
-    game.chart.bga_extensions.poor_mode = 1;
+    let mut chart = game.chart().clone();
+    chart.bga_extensions.poor_mode = 2;
+    let mut normal = Game::new(chart.clone());
+    normal.flash.last_miss_at = Some(50.0);
+    assert_eq!(bank.frame(&normal, 50.0).get_pixel(1, 1).0, pixel);
+    chart.bga_extensions.poor_mode = 1;
+    let mut game = Game::new(chart);
+    game.flash.last_miss_at = Some(50.0);
     bank.0.insert(
         4,
         Arc::new(RgbaImage::from_pixel(SIZE, SIZE, Rgba([0, 0, 0, 255]))),
     );
     assert_eq!(bank.frame(&game, 50.0).get_pixel(1, 1).0, [255, 0, 0, 255]);
+}
+
+#[test]
+fn trailing_switch_keeps_gameplay_open_and_renders_after_a_key_press() {
+    let dir = std::env::temp_dir().join(format!("tapline-bga-trailing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let color = [20, 40, 60, 255];
+    RgbaImage::from_pixel(SIZE, SIZE, Rgba(color))
+        .save(dir.join("frame.png"))
+        .unwrap();
+    let chart = crate::bms::load_bytes(
+        &dir.join("chart.bms"),
+        b"#BPM 120\n#WAV02 tone.wav\n#BMP01 frame.png\n#SWBGA01 100:500:11:0:255,0,0,0 01\n#00001:02\n#005A5:01\n#010A5:02\n",
+        0.0,
+        0,
+    )
+    .unwrap();
+    let images = Presentation::load_assets(&chart);
+    std::fs::remove_dir_all(dir).unwrap();
+
+    let (audio, _output) = crate::audio::playback_test_bank();
+    for (bank, end) in [
+        (audio, 12500.0),
+        (crate::audio::SampleBank::silent(), 14500.0),
+    ] {
+        let mut chart = chart.clone();
+        chart.duration_ms = bank.chart_duration_ms(&chart, false, false, 0.0);
+        assert_eq!(chart.duration_ms, end);
+        let mut game = Game::new(chart);
+        game.hit(0, 9999.0);
+        assert!(!game.advance_completion(10016.0));
+        assert_ne!(images.frame(&game, 10016.0).get_pixel(0, 0).0, color);
+        game.hit(0, 10016.0);
+        assert!(!game.advance_completion(10032.0));
+        assert_eq!(images.frame(&game, 10032.0).get_pixel(0, 0).0, color);
+        assert!(game.advance_completion(end));
+    }
+}
+
+#[test]
+fn undefined_and_unbound_trailing_switches_do_not_extend_gameplay() {
+    let (audio, _output) = crate::audio::playback_test_bank();
+    for (bank, end) in [(audio, 112.0), (crate::audio::SampleBank::silent(), 4500.0)] {
+        for event in ["", "#005A5:01", "#005A5:02"] {
+            let source = format!(
+                "#BPM 120\n#WAV02 tone.wav\n#SWBGA01 100:500:17:0:255,0,0,0 01\n#00001:02\n{event}\n"
+            );
+            let chart = crate::bms::load_bytes(
+                std::path::Path::new("chart.bms"),
+                source.as_bytes(),
+                0.0,
+                0,
+            )
+            .unwrap();
+            assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), end);
+        }
+    }
 }
 
 #[test]
@@ -351,7 +426,7 @@ fn ten_key_double_play_renders_p2_key_bound_animations() {
         let chart = crate::bms::load(&path, 0.0).unwrap();
         assert_eq!(chart.lane_count, 10);
         let mut game = Game::new(chart);
-        let bank = load_bank(&game.chart);
+        let bank = load_bank(game.chart());
         game.hit(key - 1, 0.0);
         assert!(game.bga_switch.active.is_none());
         assert_ne!(bank.frame(&game, 0.0).get_pixel(0, 0).0, color);
@@ -382,7 +457,7 @@ fn parses_extensions_and_renders_key_bound_animation() {
         .iter()
         .any(|e| e.layer == BgaLayer::Overlay2 && e.time_ms == 500.0));
     let mut game = Game::new(chart);
-    let bank = load_bank(&game.chart);
+    let bank = load_bank(game.chart());
     assert_eq!(bank.0[&2].get_pixel(0, 0).0, [0, 0, 0, 0]);
     assert_eq!(bank.0[&2].get_pixel(63, 63).0, [20, 40, 60, 255]);
     game.hit(0, 499.0);
@@ -397,18 +472,12 @@ fn parses_extensions_and_renders_key_bound_animation() {
         [20, 40, 60, 255]
     );
     assert_eq!(bank.frame(&game, 700.0), bank.frame(&game, 799.0));
-    game.chart
-        .bga_extensions
-        .switches
-        .get_mut(&1)
-        .unwrap()
-        .duration_ms = 0;
-    game.chart
-        .bga_extensions
-        .switches
-        .get_mut(&1)
-        .unwrap()
-        .looping = true;
+    let mut chart = game.chart().clone();
+    let switch = chart.bga_extensions.switches.get_mut(&1).unwrap();
+    switch.duration_ms = 0;
+    switch.looping = true;
+    let mut game = Game::new(chart);
+    game.hit(0, 500.0);
     assert_eq!(
         bank.frame(&game, 700.0).get_pixel(0, 0).0,
         [20, 40, 60, 255]
@@ -424,38 +493,39 @@ fn parses_extensions_and_renders_key_bound_animation() {
 
 #[test]
 fn argb_and_opacity_update_the_same_layer_state() {
-    let (mut game, mut bank) = game();
-    game.chart.bga_extensions.argb.insert(1, [128, 0, 0, 255]);
-    game.chart.bga_extensions.events = vec![
-        EffectEvent {
-            time_ms: 0.0,
-            effect: Effect::Color(BgaLayer::Base, 1),
-        },
-        EffectEvent {
-            time_ms: 50.0,
-            effect: Effect::Opacity(BgaLayer::Base, 255),
-        },
-    ];
-    bank.4 = effect_timeline::Timeline::new(&game.chart.bga_extensions);
+    let (game, mut bank) = game_with_chart(|chart| {
+        chart.bga_extensions.argb.insert(1, [128, 0, 0, 255]);
+        chart.bga_extensions.events = vec![
+            EffectEvent {
+                time_ms: 0.0,
+                effect: Effect::Color(BgaLayer::Base, 1),
+            },
+            EffectEvent {
+                time_ms: 50.0,
+                effect: Effect::Opacity(BgaLayer::Base, 255),
+            },
+        ];
+    });
     assert_eq!(bank.frame(&game, 0.0).get_pixel(1, 1).0[..3], [128, 0, 0]);
     assert_eq!(bank.frame(&game, 50.0).get_pixel(1, 1).0, [255, 0, 0, 255]);
-    game.chart.bga_extensions.argb.insert(1, [255, 255, 0, 0]);
-    bank.4 = effect_timeline::Timeline::new(&game.chart.bga_extensions);
+    let mut extensions = game.chart().bga_extensions.clone();
+    extensions.argb.insert(1, [255, 255, 0, 0]);
+    bank.4 = effect_timeline::Timeline::new(&extensions);
     assert_eq!(bank.frame(&game, 50.0).get_pixel(1, 1).0, [0, 0, 0, 255]);
 }
 
 #[test]
 fn held_video_composite_is_reused_until_layers_style_or_width_change() {
-    let (mut game, mut bank) = game();
+    let (game, mut bank) = game_with_chart(|chart| {
+        chart.bga_extensions.events.push(EffectEvent {
+            time_ms: 10.0,
+            effect: Effect::Opacity(BgaLayer::Base, 128),
+        });
+    });
     bank.0.remove(&1);
     let playback = &mut bank.2.get_mut()[timeline::slot(BgaLayer::Base)];
     playback.event = Some(0);
     playback.video = Some(video::Video::test_frame([255, 0, 0, 255]));
-    game.chart.bga_extensions.events.push(EffectEvent {
-        time_ms: 10.0,
-        effect: Effect::Opacity(BgaLayer::Base, 128),
-    });
-    bank.4 = effect_timeline::Timeline::new(&game.chart.bga_extensions);
 
     let render = |time, width| {
         let frame = bank.rendered_frame(&game, time, width);
@@ -527,10 +597,11 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
             format!("#TITLE Video\n#BPM 120\n#BMP01 video.{extension}\n#00004:0101\n#00111:01\n"),
         )
         .unwrap();
-        let mut game = Game::new(crate::bms::load(&chart, 1000.0).unwrap());
-        let bank = load_bank(&game.chart);
+        let mut fixture = crate::bms::load(&chart, 1000.0).unwrap();
+        let bank = load_bank(&fixture);
         // The compositor must still play both events from the bank.
-        game.chart.bga.truncate(1);
+        fixture.bga.truncate(1);
+        let game = Game::new(fixture);
         assert_eq!(bank.frame(&game, 999.0).get_pixel(32, 32).0, [0, 0, 0, 255]);
         let wait_for = |time, channel: usize| {
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -556,11 +627,11 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
             BgaLayer::Overlay,
             BgaLayer::Overlay2,
         ] {
-            let mut delayed = Game::new(crate::bms::load(&chart, 1000.0).unwrap());
-            let mut delayed_bank = load_bank(&delayed.chart);
-            delayed.chart.bga.truncate(1);
-            delayed.chart.bga[0].layer = layer;
-            delayed_bank.3 = timeline::Timeline::new(&delayed.chart.bga);
+            let mut fixture = crate::bms::load(&chart, 1000.0).unwrap();
+            fixture.bga.truncate(1);
+            fixture.bga[0].layer = layer;
+            let mut delayed_bank = load_bank(&fixture);
+            let mut delayed = Game::new(fixture);
             delayed.flash.last_miss_at = Some(1750.0);
             if layer == BgaLayer::Base {
                 let deadline = Instant::now() + Duration::from_secs(10);
@@ -589,19 +660,25 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
                 assert!(Instant::now() < deadline, "Delayed video did not catch up");
                 std::thread::sleep(Duration::from_millis(5));
             }
-            delayed.chart.bga_extensions.events.push(EffectEvent {
+            let mut extensions = delayed.chart().bga_extensions.clone();
+            extensions.events.push(EffectEvent {
                 time_ms: 1750.0,
                 effect: Effect::Opacity(layer, 128),
             });
-            delayed_bank.4 = effect_timeline::Timeline::new(&delayed.chart.bga_extensions);
+            delayed_bank.4 = effect_timeline::Timeline::new(&extensions);
             let pixel = delayed_bank.frame(&delayed, 1750.0).get_pixel(32, 32).0;
             assert!((120..=128).contains(&pixel[1]));
-            delayed.chart.bga_extensions.events.clear();
-            delayed_bank.4 = effect_timeline::Timeline::new(&delayed.chart.bga_extensions);
+            extensions.events.clear();
+            delayed_bank.4 = effect_timeline::Timeline::new(&extensions);
             if layer == BgaLayer::Poor {
-                delayed.chart.bga_extensions.poor_mode = 1;
+                let mut fixture = delayed.chart().clone();
+                fixture.bga_extensions.poor_mode = 1;
+                let mut delayed = Game::new(fixture.clone());
+                delayed.flash.last_miss_at = Some(1750.0);
                 assert!(delayed_bank.frame(&delayed, 1750.0).get_pixel(32, 32)[1] > 240);
-                delayed.chart.bga_extensions.poor_mode = 2;
+                fixture.bga_extensions.poor_mode = 2;
+                let mut delayed = Game::new(fixture);
+                delayed.flash.last_miss_at = Some(1750.0);
                 assert_eq!(
                     delayed_bank.frame(&delayed, 1750.0).get_pixel(32, 32).0,
                     [0, 0, 0, 255]
@@ -652,7 +729,14 @@ pub(super) fn load_bank(chart: &Chart) -> ImageBank {
 fn headless_judgments_and_hidden_presentation_never_load_images() {
     image_file::LOAD_CALLS.set(0);
     let mut chart = Chart {
-        bmp_paths: [(1, PathBuf::from("unused.png"))].into(),
+        bmp_paths: [(1, PathBuf::from("missing.png"))].into(),
+        bga: [1, 2]
+            .map(|bmp_id| BgaEvent {
+                time_ms: 0.0,
+                layer: BgaLayer::Base,
+                bmp_id,
+            })
+            .into(),
         notes: vec![
             Note {
                 time_ms: 100.0,
@@ -680,23 +764,23 @@ fn headless_judgments_and_hidden_presentation_never_load_images() {
     assert_eq!((game.perfect, game.miss), (1, 1));
     assert_eq!(image_file::LOAD_CALLS.get(), 0);
 
-    let mut presentation = Presentation::new(&game.chart, false);
+    let mut presentation = Presentation::new(game.chart(), false);
     for (cols, rows) in [(64, 24), (120, 16)] {
-        let visible = crate::render::bga_panel_visible(cols, rows, game.chart.lane_count);
+        let visible = crate::render::bga_panel_visible(cols, rows, game.chart().lane_count);
         assert!(!visible);
-        assert_no_deferred_load(&mut presentation, &game.chart, visible);
+        assert_no_deferred_load(&mut presentation, game.chart(), visible);
     }
     assert_eq!(image_file::LOAD_CALLS.get(), 0);
 
-    let visible = crate::render::bga_panel_visible(65, 24, game.chart.lane_count);
+    let visible = crate::render::bga_panel_visible(65, 24, game.chart().lane_count);
     assert!(visible);
-    let mut presentation = Presentation::new(&game.chart, visible);
+    let mut presentation = Presentation::new(game.chart(), visible);
     assert_eq!(
         image_file::LOAD_CALLS.get(),
         1,
         "ordinary image and crop share a load attempt before playback"
     );
-    assert_no_deferred_load(&mut presentation, &game.chart, visible);
+    assert_no_deferred_load(&mut presentation, game.chart(), visible);
 }
 
 fn assert_no_deferred_load(presentation: &mut Presentation, chart: &Chart, visible: bool) {

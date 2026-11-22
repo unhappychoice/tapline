@@ -101,15 +101,18 @@ pub(crate) fn load_bytes(path: &Path, bytes: &[u8], lead_in_ms: f64) -> Result<C
 }
 
 pub fn read_meta(path: &Path) -> Result<ChartMeta> {
-    read_meta_bytes(path, &crate::chart_file::read(path)?)
+    let (mut meta, preview) = parse_meta(path, &crate::chart_file::read(path)?)?;
+    meta.preview = crate::bms::resolve_preview(path, preview.as_deref());
+    Ok(meta)
 }
 
-pub(crate) fn read_meta_bytes(path: &Path, bytes: &[u8]) -> Result<ChartMeta> {
+pub(crate) fn parse_meta(path: &Path, bytes: &[u8]) -> Result<(ChartMeta, Option<String>)> {
     #[cfg(test)]
     crate::select::count_metadata_parse();
     let data = parse(path, bytes)?;
     Timeline::new(&data, 0.0)?;
-    metadata::convert(path, &data.info)
+    let meta = metadata::convert(path, &data.info)?;
+    Ok((meta, data.info.preview_music))
 }
 
 fn parse(path: &Path, bytes: &[u8]) -> Result<Bmson> {
