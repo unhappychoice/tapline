@@ -4,13 +4,15 @@
 
 Run `tapline --dir ~/bms` with the path to your collection. Tapline looks for
 `.bms`, `.bml`, `.bme`, `.pms`, and `.bmson` files up to five levels deep.
-If the chosen directory is missing or contains no charts, tapline plays the
-built-in chart. For automatic directory selection, see the
+If the initial scan finds no playable charts, tapline plays the built-in
+chart. For automatic directory selection, see the
 [CLI reference](cli-reference.md#chart-selection).
 
 If the selector is open but shows no matches, press `Enter` or `Esc` to
 finish editing the search if it is active, then press `c` to clear the search
-and lane filters.
+and lane filters. When the selector reopens after a song, it rescans the
+directory. If the list is still empty, check that the chart files are still
+accessible, then restart tapline to scan again.
 
 ## A large chart is missing from the selector
 

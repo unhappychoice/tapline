@@ -20,6 +20,9 @@ mod crops;
 mod effect_timeline;
 mod image_file;
 mod presentation;
+#[cfg(test)]
+pub(crate) use presentation::load_bitmaps;
+pub(crate) use presentation::ChartImages;
 pub use presentation::Presentation;
 mod timeline;
 mod video;
@@ -39,7 +42,7 @@ const POOR_MS: f64 = 500.0;
 
 #[derive(Default)]
 pub struct ImageBank(
-    HashMap<u32, Arc<RgbaImage>>,
+    Arc<bitmaps::Bitmaps>,
     HashMap<u32, PathBuf>,
     RefCell<[Playback; 4]>,
     timeline::Timeline,
@@ -53,8 +56,22 @@ impl ImageBank {
         events: &[crate::chart::BgaEvent],
         extensions: &Extensions,
     ) -> Self {
+        Self::with_bitmaps(
+            paths,
+            events,
+            extensions,
+            Arc::new(bitmaps::load(paths, events, extensions)),
+        )
+    }
+
+    fn with_bitmaps(
+        paths: &HashMap<u32, PathBuf>,
+        events: &[crate::chart::BgaEvent],
+        extensions: &Extensions,
+        bitmaps: Arc<bitmaps::Bitmaps>,
+    ) -> Self {
         Self(
-            bitmaps::load(paths, events, extensions),
+            bitmaps,
             paths
                 .iter()
                 .filter(|(_, path)| is_video(path))
@@ -81,7 +98,7 @@ impl ImageBank {
 
     pub fn prepare_crops(&mut self, chart: &crate::chart::Chart) {
         *self.5.get_mut() = None;
-        self.0.extend(
+        Arc::make_mut(&mut self.0).extend(
             crops::prepare(chart, |path| {
                 image_file::load(path).map(|image| image.into_rgba8())
             })

@@ -27,7 +27,7 @@ fn chart(dir: &Path, name: &str) -> Chart {
 fn unavailable_audio_backend_skips_decoding_and_allows_silent_play() {
     let mut chart = crate::chart::built_in(120.0, 0.0);
     chart.notes[0].keysound = Some(1);
-    chart.wav_paths.insert(1, "key.wav".into());
+    chart.wav_paths.insert(1, Path::new("key.wav").into());
     let audio = ChartAudio::load(&chart, false);
     let calls = AtomicUsize::new(0);
     let bank = audio.start_attempt_with(
@@ -79,11 +79,11 @@ fn gameplay_decodes_only_referenced_bms_wavs() {
     )
     .unwrap();
     let chart = crate::bms::load(&path, 0.0).unwrap();
-    assert_eq!(chart.wav_paths[&4], dir.join("unused.wav"));
+    assert_eq!(chart.wav_paths[&4].as_ref(), dir.join("unused.wav"));
     let calls = AtomicUsize::new(0);
     let audio = ChartAudio::load(&chart, false);
     let (bank, _output) = test_playback(&audio, |path| {
-        assert_ne!(path, &chart.wav_paths[&4]);
+        assert_ne!(path, chart.wav_paths[&4].as_ref());
         calls.fetch_add(1, Ordering::Relaxed);
         decode(path)
     });
@@ -120,9 +120,9 @@ fn gameplay_loads_only_reachable_layer_members_and_preserves_slices() {
     chart.notes[0].keysound = Some(10);
     chart.sound_layers = HashMap::from([(10, vec![1, 2]), (20, vec![3])]);
     chart.wav_paths = HashMap::from([
-        (1, "shared.wav".into()),
-        (2, "shared.wav".into()),
-        (3, "unused.wav".into()),
+        (1, Path::new("shared.wav").into()),
+        (2, Path::new("shared.wav").into()),
+        (3, Path::new("unused.wav").into()),
     ]);
     chart.sample_slices.insert(
         2,
@@ -133,7 +133,7 @@ fn gameplay_loads_only_reachable_layer_members_and_preserves_slices() {
     );
     let audio = ChartAudio::load(&chart, false);
     let (bank, _output) = test_playback(&audio, |path| {
-        assert_eq!(path, &chart.wav_paths[&1]);
+        assert_eq!(path, chart.wav_paths[&1].as_ref());
         Ok(DecodedSample::new(
             1,
             1000,
@@ -162,7 +162,7 @@ fn bmson_decodes_regular_audio_and_extension_fallback_without_a_device() {
     std::fs::write(&wav, include_bytes!("../../tests/fixtures/tone.wav")).unwrap();
     for name in ["Audio/Tone.wav", "audio/tone.ogg"] {
         let chart = chart(&dir, name);
-        assert_eq!(chart.wav_paths[&0], wav);
+        assert_eq!(chart.wav_paths[&0].as_ref(), wav);
         let (samples, failures) = decode_all(&chart.wav_paths);
         assert_eq!(failures, 0);
         let source = sample_source(&samples[&0], chart.sample_slices.get(&0));
@@ -250,7 +250,7 @@ fn decoding_rejects_directories() {
 
 fn test_playback(
     audio: &ChartAudio<'_>,
-    decode_sample: impl Fn(&PathBuf) -> anyhow::Result<DecodedSample> + Sync,
+    decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
 ) -> (SampleBank, rodio::mixer::MixerSource) {
     let (mixer, output) = rodio::mixer::mixer(rodio::nz!(2), rodio::nz!(44_100));
     (
@@ -267,7 +267,10 @@ fn retry_reuses_decoded_sources_and_starts_with_fresh_voices() {
         time_ms: 0.0,
         keysound: 2,
     });
-    chart.wav_paths = HashMap::from([(1, "key.wav".into()), (2, "bgm.wav".into())]);
+    chart.wav_paths = HashMap::from([
+        (1, Path::new("key.wav").into()),
+        (2, Path::new("bgm.wav").into()),
+    ]);
     chart.sample_settings.insert(
         2,
         crate::sample_settings::SampleSettings {
@@ -277,8 +280,8 @@ fn retry_reuses_decoded_sources_and_starts_with_fresh_voices() {
     );
     let calls = [AtomicUsize::new(0), AtomicUsize::new(0)];
     let audio = ChartAudio::load(&chart, false);
-    let decode_sample = |path: &PathBuf| {
-        let index = usize::from(path == &chart.wav_paths[&2]);
+    let decode_sample = |path: &Path| {
+        let index = usize::from(path == chart.wav_paths[&2].as_ref());
         calls[index].fetch_add(1, Ordering::Relaxed);
         let mut samples = vec![0.5; 4096];
         samples[..2].fill(0.25);

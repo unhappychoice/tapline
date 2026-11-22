@@ -20,6 +20,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    outputs:
+      pages-enabled: ${{ steps.pages.outputs.enabled }}
     steps:
       - uses: actions/checkout@v7
 
@@ -33,13 +35,22 @@ jobs:
 
       - run: mdbook build
 
-      - uses: actions/upload-pages-artifact@v5
+      - name: Check whether GitHub Pages is enabled
+        id: pages
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          enabled=$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_pages')
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-pages-artifact@v5
+        if: steps.pages.outputs.enabled == 'true'
         with:
           path: target/book
 
   deploy:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: needs.build.outputs.pages-enabled == 'true'
     needs: build
     runs-on: ubuntu-24.04
     permissions:

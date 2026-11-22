@@ -287,6 +287,25 @@ mod tests {
         assert!(video.frame(10000.0) == Some(second));
     }
 
+    #[test]
+    fn playback_keeps_a_slow_seek_until_its_first_frame_arrives() {
+        let (sender, frames) = sync_channel(1);
+        let mut playback = super::super::Playback {
+            start: Start::Frame(1800),
+            video: Some(video_with_frames(frames)),
+            ..Default::default()
+        };
+        let path = Path::new("video.mp4");
+        assert!(playback.frame(path, 62_000.0).is_none());
+        assert_eq!(playback.start, Start::Frame(1800));
+
+        let first = Frame(Arc::new(RgbaImage::new(SIZE, SIZE)));
+        sender.send((1800, first.clone(), false)).unwrap();
+        assert!(playback.frame(path, 62_000.0) == Some(first.clone()));
+        assert_eq!(playback.start, Start::Frame(1860));
+        assert!(playback.frame(path, 63_000.0) == Some(first));
+    }
+
     fn video_with_frames(frames: Receiver<DecodedFrame>) -> Video {
         Video::from_frames(frames, Arc::new(AtomicU64::new(0)))
     }
