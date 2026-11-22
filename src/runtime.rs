@@ -151,18 +151,43 @@ fn run_game(
     let mut state = LoopState::new(build_auto_notes(game, opts));
 
     while !state.quit {
-        let (cols, rows) = terminal::size()?;
-        let now = state.update_size(bank, game, elapsed_ms(start), cols, rows);
-        if advance_frame(game, bank, opts, &mut state, now) {
+        let size = terminal::size()?;
+        if run_frame(
+            game,
+            bank,
+            opts,
+            &mut state,
+            &mut bga,
+            size,
+            elapsed_ms(start),
+        )? {
             break;
         }
-        let visible = render::bga_panel_visible(cols, rows, game.chart.lane_count);
-        bga.prepare_deferred(&game.chart, visible, Presentation::load_assets);
-        draw_frame(out, game, bank, opts, &mut state, &bga, now)?;
+        state.screen.present(out)?;
         pump_input(out, game, bank, opts, &mut state, start, next_frame)?;
         next_frame = advance_deadline(next_frame);
     }
     Ok(())
+}
+
+fn run_frame(
+    game: &mut game::Game,
+    bank: &audio::SampleBank,
+    opts: &PlayOptions,
+    state: &mut LoopState,
+    bga: &mut Presentation,
+    size: (u16, u16),
+    wall_ms: f64,
+) -> Result<bool> {
+    let (cols, rows) = size;
+    let now = state.update_size(bank, game, wall_ms, cols, rows);
+    if advance_frame(game, bank, opts, state, now) {
+        return Ok(true);
+    }
+    let visible = render::bga_panel_visible(cols, rows, game.chart.lane_count);
+    bga.prepare_deferred(&game.chart, visible, Presentation::load_assets);
+    draw_frame(game, bank, opts, state, bga, size, now)?;
+    Ok(false)
 }
 
 struct LoopState {
@@ -266,15 +291,14 @@ fn advance_frame(
 }
 
 fn draw_frame(
-    out: &mut Stdout,
     game: &mut game::Game,
     bank: &audio::SampleBank,
     opts: &PlayOptions,
     state: &mut LoopState,
     bga: &Presentation,
+    size @ (cols, rows): (u16, u16),
     now: f64,
 ) -> Result<()> {
-    let (cols, rows) = terminal::size()?;
     state.screen.resize(cols, rows);
     let mode: u8 = if now < opts.countdown_ms { 1 } else { 2 };
     if mode != state.prev_mode {
@@ -289,9 +313,8 @@ fn draw_frame(
         render::draw_size_warning(&mut state.screen, game.chart.lane_count)?;
         state.prev_mode = 0;
     } else {
-        draw_mode(state, game, bank, opts, bga, (cols, rows), now)?;
+        draw_mode(state, game, bank, opts, bga, size, now)?;
     }
-    state.screen.present(out)?;
     Ok(())
 }
 
@@ -322,7 +345,7 @@ fn draw_mode(
         );
     }
     game.check_misses(now);
-    render::draw(&mut state.screen, game, bga, now)
+    render::draw_at_size(&mut state.screen, game, bga, size, now)
 }
 
 fn fire_scheduled_audio(
@@ -671,6 +694,44 @@ mod tests {
 
     use crate::chart::{Chart, Note};
     use crate::game::Game;
+
+    #[test]
+    fn undersized_frame_warns_and_keeps_chart_time_and_scheduled_audio_paused() {
+        let mut chart = base_chart(
+            4,
+            vec![Note {
+                time_ms: 3000.0,
+                ..Note::default()
+            }],
+        );
+        chart.bgm = vec![BgmEvent {
+            time_ms: 3000.0,
+            keysound: 1,
+        }];
+        let mut game = Game::new(chart);
+        let bank = SampleBank::silent();
+        let options = opts(true);
+        let mut state = LoopState::new(build_auto_notes(&game, &options));
+        let mut bga = Presentation::new(&game.chart, false);
+
+        state.update_size(&bank, &mut game, 3000.0, 40, 24);
+        for (size, wall_ms, paused, cursor) in
+            [((28, 24), 3200.0, true, 0), ((29, 24), 3400.0, false, 1)]
+        {
+            assert!(
+                !run_frame(&mut game, &bank, &options, &mut state, &mut bga, size, wall_ms)
+                    .unwrap()
+            );
+            let mut output = Vec::new();
+            state.screen.present(&mut output).unwrap();
+            let output = String::from_utf8(output).unwrap();
+
+            assert_eq!(output.contains("Paused: need 29x13"), paused);
+            assert_eq!(output.contains('═'), !paused);
+            assert_eq!(state.clock_ms, 3000.0);
+            assert_eq!((state.bgm_cursor, state.note_snd_cursor), (cursor, cursor));
+        }
+    }
 
     #[test]
     fn insufficient_dimensions_freeze_startup_and_resize_judgments() {

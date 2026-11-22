@@ -544,7 +544,16 @@ pub fn draw(
     bga: &crate::bga::Presentation,
     now_ms: f64,
 ) -> anyhow::Result<()> {
-    let (cols, rows) = terminal::size()?;
+    draw_at_size(out, game, bga, terminal::size()?, now_ms)
+}
+
+pub(crate) fn draw_at_size(
+    out: &mut impl Write,
+    game: &Game,
+    bga: &crate::bga::Presentation,
+    (cols, rows): (u16, u16),
+    now_ms: f64,
+) -> anyhow::Result<()> {
     let lanes = game.chart.lane_count as u16;
     let Some(layout) = PlayLayout::compute(cols, rows, game.chart.lane_count) else {
         return Ok(());
