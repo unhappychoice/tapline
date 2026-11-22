@@ -8,6 +8,8 @@ use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Source};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
+use std::path::Path;
+#[cfg(test)]
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -126,14 +128,14 @@ impl<'a> ChartAudio<'a> {
     pub(crate) fn start_attempt(&self) -> SampleBank {
         self.start_attempt_with(
             || silence_stderr(open_master_bus).map(|(stream, bus)| (Some(stream), bus)),
-            |path| decode(path),
+            decode,
         )
     }
 
     fn start_attempt_with(
         &self,
         open: impl FnOnce() -> Option<(Option<MixerDeviceSink>, MasterBus)>,
-        decode_sample: impl Fn(&PathBuf) -> anyhow::Result<DecodedSample> + Sync,
+        decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
     ) -> SampleBank {
         if self.muted {
             return SampleBank::silent();
@@ -147,7 +149,7 @@ impl<'a> ChartAudio<'a> {
 
     fn decode_samples(
         &self,
-        decode_sample: impl Fn(&PathBuf) -> anyhow::Result<DecodedSample> + Sync,
+        decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
     ) -> Arc<SampleData> {
         let chart = self.chart;
         let (mut samples, decode_failures) = decode_all_with(gameplay_paths(chart), decode_sample);
@@ -178,7 +180,7 @@ impl SampleBank {
         }
     }
 
-    pub fn new(wav_paths: &HashMap<u32, PathBuf>) -> Self {
+    pub fn new(wav_paths: &HashMap<u32, impl AsRef<Path>>) -> Self {
         let (stream, bus) = silence_stderr(open_master_bus).unzip();
         let (samples, decode_failures) = decode_all(wav_paths);
         let data = SampleData {
@@ -190,7 +192,7 @@ impl SampleBank {
     }
 
     pub fn with_settings(
-        wav_paths: &HashMap<u32, PathBuf>,
+        wav_paths: &HashMap<u32, impl AsRef<Path>>,
         settings: &HashMap<u32, crate::sample_settings::SampleSettings>,
     ) -> Self {
         let mut bank = Self::new(wav_paths);
@@ -431,7 +433,7 @@ fn apply_sample_settings(
     });
 }
 
-fn gameplay_paths(chart: &Chart) -> impl Iterator<Item = (&u32, &PathBuf)> {
+fn gameplay_paths(chart: &Chart) -> impl Iterator<Item = (&u32, &Path)> {
     let required: HashSet<_> = chart
         .bgm
         .iter()
@@ -442,7 +444,7 @@ fn gameplay_paths(chart: &Chart) -> impl Iterator<Item = (&u32, &PathBuf)> {
         .collect();
     required
         .into_iter()
-        .filter_map(|id| chart.wav_paths.get(id).map(|path| (id, path)))
+        .filter_map(|id| chart.wav_paths.get(id).map(|path| (id, path.as_ref())))
 }
 
 fn sound_ids<'a>(layers: &'a HashMap<u32, Vec<u32>>, id: &'a u32) -> &'a [u32] {
@@ -492,17 +494,17 @@ enum HitSound {
     Silent,
 }
 
-fn decode_all(wav_paths: &HashMap<u32, PathBuf>) -> (HashMap<u32, DecodedSample>, usize) {
-    decode_all_with(wav_paths, |path| decode(path))
+fn decode_all(wav_paths: &HashMap<u32, impl AsRef<Path>>) -> (HashMap<u32, DecodedSample>, usize) {
+    decode_all_with(wav_paths, decode)
 }
 
-fn decode_all_with<'a>(
-    wav_paths: impl IntoIterator<Item = (&'a u32, &'a PathBuf)>,
-    decode_sample: impl Fn(&PathBuf) -> anyhow::Result<DecodedSample> + Sync,
+fn decode_all_with<'a, P: AsRef<Path> + ?Sized + 'a>(
+    wav_paths: impl IntoIterator<Item = (&'a u32, &'a P)>,
+    decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
 ) -> (HashMap<u32, DecodedSample>, usize) {
-    let mut ids_by_path: HashMap<&PathBuf, Vec<u32>> = HashMap::new();
+    let mut ids_by_path: HashMap<&Path, Vec<u32>> = HashMap::new();
     wav_paths.into_iter().for_each(|(&id, path)| {
-        ids_by_path.entry(path).or_default().push(id);
+        ids_by_path.entry(path.as_ref()).or_default().push(id);
     });
     ids_by_path
         .par_iter()
@@ -1696,7 +1698,7 @@ mod tests {
             .collect();
         let calls = AtomicUsize::new(0);
         let (samples, failures) = decode_all_with(&paths, |path| {
-            assert_eq!(path, &PathBuf::from("sample.wav"));
+            assert_eq!(path, Path::new("sample.wav"));
             calls.fetch_add(1, Ordering::Relaxed);
             Ok(DecodedSample::new(2, 44_100, Arc::new(vec![0.25, -0.25])))
         });
@@ -1768,7 +1770,7 @@ mod tests {
         let calls = AtomicUsize::new(0);
         let (samples, failures) = decode_all_with(&paths, |path| {
             calls.fetch_add(1, Ordering::Relaxed);
-            anyhow::ensure!(path == &PathBuf::from("valid.wav"), "missing sample");
+            anyhow::ensure!(path == Path::new("valid.wav"), "missing sample");
             Ok(DecodedSample::new(1, 44_100, Arc::new(vec![0.5])))
         });
 

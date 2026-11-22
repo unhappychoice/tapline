@@ -216,7 +216,10 @@ fn build_chart(
     lead_in_ms: f64,
 ) -> Result<Chart> {
     let assets = AssetIndex::new(&dir);
-    let wav_paths = resolve_wavs(&assets, &pass.wav_defs);
+    let wav_paths = resolve_wavs(&assets, &pass.wav_defs)
+        .into_iter()
+        .map(|(id, path)| (id, path.into()))
+        .collect();
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true, is_pms(path))?;
     let mut bga = collect_bga_events(&raw, &timeline, pass.base);
     let text_events = collect_text_events(&raw, &timeline, &pass.text_defs, pass.base);
@@ -2019,7 +2022,10 @@ mod tests {
             let meta = read_meta(&path).unwrap();
             let chart = load(&path, 0.0).unwrap();
             assert_eq!(meta.preview.as_ref(), Some(&audio));
-            assert_eq!(meta.preview.as_ref(), chart.wav_paths.get(&1));
+            assert_eq!(
+                meta.preview.as_deref(),
+                chart.wav_paths.get(&1).map(|path| path.as_ref())
+            );
         });
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -2354,8 +2360,8 @@ mod tests {
         assert_eq!(chart.text_events[1].time_ms, chart.notes[1].time_ms);
         assert_eq!(chart.scroll[0].multiplier, 0.5);
         assert_eq!(chart.speed[0].multiplier, 2.0);
-        assert_eq!(chart.wav_paths[&10], dir.join("upper.wav"));
-        assert_eq!(chart.wav_paths[&36], dir.join("lower.wav"));
+        assert_eq!(chart.wav_paths[&10].as_ref(), dir.join("upper.wav"));
+        assert_eq!(chart.wav_paths[&36].as_ref(), dir.join("lower.wav"));
         assert_eq!(chart.sample_settings[&10].pan, -10000);
         assert_eq!(chart.sample_settings[&10].pitch, Some(72));
         assert_eq!(chart.sample_settings[&10].volume, None);
@@ -2426,8 +2432,8 @@ mod tests {
         )
         .unwrap();
         let chart = load(&path, 0.0).unwrap();
-        assert_eq!(chart.wav_paths[&10], dir.join("upper.wav"));
-        assert_eq!(chart.wav_paths[&36], dir.join("lower.wav"));
+        assert_eq!(chart.wav_paths[&10].as_ref(), dir.join("upper.wav"));
+        assert_eq!(chart.wav_paths[&36].as_ref(), dir.join("lower.wav"));
         assert_eq!(chart.bmp_paths[&10], dir.join("upper.png"));
         assert_eq!(chart.bmp_paths[&36], dir.join("lower.png"));
         assert_eq!(
@@ -2510,7 +2516,7 @@ mod tests {
             .unwrap();
             let chart = load(&path, 0.0).unwrap();
             assert_eq!(chart.wav_paths.len(), 1);
-            assert_eq!(chart.wav_paths[&10], dir.join("last.wav"));
+            assert_eq!(chart.wav_paths[&10].as_ref(), dir.join("last.wav"));
             assert_eq!(
                 chart.notes.iter().map(|n| n.keysound).collect::<Vec<_>>(),
                 vec![Some(10), Some(10)]
@@ -4481,10 +4487,13 @@ Always
         assert_eq!(chart.exrank_events[0].time_ms, 2000.0);
         assert_eq!(chart.judgment_scale(1999.0), 0.75);
         assert_eq!(chart.judgment_scale(2000.0), 0.5);
-        assert_eq!(chart.wav_paths.get(&1), Some(&dir.join("sub/kick.wav")));
         assert_eq!(
-            chart.wav_paths.get(&2),
-            Some(&dir.join("sub/nested/Snare.OGG"))
+            chart.wav_paths.get(&1).map(|path| path.as_ref()),
+            Some(dir.join("sub/kick.wav").as_path())
+        );
+        assert_eq!(
+            chart.wav_paths.get(&2).map(|path| path.as_ref()),
+            Some(dir.join("sub/nested/Snare.OGG").as_path())
         );
         assert_eq!(chart.bmp_paths.get(&1), Some(&dir.join("Cover.PNG")));
         assert_eq!(
@@ -4510,7 +4519,10 @@ Always
         assert_eq!(chart.notes.len(), 1);
         assert_eq!(chart.notes[0].lane, 8);
         assert_eq!(chart.notes[0].keysound, Some(1));
-        assert_eq!(chart.wav_paths.get(&1), Some(&dir.join("assets/Kick.OGG")));
+        assert_eq!(
+            chart.wav_paths.get(&1).map(|path| path.as_ref()),
+            Some(dir.join("assets/Kick.OGG").as_path())
+        );
         assert_eq!(chart.bmp_paths.get(&1), Some(&dir.join("assets/Cover.PNG")));
     }
 
