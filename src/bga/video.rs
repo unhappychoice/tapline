@@ -166,16 +166,25 @@ impl Video {
 
 fn decoder_command(path: &Path, decoder: &Path, start: Start) -> Command {
     let mut command = Command::new(decoder);
-    if let Start::Frame(index) = start {
-        // Seek on the input so FFmpeg can jump to a keyframe before decoding.
-        command.args(["-ss", &format!("{:.6}", index as f64 / 30.0)]);
-    }
-    // Recovery scans the video stream because the container may end after the video.
-    let timing = if start == Start::End {
-        command.args(["-vsync", "0"]);
-        ""
-    } else {
-        "setpts=PTS-STARTPTS,fps=30,"
+    let timing = match start {
+        Start::Beginning | Start::Frame(_) => {
+            command.args(["-copyts", "-start_at_zero"]);
+            let index = start.frame_index();
+            if index > 0 {
+                // Keep keyframe preroll so fps can hold the frame active at the target.
+                command.args([
+                    "-noaccurate_seek",
+                    "-ss",
+                    &format!("{:.6}", index as f64 / 30.0),
+                ]);
+            }
+            format!("fps=30:start_time=0,trim=start_pts={index},setpts=PTS-STARTPTS,")
+        }
+        // Recovery scans the video stream because the container may end after the video.
+        Start::End => {
+            command.args(["-vsync", "0"]);
+            String::new()
+        }
     };
     command
         .args([
@@ -203,6 +212,54 @@ impl Drop for Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparse_video_seek_matches_continuous_frames_and_transition_times() {
+        let decoder = Path::new("ffmpeg");
+        if Command::new(decoder).arg("-version").output().is_err() {
+            eprintln!("Skipping video integration test: ffmpeg is not installed");
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("tapline-sparse-{}.mp4", std::process::id()));
+        assert!(Command::new(decoder)
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=red:s=64x64:r=1/2:d=8,drawbox=color=blue:t=fill:enable='between(t,2,4)'",
+                "-c:v",
+                "mpeg4",
+                "-g",
+                "2",
+                "-output_ts_offset",
+                "7",
+            ])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+
+        let decode = |start| decoder_command(&path, decoder, start).output().unwrap();
+        let continuous = decode(Start::Beginning);
+        let seeks = [45, 90, 120, 135].map(|index| (index, decode(Start::Frame(index))));
+        std::fs::remove_file(path).unwrap();
+
+        let frame_size = (SIZE * SIZE * 4) as usize;
+        assert!(continuous.status.success());
+        assert_eq!(continuous.stdout.len(), 240 * frame_size);
+        for (index, seek) in seeks {
+            assert!(seek.status.success());
+            let expected = &continuous.stdout[index as usize * frame_size..];
+            assert_eq!(seek.stdout.len(), expected.len(), "Seek at frame {index}");
+            assert!(
+                seek.stdout == expected,
+                "Frames differ after seeking to {index}"
+            );
+        }
+    }
 
     #[test]
     fn disguised_playlist_is_rejected_before_demuxing() {
