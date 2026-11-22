@@ -217,12 +217,6 @@ fn build_chart(
 ) -> Result<Chart> {
     let assets = AssetIndex::new(&dir);
     let wav_paths = resolve_wavs(&assets, &pass.wav_defs);
-    let max_measure = raw
-        .iter()
-        .map(|(m, _, _)| *m)
-        .chain(pass.stp_events.iter().map(|event| event.measure))
-        .max()
-        .unwrap_or(0);
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true, is_pms(path))?;
     let mut bga = collect_bga_events(&raw, &timeline, pass.base);
     let text_events = collect_text_events(&raw, &timeline, &pass.text_defs, pass.base);
@@ -291,6 +285,18 @@ fn build_chart(
     p2_mines.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bgm.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bga.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
+    let max_measure = raw
+        .iter()
+        .filter(|(_, channel, data)| {
+            channel != "A5"
+                || parse_slots(data, pass.base)
+                    .into_iter()
+                    .any(|id| id != 0 && pass.bga_extensions.has_playable_switch(id))
+        })
+        .map(|(measure, _, _)| *measure)
+        .chain(pass.stp_events.iter().map(|event| event.measure))
+        .max()
+        .unwrap_or(0);
     let duration_ms = timeline.end_time(max_measure) + 2500.0;
     ensure!(duration_ms.is_finite(), "BMS duration must be finite");
     let last_event_ms = notes
@@ -336,6 +342,7 @@ fn build_chart(
         invisible_notes,
         p2_invisible_notes,
         bgm,
+        object_id_base: pass.base,
         bga,
         bga_extensions: bga_extensions::collect(pass.bga_extensions, &raw, &timeline, pass.base),
         text_events,
@@ -731,22 +738,22 @@ fn materialize_continuous_long_notes(
     lane_of: fn(&str) -> Option<usize>,
     base: u32,
 ) {
-    let mut per_lane: HashMap<usize, Vec<(f64, f64, u32)>> = HashMap::new();
+    let mut per_lane: HashMap<usize, Vec<(MeasurePosition, MeasurePosition, u32)>> = HashMap::new();
     // The stable sort keeps the last-defined slot first among equal starts.
     for (measure, ch, data) in raw.iter().rev() {
         let Some(lane) = lane_of(ch) else {
             continue;
         };
         let slots = parse_slots(data, base);
-        let n = slots.len() as f64;
+        let n = slots.len();
         per_lane.entry(lane).or_default().extend(
             slots
                 .iter()
                 .enumerate()
                 .filter(|(_, slot)| **slot != 0)
                 .map(|(i, slot)| {
-                    let start = *measure as f64 + i as f64 / n;
-                    let end = *measure as f64 + (i + 1) as f64 / n;
+                    let start = MeasurePosition::from_subdivision(*measure, i, n);
+                    let end = MeasurePosition::from_subdivision(*measure, i + 1, n);
                     (start, end, *slot)
                 }),
         );
@@ -756,10 +763,12 @@ fn materialize_continuous_long_notes(
             continue;
         }
         spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        let mut merged: Vec<(f64, f64, u32)> = Vec::new();
+        let mut merged: Vec<(MeasurePosition, MeasurePosition, u32)> = Vec::new();
         for (start, end, keysound) in spans {
             if let Some(previous) = merged.last_mut().filter(|span| start <= span.1) {
-                previous.1 = previous.1.max(end);
+                if end > previous.1 {
+                    previous.1 = end;
+                }
             } else {
                 merged.push((start, end, keysound));
             }
@@ -768,13 +777,35 @@ fn materialize_continuous_long_notes(
             acc.occupancy.lanes.observe_lane(lane);
             acc.occupancy.playable = true;
             acc.notes.push(Note {
-                time_ms: timeline.time_at(start.floor() as u32, start.fract()),
+                time_ms: timeline.time_at(start.measure, start.fraction),
                 lane,
                 hit: false,
                 keysound: Some(keysound),
-                end_ms: Some(timeline.time_at(end.floor() as u32, end.fract())),
+                end_ms: Some(timeline.time_at(end.measure, end.fraction)),
                 held_since: None,
             });
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
+struct MeasurePosition {
+    measure: u32,
+    fraction: f64,
+}
+
+impl MeasurePosition {
+    fn from_subdivision(measure: u32, index: usize, count: usize) -> Self {
+        if index == count {
+            Self {
+                measure: measure + 1,
+                fraction: 0.0,
+            }
+        } else {
+            Self {
+                measure,
+                fraction: index as f64 / count as f64,
+            }
         }
     }
 }
@@ -2535,10 +2566,10 @@ mod tests {
                 });
                 if channels.starts_with('D') {
                     assert_eq!(game.miss, 0);
-                    assert!(game.chart.mines.iter().all(|mine| mine.exploded));
+                    assert!(game.chart().mines.iter().all(|mine| mine.exploded));
                 } else {
                     assert_eq!(game.perfect, if long { 18 } else { 9 });
-                    assert!(game.chart.notes.iter().all(|note| note.hit));
+                    assert!(game.chart().notes.iter().all(|note| note.hit));
                 }
             }
         }
@@ -3130,7 +3161,7 @@ mod tests {
         assert_eq!(lanes, (0..10).collect::<Vec<_>>());
         let mut game = crate::game::Game::new(chart);
         for key in "sdfklzxcnm".chars() {
-            let lane = crate::runtime::lane_for_key(key, &game.chart.keys).unwrap();
+            let lane = crate::runtime::lane_for_key(key, &game.chart().keys).unwrap();
             game.hit(lane, 2000.0);
         }
         assert_eq!(game.combo, 10);

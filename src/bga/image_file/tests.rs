@@ -1,5 +1,9 @@
 use super::*;
-use crate::{bga::Crop, chart::Chart, game::Game};
+use crate::{
+    bga::Crop,
+    chart::{BgaEvent, BgaLayer, Chart},
+    game::Game,
+};
 use std::{os::unix::fs::symlink, sync::mpsc, time::Duration};
 
 fn with_fifo(name: &str, check: impl FnOnce(&Path) + Send + 'static) {
@@ -26,7 +30,7 @@ fn bmson_fifo_and_symlink_headers_without_events_do_not_block_initialization() {
         let path = dir.join("chart.bmson");
         std::fs::write(&path, r#"{"version":"1.0.0","info":{"title":"FIFO","artist":"Test","init_bpm":120},"sound_channels":[],"bga":{"bga_header":[{"id":1,"name":"blocked.png"},{"id":2,"name":"link.png"},{"id":3,"name":"."}]}}"#).unwrap();
         let game = Game::new(crate::bmson::load(&path, 0.0).unwrap());
-        let bank = crate::bga::tests::load_bank(&game.chart);
+        let bank = crate::bga::tests::load_bank(game.chart());
         assert!(bank.0.is_empty());
     });
 }
@@ -49,11 +53,14 @@ fn chart_bga_skips_file_and_directory_links_to_other_directories() {
         "version": "1.0.0",
         "info": {"title": "BGA test", "artist": "tapline", "init_bpm": 120},
         "sound_channels": [],
-        "bga": {"bga_header": [
-            {"id": 1, "name": "cover.png"},
-            {"id": 2, "name": "linked/cover.png"},
-            {"id": 3, "name": "IMAGES/cover.png"}
-        ]}
+        "bga": {
+            "bga_header": [
+                {"id": 1, "name": "cover.png"},
+                {"id": 2, "name": "linked/cover.png"},
+                {"id": 3, "name": "IMAGES/cover.png"}
+            ],
+            "bga_events": [{"y": 0, "id": 1}, {"y": 240, "id": 2}, {"y": 480, "id": 3}]
+        }
     });
     std::fs::write(&bmson, data.to_string()).unwrap();
     let bms = song.join("chart.bms");
@@ -90,6 +97,13 @@ fn crops_skip_special_files_and_preserve_regular_images() {
                 (4, regular),
             ]
             .into(),
+            bga: [4, 11, 12, 13, 14]
+                .map(|bmp_id| BgaEvent {
+                    time_ms: bmp_id as f64,
+                    layer: BgaLayer::Base,
+                    bmp_id,
+                })
+                .into(),
             ..Default::default()
         };
         chart.bga_extensions.crops = (1..=4)
@@ -104,7 +118,7 @@ fn crops_skip_special_files_and_preserve_regular_images() {
             })
             .collect();
         let game = Game::new(chart);
-        let bank = crate::bga::tests::load_bank(&game.chart);
+        let bank = crate::bga::tests::load_bank(game.chart());
         assert_eq!(bank.0.len(), 2);
         assert_eq!(*bank.0[&4].get_pixel(0, 0), color);
         assert_eq!(*bank.0[&14].get_pixel(63, 63), color);
