@@ -4352,6 +4352,23 @@ Always
     }
 
     #[test]
+    fn bme_double_play_offsets_p2_keys_by_the_full_p1_width() {
+        let dir = tempdir();
+        let path = dir.join("double.bme");
+        for (p1_channels, first, last) in [("", 7, 13), ("#00116:01\n", 8, 14)] {
+            std::fs::write(
+                &path,
+                format!("#PLAYER 3\n{p1_channels}#00121:02\n#00129:03\n"),
+            )
+            .unwrap();
+            let chart = load(&path, 0.0).unwrap();
+            assert_eq!(chart.lane_count, last + 1);
+            assert!(chart.notes.iter().any(|note| note.lane == first));
+            assert!(chart.notes.iter().any(|note| note.lane == last));
+        }
+    }
+
+    #[test]
     fn declared_modes_preserve_scratch_layouts_and_millisecond_stops() {
         let dir = tempdir();
         for (name, player, channels, count, scratch_lanes) in [
