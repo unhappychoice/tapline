@@ -66,7 +66,7 @@ fn new_with_empty_map_never_panics_even_if_backend_is_absent() {
     if run_in_audio_process() {
         return;
     }
-    let bank = SampleBank::new(&HashMap::new());
+    let bank = SampleBank::new(&HashMap::<u32, PathBuf>::new());
     // enabled may be true or false depending on the test runner's audio
     // backend; the important guarantee is that construction doesn't panic
     // and the bank stays usable.

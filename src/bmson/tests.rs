@@ -250,8 +250,28 @@ fn audio_resolves_directory_filename_and_fallback_extension_case() {
             std::fs::create_dir(dir.join("sub")).unwrap();
             std::fs::write(dir.join(actual), []).unwrap();
             let chart = load(path, 0.0).unwrap();
-            assert_eq!(chart.wav_paths[&0], dir.join(actual));
+            assert_eq!(chart.wav_paths[&0].as_ref(), dir.join(actual));
         });
+    });
+}
+
+#[test]
+fn distinct_pulses_in_one_channel_share_the_resolved_audio_path() {
+    const PULSE_COUNT: u32 = 1024;
+    let notes: Vec<_> = (0..PULSE_COUNT).map(|y| json!({"x":1,"y":y})).collect();
+    let mut data = base();
+    data["sound_channels"] = json!([{"name":"tone.wav","notes":notes}]);
+    with_chart(&data, |path| {
+        let wav = path.with_file_name("tone.wav");
+        std::fs::write(&wav, []).unwrap();
+        let chart = load(path, 0.0).unwrap();
+        let shared = &chart.wav_paths[&0];
+        assert_eq!(shared.as_ref(), wav);
+        assert_eq!(chart.sample_slices.len(), PULSE_COUNT as usize);
+        assert_eq!(chart.wav_paths.len(), PULSE_COUNT as usize);
+        for id in chart.sample_slices.keys() {
+            assert!(Arc::ptr_eq(shared, &chart.wav_paths[id]), "slice {id}");
+        }
     });
 }
 
@@ -270,13 +290,16 @@ fn assets_preserve_exact_matches_and_fallback_order_and_omit_missing_paths() {
             std::fs::write(dir.join("cover.png"), []).unwrap();
         }
         let chart = load(path, 0.0).unwrap();
-        assert_eq!(chart.wav_paths[&0], dir.join("kick.OGG"));
+        assert_eq!(chart.wav_paths[&0].as_ref(), dir.join("kick.OGG"));
         assert_eq!(chart.bmp_paths[&1], dir.join("Cover.png"));
         std::fs::remove_file(dir.join("kick.OGG")).unwrap();
         if dir.join("kick.ogg").exists() {
             std::fs::remove_file(dir.join("kick.ogg")).unwrap();
         }
-        assert_eq!(load(path, 0.0).unwrap().wav_paths[&0], dir.join("kick.wav"));
+        assert_eq!(
+            load(path, 0.0).unwrap().wav_paths[&0].as_ref(),
+            dir.join("kick.wav")
+        );
         std::fs::remove_file(dir.join("kick.wav")).unwrap();
         std::fs::remove_file(dir.join("kick.mp3")).unwrap();
         std::fs::remove_file(dir.join("Cover.png")).unwrap();

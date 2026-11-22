@@ -99,7 +99,7 @@ fn run_session(
 }
 
 fn run_test_tone() -> Result<()> {
-    let bank = audio::SampleBank::new(&Default::default());
+    let bank = audio::SampleBank::new(&std::collections::HashMap::<u32, std::path::PathBuf>::new());
     if !bank.enabled {
         eprintln!("audio backend unavailable");
         std::process::exit(1);
