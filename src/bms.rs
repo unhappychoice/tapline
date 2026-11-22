@@ -217,12 +217,6 @@ fn build_chart(
 ) -> Result<Chart> {
     let assets = AssetIndex::new(&dir);
     let wav_paths = resolve_wavs(&assets, &pass.wav_defs);
-    let max_measure = raw
-        .iter()
-        .map(|(m, _, _)| *m)
-        .chain(pass.stp_events.iter().map(|event| event.measure))
-        .max()
-        .unwrap_or(0);
     let (timeline, acc, p2_acc) = collect_chart_sides(&raw, &pass, lead_in_ms, true, is_pms(path))?;
     let mut bga = collect_bga_events(&raw, &timeline, pass.base);
     let text_events = collect_text_events(&raw, &timeline, &pass.text_defs, pass.base);
@@ -291,6 +285,18 @@ fn build_chart(
     p2_mines.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bgm.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bga.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
+    let max_measure = raw
+        .iter()
+        .filter(|(_, channel, data)| {
+            channel != "A5"
+                || parse_slots(data, pass.base)
+                    .into_iter()
+                    .any(|id| id != 0 && pass.bga_extensions.has_playable_switch(id))
+        })
+        .map(|(measure, _, _)| *measure)
+        .chain(pass.stp_events.iter().map(|event| event.measure))
+        .max()
+        .unwrap_or(0);
     let duration_ms = timeline.end_time(max_measure) + 2500.0;
     ensure!(duration_ms.is_finite(), "BMS duration must be finite");
     let last_event_ms = notes
