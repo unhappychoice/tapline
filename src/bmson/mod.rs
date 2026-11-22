@@ -11,6 +11,7 @@ use crate::game::JudgmentWindows;
 use anyhow::{ensure, Context, Result};
 use model::{Bmson, SoundChannel};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use timing::Timeline;
 
 pub fn is_bmson(path: &Path) -> bool {
@@ -136,7 +137,7 @@ fn add_channel(
 ) -> Result<()> {
     #[cfg(test)]
     tests::CHANNEL_BUILDS.with(|count| count.set(count.get() + 1));
-    let path = asset_path(assets, &channel.name, &["wav", "ogg", "mp3"]);
+    let path = asset_path(assets, &channel.name, &["wav", "ogg", "mp3"]).map(Arc::<Path>::from);
     let mut notes: Vec<_> = channel.notes.iter().collect();
     notes.sort_by_key(|n| n.y);
     let mut groups = notes
@@ -150,7 +151,7 @@ fn add_channel(
         }
         let id = u32::try_from(chart.sample_slices.len()).context("Too many sound slices")?;
         if let Some(path) = &path {
-            chart.wav_paths.insert(id, path.clone());
+            chart.wav_paths.insert(id, Arc::clone(path));
         }
         chart.sample_slices.insert(
             id,

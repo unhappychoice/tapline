@@ -104,8 +104,9 @@ Without `--file` or `--built-in`, tapline scans the first directory it finds:
 3. `./tests/fixtures`
 4. `~/.tapline/songs`, with `%USERPROFILE%\.tapline\songs` as a Windows fallback
 
-If nothing is found, the built-in practice chart plays. Scanning is recursive
-(up to 5 levels deep) and picks up `.bms`, `.bml`, `.bme`, `.pms`, `.bmson`.
+If the initial scan finds no playable charts, the built-in practice chart
+plays. Scanning is recursive (up to 5 levels deep) and picks up `.bms`, `.bml`,
+`.bme`, `.pms`, `.bmson`.
 
 ## Bundled sample charts
 
@@ -235,8 +236,10 @@ channel `16`/`26` and their long-note/landmine equivalents.
 
 PMS uses the full 9K playback layout. 10K makes all five keys on each side playable,
 and sparse undeclared `.bms`/`.bml`
-charts retain the legacy 4K fallback. `.bme` DP charts reserve all seven P1
-lanes and place P2 notes in lanes 7–13, including sparse DP charts.
+charts retain the legacy 4K fallback. In `.bme` DP charts, including sparse charts,
+P2 starts after all seven P1 key lanes and the optional P1 scratch lane.
+The zero-based indices for P2's ordinary key lanes are 7–13 without P1 scratch
+and 8–14 with P1 scratch.
 
 ### Long notes and landmines
 

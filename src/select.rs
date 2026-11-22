@@ -224,20 +224,50 @@ pub fn run_with_state(
     state.editing = false;
     state.refresh(charts);
     let audio = crate::audio::preview_output(!no_audio);
-    let mut preview = crate::preview::SelectionPreview::default();
+    let mut preview = audio
+        .as_ref()
+        .and_then(|_| crate::preview::SelectionPreview::audio());
+    run_loop(
+        out,
+        charts,
+        state,
+        &progress,
+        terminal::size,
+        || {
+            if event::poll(Duration::from_millis(200))? {
+                return event::read().map(Some);
+            }
+            Ok(None)
+        },
+        |selected, path| {
+            if let Some((preview, audio)) = preview.as_mut().zip(audio.as_ref()) {
+                preview.update(selected, path, |source| crate::preview::play(audio, source));
+            }
+        },
+    )
+}
+
+fn run_loop(
+    out: &mut impl Write,
+    charts: &[ChartEntry],
+    state: &mut SelectorState,
+    progress: &[String],
+    mut size: impl FnMut() -> std::io::Result<(u16, u16)>,
+    mut input: impl FnMut() -> std::io::Result<Option<Event>>,
+    mut preview: impl FnMut(Option<usize>, Option<&Path>),
+) -> Result<Option<ChartEntry>> {
     let mut frame = SelectorFrame::default();
     loop {
         let selected = state.selected();
-        preview.update(
+        preview(
             selected,
             selected.and_then(|i| charts[i].preview.as_deref()),
-            |path| crate::preview::play(audio.as_ref(), path),
         );
-        frame.draw_if_changed(out, charts, state, &progress, terminal::size()?)?;
-        if !event::poll(Duration::from_millis(200))? {
+        frame.draw_if_changed(out, charts, state, progress, size()?)?;
+        let Some(input) = input()? else {
             continue;
-        }
-        match event::read()? {
+        };
+        match input {
             Event::Resize(..) => frame.invalidate(),
             Event::Key(key) => match state.handle_key(key, charts) {
                 SelectorAction::None => {}
@@ -541,6 +571,81 @@ mod tests {
 
     fn key_event(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
         KeyEvent::new_with_kind(code, event::KeyModifiers::NONE, kind)
+    }
+
+    #[test]
+    fn blocked_preview_allows_redraw_navigation_empty_results_and_quit() {
+        use std::sync::mpsc;
+        const TIMEOUT: Duration = Duration::from_secs(5);
+
+        struct Loaded(mpsc::Sender<()>);
+        impl Drop for Loaded {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+
+        let (started, loads) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        let (discard, discarded) = mpsc::channel();
+        let mut preview = crate::preview::SelectionPreview::new(move |path| {
+            started.send(path.to_path_buf()).unwrap();
+            wait.recv_timeout(TIMEOUT).ok()?;
+            Some(Loaded(discard.clone()))
+        })
+        .unwrap();
+        let mut charts = [meta("Alpha"), meta("Beta")];
+        charts[0].meta.preview = Some("alpha.wav".into());
+        charts[1].meta.preview = Some("beta.wav".into());
+        let mut state = SelectorState::default();
+        state.refresh(&charts);
+        let mut out = Vec::new();
+        let mut keys = [
+            KeyCode::Down,
+            KeyCode::Char('/'),
+            KeyCode::Char('z'),
+            KeyCode::Esc,
+            KeyCode::Char('c'),
+            KeyCode::Down,
+            KeyCode::Char('q'),
+        ]
+        .into_iter();
+        let result = run_loop(
+            &mut out,
+            &charts,
+            &mut state,
+            &["[UNPLAYED]".into(), "[UNPLAYED]".into()],
+            || Ok((100, 12)),
+            || {
+                let code = keys.next().unwrap();
+                match code {
+                    KeyCode::Down => {
+                        assert_eq!(loads.recv_timeout(TIMEOUT).unwrap(), Path::new("alpha.wav"));
+                    }
+                    KeyCode::Esc => {
+                        release.send(()).unwrap();
+                        discarded.recv_timeout(TIMEOUT).unwrap();
+                    }
+                    _ => {}
+                }
+                Ok(Some(Event::Key(key_event(code, KeyEventKind::Press))))
+            },
+            move |selected, path| {
+                preview.update(selected, path, |_| panic!("stale preview played"));
+            },
+        )
+        .unwrap();
+        assert!(result.is_none());
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("▸ [5K NORMAL Lv3 BPM140]  Alpha"));
+        assert!(output.contains("▸ [5K NORMAL Lv3 BPM140]  Beta"));
+        assert!(output.contains("No matching charts"));
+        release.send(()).unwrap();
+        discarded.recv_timeout(TIMEOUT).unwrap();
+        assert_eq!(
+            loads.recv_timeout(TIMEOUT),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
     }
 
     #[test]
