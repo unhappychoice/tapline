@@ -6,7 +6,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
-        mpsc::{sync_channel, Receiver},
+        mpsc::{sync_channel, Receiver, TryRecvError},
         Arc,
     },
 };
@@ -25,22 +25,54 @@ impl PartialEq for Frame {
 
 impl Eq for Frame {}
 
+const SEEK_THRESHOLD: u64 = 30;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Start {
+    #[default]
+    Beginning,
+    Frame(u64),
+    End,
+}
+
+impl Start {
+    pub fn at(index: u64) -> Self {
+        if index > SEEK_THRESHOLD {
+            Self::Frame(index)
+        } else {
+            Self::Beginning
+        }
+    }
+
+    pub fn frame_index(self) -> u64 {
+        match self {
+            Self::Frame(index) => index,
+            _ => 0,
+        }
+    }
+}
+
+pub(super) fn frame_index(elapsed_ms: f64) -> u64 {
+    (elapsed_ms.max(0.0) * 30.0 / 1000.0).floor() as u64
+}
+
 type DecodedFrame = (u64, Frame, bool);
 
 pub(super) struct Video {
     frames: Receiver<DecodedFrame>,
     current: Option<DecodedFrame>,
     target: Arc<AtomicU64>,
+    empty: bool,
 }
 
 impl Video {
-    pub fn open(path: &Path) -> Option<(Decoder, Self)> {
-        Self::with_decoder(path, Path::new("ffmpeg"))
+    pub fn open(path: &Path, start: Start) -> Option<(Decoder, Self)> {
+        Self::with_decoder(path, Path::new("ffmpeg"), start)
     }
 
-    fn with_decoder(path: &Path, decoder: &Path) -> Option<(Decoder, Self)> {
+    fn with_decoder(path: &Path, decoder: &Path, start: Start) -> Option<(Decoder, Self)> {
         let mut child = Decoder(
-            decoder_command(path, decoder)
+            decoder_command(path, decoder, start)
                 .stdin(Stdio::null())
                 .stderr(Stdio::null())
                 .stdout(Stdio::piped())
@@ -49,11 +81,12 @@ impl Video {
         );
         let mut stdout = child.0.stdout.take()?;
         let (sender, frames) = sync_channel(2);
-        let target = Arc::new(AtomicU64::new(0));
+        let first = start.frame_index();
+        let target = Arc::new(AtomicU64::new(first));
         let requested = Arc::clone(&target);
         std::thread::Builder::new()
             .spawn(move || {
-                let mut index = 0;
+                let mut index = first;
                 let mut last = None;
                 loop {
                     let mut bytes = vec![0; (SIZE * SIZE * 4) as usize];
@@ -64,7 +97,8 @@ impl Video {
                         break;
                     }
                     let frame = Frame(Arc::new(RgbaImage::from_raw(SIZE, SIZE, bytes).unwrap()));
-                    if index >= requested.load(Ordering::Relaxed)
+                    if start != Start::End
+                        && index >= requested.load(Ordering::Relaxed)
                         && sender.send((index, frame.clone(), false)).is_err()
                     {
                         break;
@@ -82,7 +116,20 @@ impl Video {
             frames,
             current: None,
             target,
+            empty: false,
         }
+    }
+
+    pub fn is_behind(&self, target: u64, first: u64) -> bool {
+        let (index, eof) = self
+            .current
+            .as_ref()
+            .map_or((first, false), |(index, _, eof)| (*index, *eof));
+        !eof && target.saturating_sub(index) > SEEK_THRESHOLD
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.empty
     }
 
     #[cfg(test)]
@@ -99,24 +146,39 @@ impl Video {
     }
 
     pub fn frame(&mut self, elapsed_ms: f64) -> Option<Frame> {
-        let target = (elapsed_ms.max(0.0) * 30.0 / 1000.0).floor() as u64;
+        let target = frame_index(elapsed_ms);
         self.target.store(target, Ordering::Relaxed);
         while self
             .current
             .as_ref()
             .is_none_or(|(index, _, eof)| *index < target && !eof)
         {
-            let Ok(frame) = self.frames.try_recv() else {
-                break;
-            };
-            self.current = Some(frame);
+            match self.frames.try_recv() {
+                Ok(frame) => self.current = Some(frame),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.empty = self.current.is_none();
+                    break;
+                }
+            }
         }
         self.current.as_ref().map(|(_, frame, _)| frame.clone())
     }
 }
 
-fn decoder_command(path: &Path, decoder: &Path) -> Command {
+fn decoder_command(path: &Path, decoder: &Path, start: Start) -> Command {
     let mut command = Command::new(decoder);
+    match start {
+        Start::Beginning => {}
+        Start::Frame(index) => {
+            // Seek on the input so FFmpeg can jump to a keyframe before decoding.
+            command.args(["-ss", &format!("{:.6}", index as f64 / 30.0)]);
+        }
+        Start::End => {
+            // A seek past EOF has no frames. Read the tail to recover the final image.
+            command.args(["-sseof", "-1", "-noaccurate_seek"]);
+        }
+    }
     command
         .args([
             "-v", "error", "-nostdin",
@@ -154,7 +216,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("tapline-playlist-{}.mp4", std::process::id()));
         std::fs::write(&path, "ffconcat version 1.0\n").unwrap();
-        let output = decoder_command(&path, decoder).output();
+        let output = decoder_command(&path, decoder, Start::Beginning).output();
         std::fs::remove_file(path).unwrap();
         let output = output.unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -166,10 +228,12 @@ mod tests {
 
     #[test]
     fn missing_decoder_is_silently_disabled() {
-        assert!(
-            Video::with_decoder(Path::new("video.mp4"), Path::new("/missing/tapline-ffmpeg"))
-                .is_none()
-        );
+        assert!(Video::with_decoder(
+            Path::new("video.mp4"),
+            Path::new("/missing/tapline-ffmpeg"),
+            Start::Beginning
+        )
+        .is_none());
     }
 
     #[cfg(target_os = "linux")]
@@ -179,14 +243,14 @@ mod tests {
         use std::{path::PathBuf, sync::mpsc::channel, time::Duration};
 
         let (started, processes) = channel();
-        let worker = Worker::start(move |_| {
+        let worker = Worker::start(move |_, _| {
             let child = Decoder(Command::new("sleep").arg("60").spawn().unwrap());
             started.send(child.0.id()).unwrap();
             Some((child, Video::test_frame([0, 0, 0, 255])))
         })
         .unwrap();
         let request = || {
-            worker.request(Some(PathBuf::from("video.mp4")));
+            worker.request(Some(PathBuf::from("video.mp4")), Start::Beginning);
             let pid = processes.recv_timeout(Duration::from_secs(5)).unwrap();
             PathBuf::from(format!("/proc/{pid}"))
         };

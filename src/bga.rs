@@ -11,7 +11,7 @@ use std::{
     cell::{RefCell, RefMut},
     collections::HashMap,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -30,6 +30,8 @@ struct Playback {
     event: Option<usize>,
     video: Option<video::Video>,
     worker: Option<video_worker::Worker>,
+    start: video::Start,
+    displayed: Option<video::Frame>,
 }
 
 const SIZE: u32 = 64;
@@ -71,7 +73,7 @@ impl ImageBank {
         mut open: impl FnMut(&std::path::Path) -> Option<(D, [u8; 4])> + Send + 'static,
     ) {
         self.2.get_mut()[timeline::slot(BgaLayer::Base)].worker =
-            video_worker::Worker::start(move |path| {
+            video_worker::Worker::start(move |path, _| {
                 let (decoder, color) = open(path)?;
                 Some((decoder, video::Video::test_frame(color)))
             });
@@ -103,32 +105,23 @@ impl ImageBank {
         let mut states = self.2.borrow_mut();
         let state = &mut states[slot];
         let identity = event.map(|event| event.identity);
+        let path = event
+            .and_then(|event| self.1.get(&event.bmp_id))
+            .map(PathBuf::as_path);
+        let elapsed = event.map_or(0.0, |event| now_ms - event.time_ms);
         if state.event != identity {
             state.event = identity;
-            state.video = None;
-            let path = event.and_then(|event| self.1.get(&event.bmp_id));
+            state.displayed = None;
             if path.is_some() && state.worker.is_none() {
                 state.worker = video_worker::Worker::start(video::Video::open);
             }
-            if let Some(worker) = &state.worker {
-                worker.request(path.cloned());
-            }
-        }
-        if state.video.is_none() {
-            state.video = state
-                .worker
-                .as_ref()
-                .and_then(video_worker::Worker::take_video);
+            state.request(path, video::Start::at(video::frame_index(elapsed)));
         }
         let event = event?;
         if self.0.contains_key(&event.bmp_id) {
             Some(LayerImage::Bitmap(event.bmp_id))
         } else {
-            state
-                .video
-                .as_mut()?
-                .frame(now_ms - event.time_ms)
-                .map(LayerImage::Video)
+            state.frame(path?, elapsed).map(LayerImage::Video)
         }
     }
 
@@ -227,6 +220,37 @@ impl ImageBank {
                 key: Some(ColorKey::Rgba([r, g, b, a])),
             },
         ))
+    }
+}
+
+impl Playback {
+    fn request(&mut self, path: Option<&Path>, start: video::Start) {
+        self.start = start;
+        self.video = None;
+        if let Some(worker) = &self.worker {
+            worker.request(path.map(Path::to_path_buf), start);
+        }
+    }
+
+    fn frame(&mut self, path: &Path, elapsed: f64) -> Option<video::Frame> {
+        if self.video.is_none() {
+            self.video = self
+                .worker
+                .as_ref()
+                .and_then(video_worker::Worker::take_video);
+        }
+        if let Some(video) = &mut self.video {
+            let target = video::frame_index(elapsed);
+            if self.start != video::Start::End && video.is_behind(target, self.start.frame_index())
+            {
+                self.request(Some(path), video::Start::Frame(target));
+            } else if let Some(frame) = video.frame(elapsed) {
+                self.displayed = Some(frame);
+            } else if matches!(self.start, video::Start::Frame(_)) && video.is_empty() {
+                self.request(Some(path), video::Start::End);
+            }
+        }
+        self.displayed.clone()
     }
 }
 
