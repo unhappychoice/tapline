@@ -60,8 +60,9 @@ tapline --file song.bms --no-audio     # play a chart, silent
 tapline --built-in --bpm 160           # play the built-in practice chart
 ```
 
-Charts with `#PREVIEW` loop their preview audio while selected. Moving to another
-chart or leaving the selector stops playback. Use `--no-audio` to disable it.
+Charts with a BMS `#PREVIEW` or bmson `info.preview_music` file loop their preview
+audio while selected. Moving to another chart or leaving the selector stops
+playback. Use `--no-audio` to disable it.
 
 Inside the selector: `↑ ↓` / `j k` to move, `PageUp` / `PageDown` to page,
 `Home` / `End` (or `g` / `G`) to jump, `Enter` to play, `Esc` / `q` to quit.
