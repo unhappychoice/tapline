@@ -40,7 +40,9 @@ fn run(out: &mut Stdout, args: &Args, keymap: &cli::Keymap) -> Result<()> {
         args,
         keymap,
         cli::choose_chart_with_selector,
-        runtime::play_loaded_attempt,
+        |out, args, _, playback, identity, destination| {
+            playback.play_attempt(out, args, identity, destination)
+        },
         terminal::show_load_error,
     )
 }
@@ -58,7 +60,7 @@ fn run_session(
         &mut Stdout,
         &Args,
         &tapline::chart::Chart,
-        &audio::ChartAudio<'_>,
+        &mut runtime::ChartPlayback<'_>,
         Option<&tapline::results::Identity>,
         ResultDestination,
     ) -> Result<runtime::ResultAction>,
@@ -86,9 +88,15 @@ fn run_session(
             }
         };
         keymap.apply(&mut chart);
-        let audio = audio::ChartAudio::load(&chart, args.no_audio);
-        while play(out, args, &chart, &audio, identity.as_ref(), destination)?
-            == runtime::ResultAction::Retry
+        let mut playback = runtime::ChartPlayback::new(&chart, args.no_audio);
+        while play(
+            out,
+            args,
+            &chart,
+            &mut playback,
+            identity.as_ref(),
+            destination,
+        )? == runtime::ResultAction::Retry
         {}
 
         if destination == ResultDestination::Exit {
@@ -99,7 +107,7 @@ fn run_session(
 }
 
 fn run_test_tone() -> Result<()> {
-    let bank = audio::SampleBank::new(&Default::default());
+    let bank = audio::SampleBank::new(&std::collections::HashMap::<u32, std::path::PathBuf>::new());
     if !bank.enabled {
         eprintln!("audio backend unavailable");
         std::process::exit(1);

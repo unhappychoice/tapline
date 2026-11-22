@@ -349,6 +349,26 @@ fn malformed_bmson_reports_the_path_on_stderr() {
 }
 
 #[test]
+fn invalid_bms_bpm_reports_the_reason_on_stderr() {
+    let path = std::env::temp_dir().join(format!("tapline-invalid-bpm-{}.bms", std::process::id()));
+    for (bpm, diagnostic) in [
+        ("invalid", "Invalid BMS BPM"),
+        ("0", "BMS BPM must be finite and greater than zero"),
+    ] {
+        std::fs::write(&path, format!("#BPM {bpm}\n#00111:01\n")).unwrap();
+        let output = run_chart(&path);
+        std::fs::remove_file(&path).unwrap();
+
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.starts_with(&format!("Error: {diagnostic}")),
+            "{stderr}"
+        );
+    }
+}
+
+#[test]
 fn unsupported_versions_are_sanitized_on_stderr() {
     assert_sanitized_error("version", "Unsupported bmson version");
 }

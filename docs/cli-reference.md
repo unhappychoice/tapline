@@ -20,12 +20,13 @@ Automatic discovery chooses the first existing directory from
 `$TAPLINE_SONGS_DIR`, `./songs`, `./tests/fixtures`, and `$HOME/.tapline/songs`.
 On Windows, `%USERPROFILE%\.tapline\songs` is the final fallback if the
 `HOME` directory candidate is unavailable.
-If that directory contains no charts, the built-in chart plays; discovery does
-not continue to later directories. The same fallback applies to an empty or
-missing explicit `--dir`.
+If the initial scan finds no playable charts, tapline plays the built-in
+chart. Discovery stops at the first existing directory. An empty or missing
+explicit `--dir` also leads to the built-in chart on the initial scan.
 
-Direct-file and built-in play exit after the result screen. Playing from the
-selector returns there after the result screen.
+Direct-file and built-in play exit after the result screen. When you return
+from the result screen to the selector, tapline rescans the directory and
+shows the selector even if no playable charts remain.
 
 ## Gameplay keys
 
@@ -53,6 +54,16 @@ presses. Pair it with `--auto-ks` to adjust scheduled note sounds:
 tapline --file song.bms --auto-ks --audio-lead-ms 80
 tapline --built-in --bpm 90 --countdown-ms 500
 ```
+
+## Note display
+
+Use `--scroll-speed <SCROLL_SPEED>` to set the note scroll multiplier for
+built-in and imported charts. The default is `1.0` and the accepted range is
+`0.25` to `4.0` inclusive. For example, `--scroll-speed 2` spreads notes
+farther apart with less preview time, while `--scroll-speed 0.5` shows notes
+earlier. The multiplier combines with chart-authored scroll and spacing
+effects. Audio, judgments, and scoring follow the original chart timing.
+Retries use the same launch setting.
 
 ## Audio
 

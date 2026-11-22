@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 mod layout;
 pub use layout::{Lane, LaneRole, Player};
@@ -153,7 +154,7 @@ pub struct Chart {
     pub sample_settings: std::collections::HashMap<u32, crate::sample_settings::SampleSettings>,
     pub sound_layers: std::collections::HashMap<u32, Vec<u32>>,
     pub sample_slices: std::collections::HashMap<u32, SampleSlice>,
-    pub wav_paths: std::collections::HashMap<u32, PathBuf>,
+    pub wav_paths: std::collections::HashMap<u32, Arc<Path>>,
 }
 
 impl Chart {

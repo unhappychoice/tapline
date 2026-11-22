@@ -28,6 +28,10 @@ pub struct Args {
     #[arg(long, default_value_t = 2000.0, value_parser = parse_countdown)]
     pub countdown_ms: f64,
 
+    /// Note scroll speed multiplier (0.25 to 4.0).
+    #[arg(long, default_value_t = 1.0, value_parser = parse_scroll_speed)]
+    pub scroll_speed: f64,
+
     /// Play the built-in chart, skipping the selector.
     #[arg(long)]
     pub built_in: bool,
@@ -200,6 +204,15 @@ fn parse_countdown(value: &str) -> Result<f64, String> {
     }
 }
 
+fn parse_scroll_speed(value: &str) -> Result<f64, String> {
+    let speed = value.parse::<f64>().map_err(|err| err.to_string())?;
+    if (0.25..=4.0).contains(&speed) {
+        Ok(speed)
+    } else {
+        Err("scroll speed must be between 0.25 and 4.0 inclusive".into())
+    }
+}
+
 fn parse_audio_lead(value: &str) -> Result<f64, String> {
     let lead = value.parse::<f64>().map_err(|err| err.to_string())?;
     if lead.is_finite() {
@@ -245,12 +258,25 @@ mod tests {
         assert!(a.dir.is_none());
         assert_eq!(a.bpm, 120.0);
         assert_eq!(a.countdown_ms, 2000.0);
+        assert_eq!(a.scroll_speed, 1.0);
         assert!(!a.built_in);
         assert!(!a.no_audio);
         assert!(!a.test_tone);
         assert!(!a.synth);
         assert!(!a.auto_ks);
         assert_eq!(a.audio_lead_ms, 0.0);
+    }
+
+    #[test]
+    fn args_validate_scroll_speed() {
+        for (value, expected) in [("0.25", 0.25), ("0.5", 0.5), ("2", 2.0), ("4", 4.0)] {
+            let args =
+                Args::try_parse_from(["tapline", &format!("--scroll-speed={value}")]).unwrap();
+            assert_eq!(args.scroll_speed, expected);
+        }
+        for value in ["0", "-1", "0.249", "4.001", "NaN", "inf", "-inf", "fast"] {
+            assert!(Args::try_parse_from(["tapline", &format!("--scroll-speed={value}")]).is_err());
+        }
     }
 
     #[test]

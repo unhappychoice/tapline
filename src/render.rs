@@ -62,6 +62,7 @@ struct PlayLayout {
     top: u16,
     bottom: u16,
     lane_height: u16,
+    approach_distance: f64,
 }
 
 impl PlayLayout {
@@ -80,7 +81,13 @@ impl PlayLayout {
             top,
             bottom,
             lane_height: bottom - top,
+            approach_distance: APPROACH_MS,
         })
+    }
+
+    fn with_scroll_speed(mut self, scroll_speed: f64) -> Self {
+        self.approach_distance = APPROACH_MS / scroll_speed;
+        self
     }
 
     fn judgment_row(&self) -> u16 {
@@ -114,10 +121,10 @@ fn note_screen_y(remain: f64, layout: &PlayLayout) -> Option<u16> {
 
 /// Fractional screen row of a note, used for sub-cell rendering.
 fn note_screen_pos(remain: f64, layout: &PlayLayout) -> Option<f64> {
-    if !(-60.0..=APPROACH_MS).contains(&remain) {
+    if !(-60.0..=layout.approach_distance).contains(&remain) {
         return None;
     }
-    let frac = (1.0 - (remain / APPROACH_MS)).clamp(0.0, 1.0);
+    let frac = (1.0 - (remain / layout.approach_distance)).clamp(0.0, 1.0);
     Some(layout.top as f64 + frac * (layout.lane_height - 1) as f64)
 }
 
@@ -141,14 +148,14 @@ fn long_note_screen_span(
     end_remain: f64,
     layout: &PlayLayout,
 ) -> Option<(f64, f64)> {
-    if start_remain > APPROACH_MS && end_remain > APPROACH_MS {
+    if start_remain > layout.approach_distance && end_remain > layout.approach_distance {
         return None;
     }
     if start_remain < -60.0 && end_remain < -60.0 {
         return None;
     }
-    let start_y = note_screen_pos(start_remain.clamp(0.0, APPROACH_MS), layout)?;
-    let end_y = note_screen_pos(end_remain.clamp(0.0, APPROACH_MS), layout)?;
+    let start_y = note_screen_pos(start_remain.clamp(0.0, layout.approach_distance), layout)?;
+    let end_y = note_screen_pos(end_remain.clamp(0.0, layout.approach_distance), layout)?;
     Some((start_y.min(end_y), start_y.max(end_y)))
 }
 
@@ -197,7 +204,12 @@ fn draw_judgment_flash(
         Judgment::Miss => ("M I S S", Color::Red),
     };
     let row = judgment_row.saturating_sub(2);
-    let width = label.chars().count() as u16;
+    let timing = match game.flash.last_offset_ms {
+        Some(offset) if offset < 0.0 => " EARLY",
+        Some(offset) if offset > 0.0 => " LATE",
+        _ => "",
+    };
+    let width = (label.len() + timing.len()) as u16;
     let x = cols.saturating_sub(width) / 2;
     let fade = elapsed < 120.0;
     queue!(out, cursor::MoveTo(x, row), SetForegroundColor(color))?;
@@ -208,6 +220,7 @@ fn draw_judgment_flash(
         out,
         style::SetAttribute(style::Attribute::Bold),
         Print(label),
+        Print(timing),
         style::SetAttribute(style::Attribute::Reset),
         ResetColor
     )?;
@@ -317,9 +330,9 @@ pub fn format_audio_badge(
         _ if !audio_on => return "silent (audio backend unavailable)".to_string(),
         _ => {}
     }
-    let mut badge = match (mode, samples, failures) {
-        (_, 0, 0) => "audio on · synth mode".to_string(),
-        (AudioMode::Synth, _, _) => format!("synth notes · {samples} samples"),
+    let mut badge = match (mode, samples) {
+        (_, 0) => "audio on · synth mode".to_string(),
+        (AudioMode::Synth, _) => format!("synth notes · {samples} samples"),
         _ => format!("audio on · {samples} samples"),
     };
     if failures > 0 {
@@ -547,7 +560,7 @@ pub fn draw(
     bga: &crate::bga::Presentation,
     now_ms: f64,
 ) -> anyhow::Result<()> {
-    draw_at_size(out, game, bga, terminal::size()?, now_ms)
+    draw_at_size(out, game, bga, terminal::size()?, now_ms, 1.0)
 }
 
 pub(crate) fn draw_at_size(
@@ -556,17 +569,19 @@ pub(crate) fn draw_at_size(
     bga: &crate::bga::Presentation,
     (cols, rows): (u16, u16),
     now_ms: f64,
+    scroll_speed: f64,
 ) -> anyhow::Result<()> {
     let lanes = game.chart().lane_count as u16;
     let Some(layout) = PlayLayout::compute(cols, rows, game.chart().lane_count) else {
         return Ok(());
     };
+    let layout = layout.with_scroll_speed(scroll_speed);
     let PlayLayout {
         x0,
         field_width,
         top,
         bottom,
-        lane_height: _,
+        ..
     } = layout;
 
     queue!(out, terminal::BeginSynchronizedUpdate)?;
@@ -645,55 +660,7 @@ pub(crate) fn draw_at_size(
         )?;
     }
 
-    let scroll = game.scroll.frame(game.chart(), now_ms);
-    for mine in game.visible_mines(now_ms, APPROACH_MS) {
-        let Some(y) = note_screen_y(scroll.distance(mine.time_ms), &layout) else {
-            continue;
-        };
-        let lx = x0 + 1 + mine.lane as u16 * LANE_WIDTH + 2;
-        queue!(
-            out,
-            cursor::MoveTo(lx, y),
-            SetForegroundColor(Color::Red),
-            style::SetAttribute(style::Attribute::Bold),
-            Print("[><]"),
-            style::SetAttribute(style::Attribute::Reset),
-            ResetColor
-        )?;
-    }
-
-    let mut bars = Vec::new();
-    for note in game.visible_notes(now_ms, APPROACH_MS) {
-        if note.hit {
-            continue;
-        }
-        let (offset, width, color) = note_style(game, note.lane, note.held_since.is_some());
-        let lx = x0 + 1 + note.lane as u16 * LANE_WIDTH + offset;
-        match note.end_ms {
-            None => {
-                let Some(y) = note_screen_pos(scroll.distance(note.time_ms), &layout) else {
-                    continue;
-                };
-                bars.push(note_span::Bar {
-                    x: lx,
-                    width,
-                    span: note_bar((y, y)),
-                    color,
-                });
-            }
-            Some(end_ms) => {
-                if let Some(span) = long_note_scroll_span(&scroll, note.time_ms, end_ms, &layout) {
-                    bars.push(note_span::Bar {
-                        x: lx,
-                        width,
-                        span: note_bar(span),
-                        color,
-                    });
-                }
-            }
-        }
-    }
-    note_span::draw_bars(out, &bars)?;
+    draw_notes_and_mines(out, game, now_ms, &layout)?;
 
     draw_judgment_flash(out, game, cols, layout.judgment_row(), now_ms)?;
 
@@ -718,6 +685,64 @@ pub(crate) fn draw_at_size(
     queue!(out, terminal::EndSynchronizedUpdate)?;
     out.flush()?;
     Ok(())
+}
+
+fn draw_notes_and_mines(
+    out: &mut impl Write,
+    game: &Game,
+    now_ms: f64,
+    layout: &PlayLayout,
+) -> anyhow::Result<()> {
+    let x0 = layout.x0;
+    let scroll = game.scroll.frame(game.chart(), now_ms);
+    for mine in game.visible_mines(now_ms, layout.approach_distance) {
+        let Some(y) = note_screen_y(scroll.distance(mine.time_ms), layout) else {
+            continue;
+        };
+        let lx = x0 + 1 + mine.lane as u16 * LANE_WIDTH + 2;
+        queue!(
+            out,
+            cursor::MoveTo(lx, y),
+            SetForegroundColor(Color::Red),
+            style::SetAttribute(style::Attribute::Bold),
+            Print("[><]"),
+            style::SetAttribute(style::Attribute::Reset),
+            ResetColor
+        )?;
+    }
+
+    let mut bars = Vec::new();
+    for note in game.visible_notes(now_ms, layout.approach_distance) {
+        if note.hit {
+            continue;
+        }
+        let (offset, width, color) = note_style(game, note.lane, note.held_since.is_some());
+        let lx = x0 + 1 + note.lane as u16 * LANE_WIDTH + offset;
+        match note.end_ms {
+            None => {
+                let Some(y) = note_screen_pos(scroll.distance(note.time_ms), layout) else {
+                    continue;
+                };
+                bars.push(note_span::Bar {
+                    x: lx,
+                    width,
+                    span: note_bar((y, y)),
+                    color,
+                });
+            }
+            Some(end_ms) => {
+                if let Some(span) = long_note_scroll_span(&scroll, note.time_ms, end_ms, layout) {
+                    bars.push(note_span::Bar {
+                        x: lx,
+                        width,
+                        span: note_bar(span),
+                        color,
+                    });
+                }
+            }
+        }
+    }
+    note_span::draw_bars(out, &bars)
 }
 
 #[derive(Default)]
@@ -992,6 +1017,15 @@ fn result_lines(
         (format_result_gauge(game, cols), Color::Yellow),
     ];
     lines.extend(judgment_lines(game, cols).map(|line| (line, Color::DarkGrey)));
+    if let Some(offset) = game.average_offset_ms() {
+        let summary = if offset.abs() < 0.05 {
+            "Avg timing: 0.0 ms".into()
+        } else {
+            let direction = if offset < 0.0 { "early" } else { "late" };
+            format!("Avg timing: {:.1} ms {direction}", offset.abs())
+        };
+        lines.push((summary, Color::DarkGrey));
+    }
     if !game.chart().maker.is_empty() {
         lines.push((format!("chart by {}", game.chart().maker), Color::DarkGrey));
     }
@@ -1355,6 +1389,27 @@ mod tests {
     }
 
     #[test]
+    fn judgment_timing_flash_fits_the_minimum_playfield() {
+        let layout = PlayLayout::compute(29, 13, 4).unwrap();
+        for (offset, expected, column) in [
+            (-20.0, "P E R F E C T EARLY", 6),
+            (20.0, "P E R F E C T LATE", 6),
+            (0.0, "P E R F E C T", 9),
+        ] {
+            let mut game = Game::new(crate::chart::built_in(120.0, 0.0));
+            let note = &game.chart().notes[0];
+            let now = note.time_ms + offset;
+            game.hit(note.lane, now);
+
+            let mut out = Vec::new();
+            draw_judgment_flash(&mut out, &game, 29, layout.judgment_row(), now).unwrap();
+            let rendered = String::from_utf8(out).unwrap();
+            assert!(rendered.contains(&format!("\x1b[7;{column}H")));
+            assert!(rendered.contains(&format!("{expected}\x1b[")));
+        }
+    }
+
+    #[test]
     fn gameplay_stats_fit_the_minimum_four_lane_terminal() {
         let mut game = Game::new(crate::chart::built_in(120.0, 0.0));
         assert!(playfield_fits(29, 13, game.chart().lane_count));
@@ -1523,6 +1578,83 @@ mod tests {
         let rendered = String::from_utf8(out).unwrap();
         assert!(rendered.contains("\x1b[2K"));
         assert!(rendered.ends_with("Hello"));
+    }
+
+    #[test]
+    fn scroll_speed_changes_rendered_rows_and_visibility_without_changing_judgments() {
+        use crate::chart::{Mine, ScrollEvent};
+
+        for reversing in [false, true] {
+            let time = if reversing { 2450.0 } else { 750.0 };
+            let end = time + 100.0;
+            let mut chart = base_chart(4);
+            if reversing {
+                chart.scroll.push(ScrollEvent {
+                    time_ms: 1600.0,
+                    multiplier: -1.0,
+                });
+            }
+            chart.notes = vec![
+                Note {
+                    time_ms: time,
+                    ..Note::default()
+                },
+                Note {
+                    time_ms: time,
+                    lane: 1,
+                    end_ms: Some(end),
+                    ..Note::default()
+                },
+            ];
+            chart.mines = vec![
+                Mine {
+                    time_ms: time,
+                    lane: 2,
+                    damage: 10,
+                    exploded: false,
+                },
+                Mine {
+                    time_ms: 1500.0,
+                    lane: 3,
+                    damage: 10,
+                    exploded: false,
+                },
+            ];
+
+            let mut outcomes = Vec::new();
+            for speed in [0.5, 1.0, 2.0] {
+                let mut game = Game::new(chart.clone());
+                let layout = PlayLayout::compute(80, 24, 4)
+                    .unwrap()
+                    .with_scroll_speed(speed);
+                let mut output = Vec::new();
+                draw_notes_and_mines(&mut output, &game, 0.0, &layout).unwrap();
+                let rendered = String::from_utf8(output).unwrap();
+
+                if speed == 2.0 {
+                    assert!(rendered.is_empty());
+                } else {
+                    let row = if speed == 0.5 { 14 } else { 9 };
+                    for lane in 0..3 {
+                        let column = layout.x0 + 4 + lane * LANE_WIDTH;
+                        assert!(rendered.contains(&format!("\x1b[{row};{column}H")));
+                    }
+                    assert_eq!(
+                        rendered.matches("[><]").count(),
+                        if speed == 0.5 { 2 } else { 1 }
+                    );
+                }
+
+                game.hit(0, time + 60.0);
+                game.hit(1, time);
+                game.release(1, end);
+                game.hit(2, time);
+                assert_eq!((game.perfect, game.great, game.miss), (2, 1, 0));
+                assert!(game.chart().mines[0].exploded);
+                outcomes.push((game.score, game.max_combo, game.gauge.value()));
+            }
+            assert!(outcomes.windows(2).all(|pair| pair[0] == pair[1]));
+        }
     }
 
     #[test]
@@ -1957,6 +2089,14 @@ mod tests {
     }
 
     #[test]
+    fn audio_badge_reports_synth_and_failures_when_all_samples_fail() {
+        assert_eq!(
+            format_audio_badge(AudioMode::Samples, true, 0, 1),
+            "audio on · synth mode · 1 failed to decode"
+        );
+    }
+
+    #[test]
     fn audio_badge_reports_a_healthy_sample_bank() {
         assert_eq!(
             format_audio_badge(AudioMode::Samples, true, 12, 0),
@@ -1966,7 +2106,10 @@ mod tests {
 
     #[test]
     fn audio_badge_calls_out_decode_failures_when_present() {
-        assert!(format_audio_badge(AudioMode::Samples, true, 8, 3).contains("3 failed"));
+        assert_eq!(
+            format_audio_badge(AudioMode::Samples, true, 8, 3),
+            "audio on · 8 samples · 3 failed to decode"
+        );
     }
 
     #[test]
@@ -2421,6 +2564,8 @@ mod progress_tests {
         let identity = Identity::built_in(120.0);
         game.miss = 1;
         store.record(&identity, &game, false);
+        let note = &game.chart().notes[0];
+        game.hit(note.lane, note.time_ms - 20.0);
         game.score = 100;
         game.max_combo = u32::MAX;
         game.perfect = 100000;
@@ -2448,6 +2593,7 @@ mod progress_tests {
                 "Gd 300000 M 400000",
                 "Storage error: result unsaved",
                 "chart by Chart Author 日本語",
+                "Avg timing: 20.0 ms early",
             ] {
                 assert!(
                     rendered.contains(expected),
