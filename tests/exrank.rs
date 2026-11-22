@@ -68,7 +68,7 @@ fn a0_changes_windows_at_note_time_including_early_hits_and_ln_ends() {
     let mut game = Game::new(chart(headers, "#00051:0101\n#000A0:00ZZ"));
     game.hit(0, 500.0);
     game.check_misses(1580.1);
-    assert!(game.chart.notes[0].hit);
+    assert!(game.chart().notes[0].hit);
 }
 
 #[test]
@@ -115,8 +115,8 @@ fn overflowing_percentages_preserve_fallback_windows_and_allow_completion() {
         assert_eq!(game.miss, 0);
         game.check_misses(note_time + 240.1);
         assert_eq!(game.miss, 1);
-        assert!(game.chart.notes[0].hit);
-        assert!(game.advance_completion(game.chart.duration_ms + 1.0));
+        assert!(game.chart().notes[0].hit);
+        assert!(game.advance_completion(game.chart().duration_ms + 1.0));
     }
 }
 
@@ -224,12 +224,12 @@ fn narrowed_windows_can_expire_later_notes_before_earlier_notes() {
         "#DEFEXRANK 200\n#EXRANK01 50",
         "#00011:01010000000000000000000000000000\n#000A0:00010000000000000000000000000000",
     ));
-    let later = game.chart.notes[1].time_ms;
+    let later = game.chart().notes[1].time_ms;
     game.check_misses(later + 80.0);
     assert_eq!(game.miss, 0);
     game.check_misses(later + 80.1);
-    assert!(!game.chart.notes[0].hit);
-    assert!(game.chart.notes[1].hit);
+    assert!(!game.chart().notes[0].hit);
+    assert!(game.chart().notes[1].hit);
     assert_eq!(game.miss, 1);
     assert_eq!(game.visible_notes(later + 80.1, 1000.0).count(), 1);
     game.check_misses(820.1);
@@ -250,11 +250,11 @@ fn ln_modes_preserve_dynamic_release_windows_and_completion_deadlines() {
         let mut game = Game::new(chart(&headers, channels));
         game.hit(0, 500.0);
         game.check_misses(1500.0);
-        assert_eq!(game.chart.notes[0].hit, mode == 1);
+        assert_eq!(game.chart().notes[0].hit, mode == 1);
         game.check_misses(1580.0);
-        assert_eq!(game.chart.notes[0].hit, mode == 1);
+        assert_eq!(game.chart().notes[0].hit, mode == 1);
         game.check_misses(1580.1);
-        assert!(game.chart.notes[0].hit);
+        assert!(game.chart().notes[0].hit);
         assert_eq!((game.perfect, game.miss), (2, 0));
         game.release(0, 1600.0);
         assert_eq!(game.perfect, 2);

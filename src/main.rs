@@ -40,7 +40,7 @@ fn run(out: &mut Stdout, args: &Args, keymap: &cli::Keymap) -> Result<()> {
         args,
         keymap,
         cli::choose_chart_with_selector,
-        runtime::play_attempt,
+        runtime::play_loaded_attempt,
         terminal::show_load_error,
     )
 }
@@ -58,6 +58,7 @@ fn run_session(
         &mut Stdout,
         &Args,
         &tapline::chart::Chart,
+        &audio::ChartAudio<'_>,
         Option<&tapline::results::Identity>,
         ResultDestination,
     ) -> Result<runtime::ResultAction>,
@@ -85,7 +86,8 @@ fn run_session(
             }
         };
         keymap.apply(&mut chart);
-        while play(out, args, &chart, identity.as_ref(), destination)?
+        let audio = audio::ChartAudio::load(&chart, args.no_audio);
+        while play(out, args, &chart, &audio, identity.as_ref(), destination)?
             == runtime::ResultAction::Retry
         {}
 

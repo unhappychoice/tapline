@@ -140,6 +140,7 @@ pub struct Chart {
     pub scroll: Vec<ScrollEvent>,
     /// Display speed changes in ascending time order.
     pub speed: Vec<ScrollEvent>,
+    pub object_id_base: u32,
     pub bga: Vec<BgaEvent>,
     pub bga_extensions: crate::bga::Extensions,
     pub text_events: Vec<TextEvent>,
@@ -157,20 +158,20 @@ pub struct Chart {
 
 impl Chart {
     pub fn visual_deadline_ms(&self) -> f64 {
-        let layer_effects = self
+        let visual_effects = self
             .bga_extensions
             .events
             .iter()
             .filter(|event| match event.effect {
                 crate::bga::Effect::Opacity(..) => true,
                 crate::bga::Effect::Color(_, id) => self.bga_extensions.argb.contains_key(&id),
-                crate::bga::Effect::Switch(_) => false,
+                crate::bga::Effect::Switch(id) => self.bga_extensions.has_playable_switch(id),
             });
         self.bga
             .iter()
             .map(|event| event.time_ms)
             .chain(self.text_events.iter().map(|event| event.time_ms))
-            .chain(layer_effects.map(|event| event.time_ms))
+            .chain(visual_effects.map(|event| event.time_ms))
             .map(|time_ms| time_ms + 2500.0)
             .fold(0.0, f64::max)
     }
@@ -224,6 +225,7 @@ impl Default for Chart {
             bgm: Vec::new(),
             scroll: Vec::new(),
             speed: Vec::new(),
+            object_id_base: 36,
             bga: Vec::new(),
             bga_extensions: Default::default(),
             text_events: Vec::new(),

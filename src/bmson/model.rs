@@ -32,6 +32,7 @@ pub struct Info {
     pub chart_name: Option<String>,
     pub eyecatch_image: Option<String>,
     pub banner_image: Option<String>,
+    pub preview_music: Option<String>,
 }
 
 #[derive(Deserialize)]

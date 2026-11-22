@@ -24,33 +24,40 @@ fn chart(dir: &Path, name: &str) -> Chart {
 }
 
 #[test]
-fn gameplay_skips_decoding_when_audio_output_fails_to_open() {
+fn unavailable_audio_backend_skips_decoding_and_allows_silent_play() {
     let mut chart = crate::chart::built_in(120.0, 0.0);
     chart.notes[0].keysound = Some(1);
-    chart.wav_paths.insert(1, "tone.wav".into());
+    chart.wav_paths.insert(1, "key.wav".into());
+    let audio = ChartAudio::load(&chart, false);
     let calls = AtomicUsize::new(0);
-    let bank = SampleBank::for_chart_with(
-        &chart,
+    let bank = audio.start_attempt_with(
         || None,
-        |path| {
+        |_| {
             calls.fetch_add(1, Ordering::Relaxed);
-            decode(path)
+            anyhow::bail!("unexpected decode")
         },
     );
 
-    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    assert_eq!(calls.into_inner(), 0);
     assert!(!bank.enabled);
     assert_eq!(bank.sample_count(), 0);
     assert_eq!(bank.decode_failures, 0);
+    let duration = bank.chart_duration_ms(&chart, false, false, 0.0);
+    assert_eq!(duration, chart.duration_ms);
     assert_eq!(
-        bank.chart_duration_ms(&chart, false, false, 0.0),
-        chart.duration_ms
+        crate::render::format_audio_badge(
+            crate::render::AudioMode::Samples,
+            bank.enabled,
+            bank.sample_count(),
+            bank.decode_failures,
+        ),
+        "silent (audio backend unavailable)"
     );
 
     let note = chart.notes[0];
-    let mut game = crate::game::Game::new(chart);
+    let mut game = crate::game::Game::new(chart.clone());
     let keysound = game.hit(note.lane, note.time_ms);
-    assert_eq!(keysound, note.keysound);
+    assert_eq!(keysound, Some(1));
     assert_eq!(game.perfect, 1);
     assert!(bank.start_hit(note.lane, keysound, false, 1.0).is_none());
 }
@@ -74,7 +81,8 @@ fn gameplay_decodes_only_referenced_bms_wavs() {
     let chart = crate::bms::load(&path, 0.0).unwrap();
     assert_eq!(chart.wav_paths[&4], dir.join("unused.wav"));
     let calls = AtomicUsize::new(0);
-    let mut bank = SampleBank::load_chart_with(&chart, |path| {
+    let audio = ChartAudio::load(&chart, false);
+    let (bank, _output) = test_playback(&audio, |path| {
         assert_ne!(path, &chart.wav_paths[&4]);
         calls.fetch_add(1, Ordering::Relaxed);
         decode(path)
@@ -82,10 +90,11 @@ fn gameplay_decodes_only_referenced_bms_wavs() {
     assert_eq!(calls.load(Ordering::Relaxed), 3);
     assert_eq!(bank.decode_failures, 1);
     assert_eq!(bank.sample_count(), 3);
-    assert!(Arc::ptr_eq(&bank.samples[&1].data, &bank.samples[&2].data));
+    assert!(Arc::ptr_eq(
+        &bank.data.samples[&1].data,
+        &bank.data.samples[&2].data
+    ));
 
-    let (mixer, _output) = rodio::mixer::mixer(rodio::nz!(2), rodio::nz!(44_100));
-    bank.bus = Some(master::master_bus(&mixer));
     assert!(bank.start_sound(chart.bgm[0].keysound, 1.0).is_some());
     assert!(bank.start_sound(chart.bgm[1].keysound, 1.0).is_none());
     let note = chart.notes[0];
@@ -122,7 +131,8 @@ fn gameplay_loads_only_reachable_layer_members_and_preserves_slices() {
             duration_ms: Some(3.0),
         },
     );
-    let mut bank = SampleBank::load_chart_with(&chart, |path| {
+    let audio = ChartAudio::load(&chart, false);
+    let (bank, _output) = test_playback(&audio, |path| {
         assert_eq!(path, &chart.wav_paths[&1]);
         Ok(DecodedSample::new(
             1,
@@ -135,8 +145,6 @@ fn gameplay_loads_only_reachable_layer_members_and_preserves_slices() {
     let slice = bank.sample_with_gain(2, 1.0).unwrap();
     assert_eq!(slice.collect::<Vec<_>>(), [2.0, 3.0, 4.0]);
 
-    let (mixer, _output) = rodio::mixer::mixer(rodio::nz!(2), rodio::nz!(44_100));
-    bank.bus = Some(master::master_bus(&mixer));
     let note = chart.notes[0];
     assert_eq!(
         bank.start_hit(note.lane, note.keysound, false, 1.0),
@@ -238,4 +246,65 @@ fn decoding_rejects_directories() {
     let dir = tempdir();
     assert!(decode(&dir).is_err());
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn test_playback(
+    audio: &ChartAudio<'_>,
+    decode_sample: impl Fn(&PathBuf) -> anyhow::Result<DecodedSample> + Sync,
+) -> (SampleBank, rodio::mixer::MixerSource) {
+    let (mixer, output) = rodio::mixer::mixer(rodio::nz!(2), rodio::nz!(44_100));
+    (
+        audio.start_attempt_with(|| Some((None, master::master_bus(&mixer))), decode_sample),
+        output,
+    )
+}
+
+#[test]
+fn retry_reuses_decoded_sources_and_starts_with_fresh_voices() {
+    let mut chart = crate::chart::built_in(120.0, 0.0);
+    chart.notes[0].keysound = Some(1);
+    chart.bgm.push(crate::chart::BgmEvent {
+        time_ms: 0.0,
+        keysound: 2,
+    });
+    chart.wav_paths = HashMap::from([(1, "key.wav".into()), (2, "bgm.wav".into())]);
+    chart.sample_settings.insert(
+        2,
+        crate::sample_settings::SampleSettings {
+            volume: Some(50),
+            ..Default::default()
+        },
+    );
+    let calls = [AtomicUsize::new(0), AtomicUsize::new(0)];
+    let audio = ChartAudio::load(&chart, false);
+    let decode_sample = |path: &PathBuf| {
+        let index = usize::from(path == &chart.wav_paths[&2]);
+        calls[index].fetch_add(1, Ordering::Relaxed);
+        let mut samples = vec![0.5; 4096];
+        samples[..2].fill(0.25);
+        Ok(DecodedSample::new(2, 44_100, Arc::new(samples)))
+    };
+
+    let silent = audio.start_attempt_with(|| None, decode_sample);
+    assert!(!silent.enabled);
+    assert!(audio.data.get().is_none());
+
+    for _ in 0..2 {
+        let (bank, mut output) = test_playback(&audio, decode_sample);
+        assert!(bank.playing.borrow().is_empty());
+        assert!(bank.start_sound(2, 1.0).is_some());
+        assert_eq!(
+            output.by_ref().take(2048).find(|&sample| sample != 0.0),
+            Some(0.125)
+        );
+        assert_eq!(output.next(), Some(0.125));
+        assert!(output
+            .by_ref()
+            .take(1024)
+            .any(|sample| (sample - 0.25).abs() < 1e-6));
+        assert!(bank.start_hit(0, Some(1), false, 1.0).is_some());
+        drop(bank);
+        assert!(output.skip(1000).take(100).all(|sample| sample == 0.0));
+    }
+    assert_eq!(calls.map(AtomicUsize::into_inner), [1, 1]);
 }

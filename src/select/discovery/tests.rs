@@ -70,6 +70,34 @@ fn visits_reuse_unchanged_metadata_and_refresh_library() {
 }
 
 #[test]
+fn bmson_preview_is_resolved_relative_to_the_chart_on_each_visit() {
+    let dir = super::super::tests::tempdir();
+    let song = dir.join("song");
+    std::fs::create_dir(&song).unwrap();
+    let chart = song.join("chart.bmson");
+    let preview = song.join("tone.wav");
+    let mut value: serde_json::Value =
+        serde_json::from_str(include_str!("../../../tests/fixtures/minimal.bmson")).unwrap();
+    value["info"]["preview_music"] = serde_json::json!("tone.wav");
+    std::fs::write(&chart, value.to_string()).unwrap();
+    let mut state = crate::select::SelectorState::default();
+
+    std::fs::copy("tests/fixtures/tone.wav", dir.join("tone.wav")).unwrap();
+    assert_eq!(state.scan(&dir)[0].preview, None);
+    std::fs::copy("tests/fixtures/tone.wav", &preview).unwrap();
+    assert_eq!(state.scan(&dir)[0].preview.as_ref(), Some(&preview));
+    assert_eq!(counts(), (1, 1));
+    assert_eq!(
+        crate::bmson::read_meta(&chart).unwrap().preview.as_ref(),
+        Some(&preview)
+    );
+
+    std::fs::remove_file(&preview).unwrap();
+    assert_eq!(state.scan(&dir)[0].preview, None);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn progress_uses_the_displayed_revision_after_chart_replacement() {
     let dir = super::super::tests::tempdir();
     let path = dir.join("chart.bms");
@@ -145,7 +173,7 @@ fn seeded_branches_are_redrawn_and_match_gameplay_each_visit() {
     .unwrap();
     let args = Args::parse_from(["tapline"]);
     let mut discovery = Discovery::default();
-    let mut first_titles = HashMap::new();
+    let mut previous_titles = HashMap::new();
     for seed in [0, 1] {
         let before = counts();
         let charts = discovery.scan(&dir, &|| seed);
@@ -165,10 +193,18 @@ fn seeded_branches_are_redrawn_and_match_gameplay_each_visit() {
                 let replay = bms::load_with_seed(&random, args.countdown_ms, seed).unwrap();
                 assert_eq!(chart.notes[0].keysound, replay.notes[0].keysound);
             }
-            if let Some(first_title) = first_titles.insert(meta.path.clone(), meta.title.clone()) {
-                assert_ne!(first_title, meta.title);
+            if let Some(previous_title) =
+                previous_titles.insert(meta.path.clone(), meta.title.clone())
+            {
+                assert_ne!(previous_title, meta.title);
             }
         }
+    }
+    let repeated = discovery.scan(&dir, &|| 1);
+    assert_eq!(repeated.len(), previous_titles.len());
+    for entry in repeated {
+        assert_eq!(entry.random_seed, 1);
+        assert_eq!(previous_titles.get(&entry.path), Some(&entry.title));
     }
     std::fs::remove_dir_all(dir).unwrap();
 }

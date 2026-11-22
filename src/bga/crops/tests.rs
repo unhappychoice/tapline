@@ -1,5 +1,8 @@
 use super::*;
-use crate::bga::{image_file::LOAD_CALLS, Presentation};
+use crate::{
+    bga::{image_file::LOAD_CALLS, Effect, EffectEvent, Presentation, Switch},
+    chart::{BgaEvent, BgaLayer},
+};
 use image::Rgba;
 use std::sync::Arc;
 
@@ -38,7 +41,7 @@ fn prepares_only_crops_with_two_digit_bms_ids() {
 }
 
 #[test]
-fn presentation_decodes_each_source_once_and_preserves_bitmap_and_crop_pixels() {
+fn presentation_decodes_only_reachable_sources_and_preserves_bitmap_and_crop_pixels() {
     let dir = std::env::temp_dir().join(format!("tapline-crops-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("sheet.png");
@@ -49,26 +52,69 @@ fn presentation_decodes_each_source_once_and_preserves_bitmap_and_crop_pixels() 
         .save(&path)
         .unwrap();
     RgbaImage::from_pixel(128, 128, blue).save(&other).unwrap();
+    let unused = dir.join("unused.png");
+    RgbaImage::from_pixel(128, 128, red).save(&unused).unwrap();
     let mut chart = Chart {
-        bmp_paths: [(1, path.clone()), (2, path.clone()), (3, other.clone())].into(),
+        bmp_paths: [
+            (1, path.clone()),
+            (2, path.clone()),
+            (3, path.clone()),
+            (4, other),
+            (5, unused),
+            (14, path),
+        ]
+        .into(),
+        bga: [1, 2, 3, 10, 11, 12, 14]
+            .map(|bmp_id| BgaEvent {
+                time_ms: bmp_id as f64,
+                layer: BgaLayer::Base,
+                bmp_id,
+            })
+            .into(),
         ..Default::default()
     };
     chart.bga_extensions.crops = [
         (10, 1, [0, 0, 128, 128, 0, 0]),
         (11, 1, [128, 0, 256, 128, 128, 128]),
         (12, 2, [128, 0, 256, 128, 0, 128]),
-        (13, 3, [-8, -8, 256, 256, -64, -64]),
+        (13, 4, [-8, -8, 256, 256, -64, -64]),
         (3, 1, [0, 0, 128, 128, 0, 0]),
+        (14, 99, [0, 0, 128, 128, 0, 0]),
+        (15, 5, [0, 0, 128, 128, 0, 0]),
     ]
     .map(|(id, image, rect)| (id, Crop { image, rect }))
     .into();
+    chart.bga_extensions.switches = [(1, Some(0), 13), (2, Some(0), 5), (3, None, 5)]
+        .map(|(id, lane, bmp_id)| {
+            (
+                id,
+                Switch {
+                    frame_ms: 100,
+                    duration_ms: 100,
+                    channel: "11".into(),
+                    lane,
+                    looping: false,
+                    argb: [255; 4],
+                    pattern: vec![bmp_id],
+                },
+            )
+        })
+        .into();
+    chart.bga_extensions.events = [1, 3]
+        .map(|id| EffectEvent {
+            time_ms: id as f64,
+            effect: Effect::Switch(id),
+        })
+        .into();
     LOAD_CALLS.set(0);
     let presentation = Presentation::new(&chart, true);
     std::fs::remove_dir_all(dir).unwrap();
 
     assert_eq!(LOAD_CALLS.get(), 2);
     let images = &presentation.bank.0;
-    assert_eq!(images.len(), 7);
+    assert_eq!(images.len(), 8);
+    assert!(!images.contains_key(&4));
+    assert!(!images.contains_key(&5));
     assert!(Arc::ptr_eq(&images[&1], &images[&2]));
     let transparent = Rgba([0; 4]);
     let mut blended_blue = transparent;
@@ -80,6 +126,7 @@ fn presentation_decodes_each_source_once_and_preserves_bitmap_and_crop_pixels() 
     });
     assert_eq!(images[&1].as_ref(), &expected_bitmap);
     assert_eq!(images[&2].as_ref(), &expected_bitmap);
+    assert_eq!(images[&14].as_ref(), &expected_bitmap);
 
     [3, 10, 11, 12, 13].into_iter().for_each(|id| {
         let image = &images[&id];

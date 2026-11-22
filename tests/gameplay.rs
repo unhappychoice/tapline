@@ -39,7 +39,7 @@ fn full_run_of_a_five_note_chart_awards_five_perfects() {
     );
     assert_eq!(chart.notes.len(), 5);
     let mut game = Game::new(chart);
-    let notes_before: Vec<_> = game.chart.notes.iter().map(|n| n.time_ms).collect();
+    let notes_before: Vec<_> = game.chart().notes.iter().map(|n| n.time_ms).collect();
     for &t in &notes_before {
         // Press right on the beat, in-lane.
         assert!(game.hit(0, t).is_some());
@@ -68,7 +68,7 @@ fn missing_a_note_resets_combo_and_bumps_the_miss_counter() {
 ",
     );
     let mut game = Game::new(chart);
-    let notes: Vec<_> = game.chart.notes.iter().map(|n| n.time_ms).collect();
+    let notes: Vec<_> = game.chart().notes.iter().map(|n| n.time_ms).collect();
     // Hit first two on-beat; skip the last one entirely.
     game.hit(0, notes[0]);
     game.hit(0, notes[1]);
@@ -95,20 +95,20 @@ fn keyboard_input_reaches_the_matching_lane_for_a_5k_chart() {
     let notes = chart.notes.clone();
     let mut game = Game::new(chart);
     // 5K binds: S D F/J K L — indices 0..4.
-    assert_eq!(lane_for_key('S', &game.chart.keys), Some(0));
-    assert_eq!(lane_for_key('F', &game.chart.keys), Some(2));
-    assert_eq!(lane_for_key('J', &game.chart.keys), Some(2));
-    assert_eq!(lane_for_key('L', &game.chart.keys), Some(4));
+    assert_eq!(lane_for_key('S', &game.chart().keys), Some(0));
+    assert_eq!(lane_for_key('F', &game.chart().keys), Some(2));
+    assert_eq!(lane_for_key('J', &game.chart().keys), Some(2));
+    assert_eq!(lane_for_key('L', &game.chart().keys), Some(4));
 
     // Note on lane 0 (S), lane 2 (F/J), lane 4 (L) — one each.
     let (t0, l0) = (notes[0].time_ms, notes[0].lane);
     let (t1, l1) = (notes[1].time_ms, notes[1].lane);
     let (t2, l2) = (notes[2].time_ms, notes[2].lane);
     assert_eq!((l0, l1, l2), (0, 2, 4));
-    game.hit(lane_for_key('S', &game.chart.keys).unwrap(), t0);
+    game.hit(lane_for_key('S', &game.chart().keys).unwrap(), t0);
     // Hit the center lane via the alternate binding to be sure J works too.
-    game.hit(lane_for_key('J', &game.chart.keys).unwrap(), t1);
-    game.hit(lane_for_key('L', &game.chart.keys).unwrap(), t2);
+    game.hit(lane_for_key('J', &game.chart().keys).unwrap(), t1);
+    game.hit(lane_for_key('L', &game.chart().keys).unwrap(), t2);
     assert_eq!(game.perfect, 3);
     assert_eq!(game.combo, 3);
 }
@@ -124,7 +124,7 @@ fn hits_return_the_note_s_keysound_for_the_audio_pipeline() {
 ",
     );
     let mut game = Game::new(chart);
-    let t = game.chart.notes[0].time_ms;
+    let t = game.chart().notes[0].time_ms;
     let ks = game.hit(0, t).expect("hit should succeed");
     // 0Z in base-36 = 35
     assert_eq!(ks, 35);
@@ -141,7 +141,7 @@ fn mixed_judgment_tiers_produce_the_expected_accuracy() {
 ",
     );
     let mut game = Game::new(chart);
-    let notes: Vec<_> = game.chart.notes.iter().map(|n| n.time_ms).collect();
+    let notes: Vec<_> = game.chart().notes.iter().map(|n| n.time_ms).collect();
     // Perfect / great / good / miss, in that order.
     game.hit(0, notes[0]);
     game.hit(0, notes[1] + tapline::game::WINDOW_PERFECT + 1.0);
@@ -192,7 +192,7 @@ fn lnmode_is_loaded_and_invalid_or_missing_values_default_to_cn() {
         ("#LNMODE invalid", LnMode::Cn),
     ] {
         let game = long_note_game(header, "#00151:0101");
-        assert_eq!(game.chart.ln_mode, mode, "{header}");
+        assert_eq!(game.chart().ln_mode, mode, "{header}");
     }
 }
 
@@ -202,14 +202,14 @@ fn lnmode_completion_preserves_scroll_and_speed_events() {
         "#LNMODE 1\n#SCROLL01 -1\n#SPEED01 0.5\n#001SC:01\n#001SP:01",
         "#00151:0101",
     );
-    assert_eq!(game.chart.scroll[0].time_ms, 4000.0);
-    assert_eq!(game.chart.scroll[0].multiplier, -1.0);
-    assert_eq!(game.chart.speed[0].time_ms, 4000.0);
-    assert_eq!(game.chart.speed[0].multiplier, 0.5);
+    assert_eq!(game.chart().scroll[0].time_ms, 4000.0);
+    assert_eq!(game.chart().scroll[0].multiplier, -1.0);
+    assert_eq!(game.chart().speed[0].time_ms, 4000.0);
+    assert_eq!(game.chart().speed[0].multiplier, 0.5);
     game.hit(0, 4000.0);
     game.check_misses(6000.0);
     assert_eq!((game.perfect, game.miss), (2, 0));
-    assert!(game.chart.notes[0].hit);
+    assert!(game.chart().notes[0].hit);
 }
 
 #[test]
@@ -226,7 +226,7 @@ fn repeated_lnmode_headers_use_the_last_value() {
         for previous in ["1", "3"] {
             let header = format!("#LNMODE {previous}\n#LNMODE {value}");
             let game = long_note_game(&header, "#00151:0101");
-            assert_eq!(game.chart.ln_mode, mode, "{header}");
+            assert_eq!(game.chart().ln_mode, mode, "{header}");
         }
     }
 }
@@ -243,8 +243,8 @@ fn ln_completion_does_not_depend_on_release_timing_or_encoding() {
                 (game.perfect, game.great, game.good, game.miss),
                 (2, 0, 0, 0)
             );
-            assert!(game.chart.notes[0].hit);
-            assert!(game.chart.notes[0].held_since.is_none());
+            assert!(game.chart().notes[0].hit);
+            assert!(game.chart().notes[0].held_since.is_none());
         }
     }
 }
@@ -254,9 +254,9 @@ fn ln_completes_at_the_end_without_a_release_event() {
     let mut game = long_note_game("#LNMODE 1", "#00151:0101");
     game.hit(0, 4000.0);
     game.check_misses(5999.0);
-    assert!(!game.chart.notes[0].hit);
+    assert!(!game.chart().notes[0].hit);
     game.check_misses(6000.0);
-    assert!(game.chart.notes[0].hit);
+    assert!(game.chart().notes[0].hit);
     game.release(0, 6500.0);
     game.check_misses(7000.0);
     assert_eq!((game.perfect, game.miss, game.combo), (2, 0, 2));
@@ -315,7 +315,7 @@ fn cn_and_hcn_preserve_release_judgments_and_auto_completion() {
         let mut game = long_note_game(header, "#00151:0101");
         game.hit(0, 4000.0);
         game.check_misses(6000.0);
-        assert!(!game.chart.notes[0].hit);
+        assert!(!game.chart().notes[0].hit);
         game.check_misses(6161.0);
         assert_eq!((game.perfect, game.miss), (2, 0));
     }
@@ -328,7 +328,7 @@ fn ln_with_an_unpressed_start_is_missed_once() {
     game.release(0, 6000.0);
     game.check_misses(7000.0);
     assert_eq!((game.perfect, game.miss), (0, 1));
-    assert!(game.chart.notes[0].hit);
+    assert!(game.chart().notes[0].hit);
 }
 
 #[test]
@@ -355,6 +355,19 @@ fn invisible_notes_update_empty_press_sounds_without_judgment() {
         (game.perfect, game.great, game.good, game.miss),
         (2, 0, 0, 0)
     );
+}
+
+#[test]
+fn first_invisible_note_sets_empty_press_sound_before_its_timestamp() {
+    let chart = write_and_load("#BPM 60\n#00131:02\n#00211:01\n");
+    assert_eq!(chart.invisible_notes[0].time_ms, 4000.0);
+    assert_eq!(chart.notes[0].time_ms, 8000.0);
+
+    let mut game = Game::new(chart);
+    assert_eq!(game.hit(0, 1000.0), Some(2));
+    assert_eq!(game.hit(0, 7859.0), Some(2));
+    assert_eq!(game.hit(0, 8141.0), Some(1));
+    assert_eq!((game.score, game.combo), (0, 0));
 }
 
 #[test]
@@ -411,12 +424,31 @@ fn noncanonical_double_play_offsets_invisible_notes_by_the_first_side_width() {
 }
 
 #[test]
+fn asymmetric_double_play_uses_four_key_bindings_on_either_side() {
+    for (channels, keys) in [
+        ("#00011:01\n#00025:02\n", "SDKLZXCNM"),
+        ("#00015:01\n#00021:02\n", "SDFKLZXNM"),
+    ] {
+        let chart = write_and_load(&format!("#BPM 60\n{channels}"));
+        assert_eq!(chart.lane_count, 9);
+        assert_eq!(
+            chart.keys,
+            keys.chars().map(|key| vec![key]).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
 fn pms_invisible_notes_follow_the_nine_button_mapping() {
     let dir = tempdir();
     let path = dir.join("song.pms");
     std::fs::write(&path, "#BPM 60\n#00035:01\n#00042:02\n#00045:03\n").unwrap();
     let chart = bms::load(&path, 500.0).unwrap();
     assert_eq!(chart.lane_count, 9);
+    assert_eq!(
+        chart.keys,
+        "ASDF JKL;".chars().map(|key| vec![key]).collect::<Vec<_>>()
+    );
     assert!(chart.notes.is_empty());
     assert!(chart.p2_invisible_notes.is_empty());
     assert_eq!(
@@ -442,7 +474,7 @@ fn cn_and_hcn_use_rank_windows_for_release_and_auto_completion() {
             let mut game = long_note_game(&header, "#00151:0101");
             game.hit(0, 4000.0);
             game.check_misses(6000.0 + miss_delay);
-            assert!(!game.chart.notes[0].hit);
+            assert!(!game.chart().notes[0].hit);
             game.check_misses(6001.0 + miss_delay);
             assert_eq!((game.perfect, game.miss), (2, 0));
         }
@@ -470,8 +502,9 @@ fn ln_completion_ignores_rank_but_unpressed_starts_use_rank_delay() {
 fn ln_modes_apply_gauge_recovery_once_per_start_and_end() {
     [1, 2, 3].into_iter().for_each(|mode| {
         let header = format!("#LNMODE {mode}\n#TOTAL 60");
-        let mut game = long_note_game(&header, "#00151:0101");
-        game.chart.duration_ms = 6000.0;
+        let mut chart = write_and_load(&format!("#BPM 60\n{header}\n#00151:0101\n"));
+        chart.duration_ms = 6000.0;
+        let mut game = Game::new(chart);
         assert_eq!(game.gauge.value(), 20.0);
         game.hit(0, 4000.0);
         assert_eq!(game.gauge.value(), 50.0);
@@ -490,8 +523,9 @@ fn ln_modes_apply_gauge_recovery_once_per_start_and_end() {
 fn ln_modes_apply_gauge_penalty_once_for_early_release() {
     [1, 2, 3].into_iter().for_each(|mode| {
         let header = format!("#LNMODE {mode}\n#TOTAL 60");
-        let mut game = long_note_game(&header, "#00151:0101");
-        game.chart.duration_ms = 6000.0;
+        let mut chart = write_and_load(&format!("#BPM 60\n{header}\n#00151:0101\n"));
+        chart.duration_ms = 6000.0;
+        let mut game = Game::new(chart);
         game.hit(0, 4000.0);
         game.release(0, 5000.0);
         assert!(game.advance_completion(7000.0));
@@ -499,4 +533,58 @@ fn ln_modes_apply_gauge_penalty_once_for_early_release() {
         assert_eq!((game.perfect, game.miss), (1, 1));
         assert!(!game.gauge.is_clear());
     });
+}
+
+#[test]
+fn active_chart_and_visibility_reflect_tap_hold_and_mine_updates() {
+    use tapline::chart::{Chart, Mine, Note, ScrollEvent};
+
+    let mut game = Game::new(Chart {
+        notes: vec![
+            Note {
+                time_ms: 1000.0,
+                ..Default::default()
+            },
+            Note {
+                time_ms: 1000.0,
+                end_ms: Some(1500.0),
+                lane: 1,
+                ..Default::default()
+            },
+        ],
+        mines: vec![Mine {
+            time_ms: 1000.0,
+            lane: 2,
+            damage: 10,
+            ..Default::default()
+        }],
+        scroll: vec![ScrollEvent {
+            time_ms: 0.0,
+            multiplier: 1.0,
+        }],
+        ..Default::default()
+    });
+
+    assert_eq!(game.visible_notes(1000.0, 1000.0).count(), 2);
+    assert_eq!(game.visible_mines(1000.0, 1000.0).len(), 1);
+    game.hit(0, 1000.0);
+    game.hit(1, 1000.0);
+    game.hit(2, 1000.0);
+    assert_eq!(game.perfect, 2);
+    assert!(game.chart().notes[0].hit);
+    assert!(game.chart().mines[0].exploded);
+    assert!(game.visible_mines(1000.0, 1000.0).is_empty());
+
+    game.check_misses(1250.0);
+    let mut visible = game.visible_notes(1250.0, 1000.0);
+    let held = visible.next().unwrap();
+    assert!(std::ptr::eq(held, &game.chart().notes[1]));
+    assert_eq!(held.held_since, Some(1000.0));
+    assert_eq!(visible.count(), 0);
+
+    game.release(1, 1500.0);
+    assert_eq!((game.perfect, game.miss), (3, 0));
+    assert!(game.chart().notes[1].hit);
+    assert_eq!(game.chart().notes[1].held_since, None);
+    assert!(game.visible_notes(1500.0, 1000.0).next().is_none());
 }

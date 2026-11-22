@@ -71,6 +71,18 @@ fn help_explains_the_test_tone_audio_exception() {
 }
 
 #[test]
+fn help_explains_the_automatic_synth_fallback() {
+    let (code, stdout, _) = run_with(&["--help"]);
+    assert_eq!(code, 0);
+    let synth_help = stdout.split_once("--synth").unwrap().1;
+    let synth_help = synth_help.split_once("--auto-ks").unwrap().0;
+    let synth_help = synth_help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        synth_help.contains("Used automatically only when no chart samples decode, including BGM")
+    );
+}
+
+#[test]
 fn help_short_form_is_wired() {
     let (code, stdout, _) = run_with(&["-h"]);
     assert_eq!(code, 0);

@@ -79,11 +79,8 @@ impl Discovery {
         self.metadata.remove(path);
         let bytes = read(path).ok()?;
         let (meta, preview, draws_random) = if is_bmson {
-            (
-                crate::bmson::read_meta_bytes(path, &bytes).ok()?,
-                None,
-                false,
-            )
+            let (meta, preview) = crate::bmson::parse_meta(path, &bytes).ok()?;
+            (meta, preview, false)
         } else {
             bms::parse_meta(path, &bytes, seed()).ok()?
         };

@@ -11,26 +11,33 @@ pub(super) fn prepare(
     mut load: impl FnMut(&Path) -> Option<RgbaImage>,
 ) -> HashMap<u32, RgbaImage> {
     let mut images = HashMap::new();
-    group(&chart.bmp_paths, &chart.bga_extensions.crops)
-        .into_iter()
-        .for_each(|(path, crops)| {
-            if let Some(source) = load(path) {
-                images.extend(
-                    crops
-                        .into_iter()
-                        .map(|(id, crop)| (id, render(&source, crop))),
-                );
-            }
-        });
+    group(
+        &chart.bmp_paths,
+        chart
+            .bga_extensions
+            .crops
+            .iter()
+            .map(|(&id, crop)| (id, crop)),
+    )
+    .into_iter()
+    .for_each(|(path, crops)| {
+        if let Some(source) = load(path) {
+            images.extend(
+                crops
+                    .into_iter()
+                    .map(|(id, crop)| (id, render(&source, crop))),
+            );
+        }
+    });
     images
 }
 
 pub(super) fn group<'a>(
     paths: &'a HashMap<u32, PathBuf>,
-    crops: &'a HashMap<u32, Crop>,
+    crops: impl IntoIterator<Item = (u32, &'a Crop)>,
 ) -> HashMap<&'a Path, Vec<(u32, &'a Crop)>> {
     let mut groups = HashMap::<_, Vec<_>>::new();
-    crops.iter().for_each(|(&id, crop)| {
+    crops.into_iter().for_each(|(id, crop)| {
         if let Some(path) = paths.get(&crop.image) {
             groups.entry(path.as_path()).or_default().push((id, crop));
         }
