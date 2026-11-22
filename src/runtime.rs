@@ -199,7 +199,7 @@ fn run_game(
 ) -> Result<()> {
     let (cols, rows) = terminal::size()?;
     let visible = render::bga_panel_visible(cols, rows, game.chart().lane_count);
-    let mut bga = Presentation::new(images, visible);
+    let mut bga = Presentation::with_cached_images(images, visible);
     let start = Instant::now();
     let mut next_frame = Instant::now() + FRAME_DT;
     let mut state = LoopState::new(build_auto_notes(game, opts));
@@ -211,7 +211,7 @@ fn run_game(
             break;
         }
         let visible = render::bga_panel_visible(cols, rows, game.chart().lane_count);
-        bga.prepare_deferred(images, visible);
+        bga.prepare_cached_images(images, visible);
         draw_frame(out, game, bank, opts, &mut state, &bga, now)?;
         pump_input(out, game, bank, opts, &mut state, start, next_frame)?;
         next_frame = advance_deadline(next_frame);
@@ -809,7 +809,8 @@ mod tests {
         let options = opts(true);
         let mut state = LoopState::new(build_auto_notes(&game, &options));
         let mut images = ChartImages::new(&chart);
-        let mut bga = Presentation::new(&mut images, render::bga_panel_visible(40, 24, 4));
+        let mut bga =
+            Presentation::with_cached_images(&mut images, render::bga_panel_visible(40, 24, 4));
         let now = state.update_size(&bank, &mut game, 2900.0, 40, 24);
         assert_eq!(now, 2900.0);
 
@@ -825,7 +826,7 @@ mod tests {
 
         // Keep the loader held while two separate audio events and key presses are due.
         for (index, wall_ms) in times.into_iter().enumerate() {
-            bga.prepare_deferred(&mut images, visible);
+            bga.prepare_cached_images(&mut images, visible);
             let now = state.update_size(&bank, &mut game, wall_ms - 1.0, 80, 24);
             fire_scheduled_audio(&bank, &options, &mut state, &game, now);
             assert_eq!((state.bgm_cursor, state.note_snd_cursor), (index, index));

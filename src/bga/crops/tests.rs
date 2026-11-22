@@ -107,7 +107,7 @@ fn presentation_decodes_only_reachable_sources_and_preserves_bitmap_and_crop_pix
         })
         .into();
     LOAD_CALLS.set(0);
-    let presentation = Presentation::new(&mut ChartImages::new(&chart), true);
+    let presentation = Presentation::with_cached_images(&mut ChartImages::new(&chart), true);
     std::fs::remove_dir_all(dir).unwrap();
 
     assert_eq!(LOAD_CALLS.get(), 2);

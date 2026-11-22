@@ -256,17 +256,21 @@ fn bmson_images_are_loaded_and_rendered_through_presentation() {
 
     let mut images = ChartImages::new(game.chart());
     let (release, gate) = std::sync::mpsc::channel();
-    Presentation::new(&mut images, false).prepare_with(&mut images, true, move |chart| {
-        gate.recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-        load_bitmaps(chart)
-    });
-    let mut deferred = Presentation::new(&mut images, true);
+    Presentation::with_cached_images(&mut images, false).prepare_with(
+        &mut images,
+        true,
+        move |chart| {
+            gate.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            load_bitmaps(chart)
+        },
+    );
+    let mut deferred = Presentation::with_cached_images(&mut images, true);
     assert!(deferred.bank.0.is_empty());
     release.send(()).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while deferred.bank.0.is_empty() {
-        deferred.prepare_deferred(&mut images, true);
+        deferred.prepare_cached_images(&mut images, true);
         assert!(std::time::Instant::now() < deadline, "BGA worker timed out");
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
@@ -775,7 +779,7 @@ fn headless_judgments_and_hidden_presentation_never_load_images() {
     assert_eq!(image_file::LOAD_CALLS.get(), 0);
 
     let mut images = ChartImages::new(game.chart());
-    let mut presentation = Presentation::new(&mut images, false);
+    let mut presentation = Presentation::with_cached_images(&mut images, false);
     for (cols, rows) in [(64, 24), (120, 16)] {
         let visible = crate::render::bga_panel_visible(cols, rows, game.chart().lane_count);
         assert!(!visible);
@@ -785,7 +789,7 @@ fn headless_judgments_and_hidden_presentation_never_load_images() {
 
     let visible = crate::render::bga_panel_visible(65, 24, game.chart().lane_count);
     assert!(visible);
-    let mut presentation = Presentation::new(&mut images, visible);
+    let mut presentation = Presentation::with_cached_images(&mut images, visible);
     assert_eq!(
         image_file::LOAD_CALLS.get(),
         1,
@@ -842,9 +846,9 @@ fn retries_share_decoded_bitmaps_and_prepared_crops() {
     let game = Game::new(chart);
     let mut images = ChartImages::new(game.chart());
     image_file::LOAD_CALLS.set(0);
-    let first = Presentation::new(&mut images, true);
+    let first = Presentation::with_cached_images(&mut images, true);
     std::fs::remove_file(path).unwrap();
-    let retry = Presentation::new(&mut images, true);
+    let retry = Presentation::with_cached_images(&mut images, true);
 
     assert_eq!(image_file::LOAD_CALLS.get(), 1);
     assert!(Arc::ptr_eq(&first.bank.0, &retry.bank.0));
@@ -872,7 +876,7 @@ fn retry_starts_video_and_compositing_fresh() {
     });
     let mut images = ChartImages::new(game.chart());
     for color in [[255, 0, 0, 255], [0, 255, 0, 255]] {
-        let mut bank = Presentation::new(&mut images, true).bank;
+        let mut bank = Presentation::with_cached_images(&mut images, true).bank;
         assert!(bank.5.borrow().is_none());
         let playback = bank.2.get_mut();
         assert!(playback.iter().all(|state| {
