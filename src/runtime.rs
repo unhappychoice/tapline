@@ -1,4 +1,4 @@
-use crate::bga::Presentation;
+use crate::bga::{ChartImages, Presentation};
 use crate::chart::VolumeTarget;
 use crate::render::{AudioMode, ResultDestination};
 use crate::screen::Screen;
@@ -38,6 +38,40 @@ impl PlayOptions {
     }
 }
 
+pub struct ChartPlayback<'a> {
+    chart: &'a chart::Chart,
+    audio: audio::ChartAudio<'a>,
+    images: ChartImages<'a>,
+}
+
+impl<'a> ChartPlayback<'a> {
+    pub fn new(chart: &'a chart::Chart, no_audio: bool) -> Self {
+        Self {
+            chart,
+            audio: audio::ChartAudio::load(chart, no_audio),
+            images: ChartImages::new(chart),
+        }
+    }
+
+    pub fn play_attempt(
+        &mut self,
+        out: &mut Stdout,
+        args: &Args,
+        identity: Option<&crate::results::Identity>,
+        destination: ResultDestination,
+    ) -> Result<ResultAction> {
+        play_with_assets(
+            out,
+            args,
+            self.chart,
+            &self.audio,
+            &mut self.images,
+            identity,
+            destination,
+        )
+    }
+}
+
 pub fn play_chart(
     out: &mut Stdout,
     args: &Args,
@@ -54,10 +88,9 @@ pub fn play_chart_with_destination(
     identity: Option<crate::results::Identity>,
     destination: ResultDestination,
 ) -> Result<()> {
-    let audio = audio::ChartAudio::load(&chart, args.no_audio);
-    while play_loaded_attempt(out, args, &chart, &audio, identity.as_ref(), destination)?
-        == ResultAction::Retry
-    {}
+    let mut playback = ChartPlayback::new(&chart, args.no_audio);
+    while playback.play_attempt(out, args, identity.as_ref(), destination)? == ResultAction::Retry {
+    }
     Ok(())
 }
 
@@ -81,6 +114,26 @@ pub fn play_loaded_attempt(
     identity: Option<&crate::results::Identity>,
     destination: ResultDestination,
 ) -> Result<ResultAction> {
+    play_with_assets(
+        out,
+        args,
+        chart,
+        audio,
+        &mut ChartImages::new(chart),
+        identity,
+        destination,
+    )
+}
+
+fn play_with_assets(
+    out: &mut Stdout,
+    args: &Args,
+    chart: &chart::Chart,
+    audio: &audio::ChartAudio<'_>,
+    images: &mut ChartImages<'_>,
+    identity: Option<&crate::results::Identity>,
+    destination: ResultDestination,
+) -> Result<ResultAction> {
     let opts = PlayOptions::from_args(args);
     let bank = audio.start_attempt();
     let duration_ms =
@@ -89,7 +142,7 @@ pub fn play_loaded_attempt(
     chart.duration_ms = duration_ms;
     let mut game = game::Game::new(chart);
     execute!(out, terminal::Clear(terminal::ClearType::All))?;
-    run_game(out, &mut game, &bank, &opts)?;
+    run_game(out, &mut game, &bank, &opts, images)?;
     after_playback(bank, || {
         let progress = save_result(identity, &game, args.auto_ks);
         show_result(out, &game, &progress, destination)
@@ -142,10 +195,11 @@ fn run_game(
     game: &mut game::Game,
     bank: &audio::SampleBank,
     opts: &PlayOptions,
+    images: &mut ChartImages<'_>,
 ) -> Result<()> {
     let (cols, rows) = terminal::size()?;
     let visible = render::bga_panel_visible(cols, rows, game.chart().lane_count);
-    let mut bga = Presentation::new(game.chart(), visible);
+    let mut bga = Presentation::with_cached_images(images, visible);
     let start = Instant::now();
     let mut next_frame = Instant::now() + FRAME_DT;
     let mut state = LoopState::new(build_auto_notes(game, opts));
@@ -157,7 +211,7 @@ fn run_game(
             break;
         }
         let visible = render::bga_panel_visible(cols, rows, game.chart().lane_count);
-        bga.prepare_deferred(game.chart(), visible, Presentation::load_assets);
+        bga.prepare_cached_images(images, visible);
         draw_frame(out, game, bank, opts, &mut state, &bga, now)?;
         pump_input(out, game, bank, opts, &mut state, start, next_frame)?;
         next_frame = advance_deadline(next_frame);
@@ -750,27 +804,29 @@ mod tests {
                 keysound: 1,
             })
             .collect();
-        let mut game = Game::new(chart);
+        let mut game = Game::new(chart.clone());
         let bank = SampleBank::silent();
         let options = opts(true);
         let mut state = LoopState::new(build_auto_notes(&game, &options));
-        let mut bga = Presentation::new(game.chart(), render::bga_panel_visible(40, 24, 4));
+        let mut images = ChartImages::new(&chart);
+        let mut bga =
+            Presentation::with_cached_images(&mut images, render::bga_panel_visible(40, 24, 4));
         let now = state.update_size(&bank, &mut game, 2900.0, 40, 24);
         assert_eq!(now, 2900.0);
 
         let (started, loading) = mpsc::channel();
         let (release, blocked) = mpsc::channel();
         let visible = render::bga_panel_visible(80, 24, 4);
-        bga.prepare_deferred(game.chart(), visible, move |chart| {
+        bga.prepare_with(&mut images, visible, move |chart| {
             started.send(()).unwrap();
             blocked.recv_timeout(Duration::from_secs(5)).unwrap();
-            Presentation::load_assets(chart)
+            crate::bga::load_bitmaps(chart)
         });
         loading.recv_timeout(Duration::from_secs(5)).unwrap();
 
         // Keep the loader held while two separate audio events and key presses are due.
         for (index, wall_ms) in times.into_iter().enumerate() {
-            bga.prepare_deferred(game.chart(), visible, Presentation::load_assets);
+            bga.prepare_cached_images(&mut images, visible);
             let now = state.update_size(&bank, &mut game, wall_ms - 1.0, 80, 24);
             fire_scheduled_audio(&bank, &options, &mut state, &game, now);
             assert_eq!((state.bgm_cursor, state.note_snd_cursor), (index, index));
