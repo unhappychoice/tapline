@@ -406,6 +406,39 @@ fn lntype_two_endpoints_follow_measure_scales_bpm_changes_and_stops() {
 }
 
 #[test]
+fn lntype_two_start_at_fractional_stop_uses_arrival_time() {
+    let path = write_text("#BPM 120\n#LNTYPE 2\n#STOP01 48\n#00209:000100\n#00251:000100\n");
+    let chart = bms::load(&path, 0.0).unwrap();
+    assert_eq!(chart.notes.len(), 1);
+    let note = &chart.notes[0];
+    assert!((note.time_ms - (4000.0 + 2000.0 / 3.0)).abs() < 1e-6);
+    assert!((note.end_ms.unwrap() - (4500.0 + 4000.0 / 3.0)).abs() < 1e-6);
+}
+
+#[test]
+fn lntype_two_end_at_fractional_stop_uses_arrival_time() {
+    let path = write_text("#BPM 120\n#LNTYPE 2\n#STOP01 48\n#00209:000100\n#00251:010000\n");
+    let chart = bms::load(&path, 0.0).unwrap();
+    assert_eq!(chart.notes.len(), 1);
+    let note = &chart.notes[0];
+    assert_eq!(note.time_ms, 4000.0);
+    assert!((note.end_ms.unwrap() - (4000.0 + 2000.0 / 3.0)).abs() < 1e-6);
+}
+
+#[test]
+fn lntype_two_merges_across_fractional_stop_and_measure_boundary() {
+    let path = write_text(
+        "#BPM 120\n#LNTYPE 2\n#STOP01 48\n#00209:000100\n#00251:010000\n#00251:000002020202\n#00351:0300\n",
+    );
+    let chart = bms::load(&path, 0.0).unwrap();
+    assert_eq!(chart.notes.len(), 1);
+    let note = &chart.notes[0];
+    assert_eq!(note.keysound, Some(1));
+    assert_eq!(note.time_ms, 4000.0);
+    assert!((note.end_ms.unwrap() - 7500.0).abs() < 1e-6);
+}
+
+#[test]
 fn default_and_explicit_lntype_one_keep_pairing_slots_and_ignore_unmatched_starts() {
     for header in ["", "#LNTYPE 1\n"] {
         let path = write_text(&format!("#BPM 60\n{header}#00151:010203040500\n"));

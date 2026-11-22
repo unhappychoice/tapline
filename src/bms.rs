@@ -738,22 +738,22 @@ fn materialize_continuous_long_notes(
     lane_of: fn(&str) -> Option<usize>,
     base: u32,
 ) {
-    let mut per_lane: HashMap<usize, Vec<(f64, f64, u32)>> = HashMap::new();
+    let mut per_lane: HashMap<usize, Vec<(MeasurePosition, MeasurePosition, u32)>> = HashMap::new();
     // The stable sort keeps the last-defined slot first among equal starts.
     for (measure, ch, data) in raw.iter().rev() {
         let Some(lane) = lane_of(ch) else {
             continue;
         };
         let slots = parse_slots(data, base);
-        let n = slots.len() as f64;
+        let n = slots.len();
         per_lane.entry(lane).or_default().extend(
             slots
                 .iter()
                 .enumerate()
                 .filter(|(_, slot)| **slot != 0)
                 .map(|(i, slot)| {
-                    let start = *measure as f64 + i as f64 / n;
-                    let end = *measure as f64 + (i + 1) as f64 / n;
+                    let start = MeasurePosition::from_subdivision(*measure, i, n);
+                    let end = MeasurePosition::from_subdivision(*measure, i + 1, n);
                     (start, end, *slot)
                 }),
         );
@@ -763,10 +763,12 @@ fn materialize_continuous_long_notes(
             continue;
         }
         spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        let mut merged: Vec<(f64, f64, u32)> = Vec::new();
+        let mut merged: Vec<(MeasurePosition, MeasurePosition, u32)> = Vec::new();
         for (start, end, keysound) in spans {
             if let Some(previous) = merged.last_mut().filter(|span| start <= span.1) {
-                previous.1 = previous.1.max(end);
+                if end > previous.1 {
+                    previous.1 = end;
+                }
             } else {
                 merged.push((start, end, keysound));
             }
@@ -775,13 +777,35 @@ fn materialize_continuous_long_notes(
             acc.occupancy.lanes.observe_lane(lane);
             acc.occupancy.playable = true;
             acc.notes.push(Note {
-                time_ms: timeline.time_at(start.floor() as u32, start.fract()),
+                time_ms: timeline.time_at(start.measure, start.fraction),
                 lane,
                 hit: false,
                 keysound: Some(keysound),
-                end_ms: Some(timeline.time_at(end.floor() as u32, end.fract())),
+                end_ms: Some(timeline.time_at(end.measure, end.fraction)),
                 held_since: None,
             });
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
+struct MeasurePosition {
+    measure: u32,
+    fraction: f64,
+}
+
+impl MeasurePosition {
+    fn from_subdivision(measure: u32, index: usize, count: usize) -> Self {
+        if index == count {
+            Self {
+                measure: measure + 1,
+                fraction: 0.0,
+            }
+        } else {
+            Self {
+                measure,
+                fraction: index as f64 / count as f64,
+            }
         }
     }
 }
