@@ -58,6 +58,7 @@ fn unavailable_audio_backend_skips_decoding_and_allows_silent_play() {
     let mut game = crate::game::Game::new(chart.clone());
     let keysound = game.hit(note.lane, note.time_ms);
     assert_eq!(keysound, Some(1));
+    assert_eq!(game.perfect, 1);
     assert!(bank.start_hit(note.lane, keysound, false, 1.0).is_none());
 }
 

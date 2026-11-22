@@ -517,7 +517,7 @@ fn draw_gameplay_stats(
         Print(hud)
     )?;
 
-    if let Some(tag) = format_bga_badge(bank, now_ms, game.chart.object_id_base) {
+    if let Some(tag) = format_bga_badge(bank, now_ms, game.chart().object_id_base) {
         let tag_x = cols.saturating_sub(tag.width() as u16 + 2);
         if tag_x > hud_x + hud_width {
             queue!(
@@ -1424,9 +1424,9 @@ mod tests {
             let source = format!("{header}\n#BPM 120\n#00104:0A0azzzy\n#00111:01\n");
             let path = std::path::Path::new("badge.bms");
             let game = Game::new(crate::bms::load_bytes(path, source.as_bytes(), 0.0, 0).unwrap());
-            let bank = crate::bga::Presentation::load_assets(&game.chart);
-            assert_eq!(game.chart.bga.len(), labels.len());
-            for (event, label) in game.chart.bga.iter().zip(labels) {
+            let bank = crate::bga::Presentation::load_assets(game.chart());
+            assert_eq!(game.chart().bga.len(), labels.len());
+            for (event, label) in game.chart().bga.iter().zip(labels) {
                 let mut out = Vec::new();
                 draw_gameplay_stats(&mut out, &game, &bank, 80, event.time_ms).unwrap();
                 assert!(String::from_utf8(out)
