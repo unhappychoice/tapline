@@ -1130,14 +1130,14 @@ mod tests {
                 game.hit(0, 1000.0);
                 game.check_misses(5000.0 + delay);
                 assert_eq!(game.perfect, 1);
-                assert!(game.chart.notes[0].held_since.is_some());
+                assert!(game.chart().notes[0].held_since.is_some());
                 let mut now = 5000.0 + delay + 16.0;
-                while now < game.chart.duration_ms {
+                while now < game.chart().duration_ms {
                     game.check_misses(now);
                     now += 16.0;
                 }
-                assert!(game.chart.notes[0].hit);
-                assert!(game.chart.notes[0].held_since.is_none());
+                assert!(game.chart().notes[0].hit);
+                assert!(game.chart().notes[0].held_since.is_none());
                 assert_eq!(game.perfect, 2);
                 assert_eq!(game.miss, 0);
             }
@@ -1167,13 +1167,11 @@ mod tests {
         for auto_ks in [false, true] {
             chart.duration_ms = bank.chart_duration_ms(&chart, auto_ks, false, 0.0);
             assert_eq!(chart.duration_ms, 5512.0);
-            let mut game = crate::game::Game::new(chart);
+            let mut game = crate::game::Game::new(chart.clone());
             game.hit(0, 1000.0);
             game.check_misses(5496.0);
             assert_eq!(game.perfect, 2);
-            assert!(game.chart.notes[0].hit);
-            chart = game.chart;
-            chart.notes[0].hit = false;
+            assert!(game.chart().notes[0].hit);
         }
         chart.notes[0].time_ms = 5000.0;
         chart.notes[0].end_ms = None;
@@ -1211,7 +1209,7 @@ mod tests {
             let mut game = crate::game::Game::new(chart);
             assert_eq!(game.hit(0, 1000.0 + good), Some(1));
             assert_eq!(game.good, 1);
-            assert!(1000.0 + good + 80.0 < game.chart.duration_ms);
+            assert!(1000.0 + good + 80.0 < game.chart().duration_ms);
         }
     }
 

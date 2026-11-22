@@ -144,8 +144,8 @@ fn run_game(
     opts: &PlayOptions,
 ) -> Result<()> {
     let (cols, rows) = terminal::size()?;
-    let visible = render::bga_panel_visible(cols, rows, game.chart.lane_count);
-    let mut bga = Presentation::new(&game.chart, visible);
+    let visible = render::bga_panel_visible(cols, rows, game.chart().lane_count);
+    let mut bga = Presentation::new(game.chart(), visible);
     let start = Instant::now();
     let mut next_frame = Instant::now() + FRAME_DT;
     let mut state = LoopState::new(build_auto_notes(game, opts));
@@ -156,8 +156,8 @@ fn run_game(
         if advance_frame(game, bank, opts, &mut state, now) {
             break;
         }
-        let visible = render::bga_panel_visible(cols, rows, game.chart.lane_count);
-        bga.prepare_deferred(&game.chart, visible, Presentation::load_assets);
+        let visible = render::bga_panel_visible(cols, rows, game.chart().lane_count);
+        bga.prepare_deferred(game.chart(), visible, Presentation::load_assets);
         draw_frame(out, game, bank, opts, &mut state, &bga, now)?;
         pump_input(out, game, bank, opts, &mut state, start, next_frame)?;
         next_frame = advance_deadline(next_frame);
@@ -201,7 +201,7 @@ impl LoopState {
         cols: u16,
         rows: u16,
     ) -> f64 {
-        let paused = !render::playfield_fits(cols, rows, game.chart.lane_count);
+        let paused = !render::playfield_fits(cols, rows, game.chart().lane_count);
         if !self.paused && !paused {
             self.clock_ms += wall_ms - self.last_wall_ms;
         }
@@ -243,7 +243,7 @@ fn build_auto_notes(game: &game::Game, opts: &PlayOptions) -> Vec<(f64, usize, O
         return Vec::new();
     }
     let mut v: Vec<_> = game
-        .chart
+        .chart()
         .notes
         .iter()
         .map(|n| (n.time_ms, n.lane, n.keysound))
@@ -286,7 +286,7 @@ fn draw_frame(
     }
     if state.paused {
         state.intro_artwork = render::IntroArtwork::default();
-        render::draw_size_warning(&mut state.screen, game.chart.lane_count)?;
+        render::draw_size_warning(&mut state.screen, game.chart().lane_count)?;
         state.prev_mode = 0;
     } else {
         draw_mode(state, game, bank, opts, bga, (cols, rows), now)?;
@@ -310,7 +310,7 @@ fn draw_mode(
             (_, true) => AudioMode::Synth,
             _ => AudioMode::Samples,
         };
-        state.intro_artwork.prepare(&game.chart, size);
+        state.intro_artwork.prepare(game.chart(), size);
         return render::draw_prepared_intro(
             &mut state.screen,
             game,
@@ -335,7 +335,7 @@ fn fire_scheduled_audio(
     let horizon = now + opts.audio_lead_ms;
     loop {
         let bgm = game
-            .chart
+            .chart()
             .bgm
             .get(state.bgm_cursor)
             .filter(|event| event.time_ms <= horizon);
@@ -429,7 +429,7 @@ fn handle_key(
             if now < opts.countdown_ms {
                 return false;
             }
-            let Some(lane) = lane_for_key(c, &game.chart.keys) else {
+            let Some(lane) = lane_for_key(c, &game.chart().keys) else {
                 return false;
             };
             match kind {
@@ -450,7 +450,7 @@ fn handle_key(
                         && !state
                             .pressed_keys
                             .iter()
-                            .any(|&key| lane_for_key(key, &game.chart.keys) == Some(lane)) =>
+                            .any(|&key| lane_for_key(key, &game.chart().keys) == Some(lane)) =>
                 {
                     if state.paused {
                         state.deferred_releases.push(lane);
@@ -712,7 +712,7 @@ mod tests {
                 );
             }
             assert_eq!((game.perfect, game.miss), (0, 0));
-            assert!(!game.chart.notes[0].hit);
+            assert!(!game.chart().notes[0].hit);
         });
         let now = state.update_size(&bank, &mut game, 21010.0, 99, 24);
         handle_key(
@@ -754,14 +754,14 @@ mod tests {
         let bank = SampleBank::silent();
         let options = opts(true);
         let mut state = LoopState::new(build_auto_notes(&game, &options));
-        let mut bga = Presentation::new(&game.chart, render::bga_panel_visible(40, 24, 4));
+        let mut bga = Presentation::new(game.chart(), render::bga_panel_visible(40, 24, 4));
         let now = state.update_size(&bank, &mut game, 2900.0, 40, 24);
         assert_eq!(now, 2900.0);
 
         let (started, loading) = mpsc::channel();
         let (release, blocked) = mpsc::channel();
         let visible = render::bga_panel_visible(80, 24, 4);
-        bga.prepare_deferred(&game.chart, visible, move |chart| {
+        bga.prepare_deferred(game.chart(), visible, move |chart| {
             started.send(()).unwrap();
             blocked.recv_timeout(Duration::from_secs(5)).unwrap();
             Presentation::load_assets(chart)
@@ -770,7 +770,7 @@ mod tests {
 
         // Keep the loader held while two separate audio events and key presses are due.
         for (index, wall_ms) in times.into_iter().enumerate() {
-            bga.prepare_deferred(&game.chart, visible, Presentation::load_assets);
+            bga.prepare_deferred(game.chart(), visible, Presentation::load_assets);
             let now = state.update_size(&bank, &mut game, wall_ms - 1.0, 80, 24);
             fire_scheduled_audio(&bank, &options, &mut state, &game, now);
             assert_eq!((state.bgm_cursor, state.note_snd_cursor), (index, index));
@@ -838,15 +838,15 @@ mod tests {
             );
         }
         assert_eq!((game.perfect, game.miss), (3, 0));
-        assert!(game.chart.notes.iter().all(|note| !note.hit));
+        assert!(game.chart().notes.iter().all(|note| !note.hit));
 
         let now = state.update_size(&bank, &mut game, 9000.0, 80, 24);
         assert_eq!(now, 4000.0);
         assert_eq!(game.flash.last_judgment_at, now);
         assert_eq!((game.perfect, game.miss), (3, 1));
-        assert!(game.chart.notes[0].hit);
-        assert_eq!(game.chart.notes[1].held_since, Some(3000.0));
-        assert_eq!(game.chart.notes[2].held_since, Some(3000.0));
+        assert!(game.chart().notes[0].hit);
+        assert_eq!(game.chart().notes[1].held_since, Some(3000.0));
+        assert_eq!(game.chart().notes[2].held_since, Some(3000.0));
 
         let now = state.update_size(&bank, &mut game, 10200.0, 80, 24);
         game.advance_completion(now);
@@ -1053,8 +1053,9 @@ mod tests {
 
     #[test]
     fn lane_presses_can_judge_pending_notes_at_chart_end() {
-        let mut game = ready_game();
-        game.chart.duration_ms = 3000.0;
+        let mut chart = ready_game().chart().clone();
+        chart.duration_ms = 3000.0;
+        let mut game = Game::new(chart);
         let bank = SampleBank::silent();
         let mut state = LoopState::new(Vec::new());
         handle_key(
@@ -1282,7 +1283,7 @@ mod tests {
                     "keysounds at {now} ms (auto_ks={auto_ks})"
                 );
                 assert_eq!(game.miss, 0);
-                assert!(game.chart.notes.iter().all(|note| !note.hit));
+                assert!(game.chart().notes.iter().all(|note| !note.hit));
             }
         }
     }
@@ -1505,7 +1506,7 @@ mod tests {
         send_key(&mut game, 'f', KeyEventKind::Release, 2600.0);
         assert_eq!((game.perfect, game.miss), (2, 0));
         assert!(game
-            .chart
+            .chart()
             .notes
             .iter()
             .all(|note| note.held_since.is_some()));
@@ -1513,7 +1514,7 @@ mod tests {
         send_key(&mut game, 'j', KeyEventKind::Release, 2750.0);
         assert_eq!((game.perfect, game.miss), (2, 2));
         assert!(game
-            .chart
+            .chart()
             .notes
             .iter()
             .all(|note| note.hit && note.held_since.is_none()));
@@ -1568,15 +1569,15 @@ mod tests {
                             now,
                         );
                         if index < 6 {
-                            assert!(!game.chart.notes[0].hit);
-                            assert_eq!(game.chart.notes[0].held_since, Some(3000.0));
+                            assert!(!game.chart().notes[0].hit);
+                            assert_eq!(game.chart().notes[0].held_since, Some(3000.0));
                             assert_eq!(
                                 (game.perfect, game.great, game.good, game.miss),
                                 (1, 0, 0, 0)
                             );
                         } else {
-                            assert!(game.chart.notes[0].hit);
-                            assert_eq!(game.chart.notes[0].held_since, None);
+                            assert!(game.chart().notes[0].hit);
+                            assert_eq!(game.chart().notes[0].held_since, None);
                             let expected = match release_ms {
                                 4000.0 => (1, 0, 0, 1),
                                 5000.0 => (2, 0, 0, 0),
@@ -1631,7 +1632,7 @@ mod tests {
         key(&mut game, 'z', KeyEventKind::Press, 3000.0);
         key(&mut game, '/', KeyEventKind::Press, 3200.0);
         key(&mut game, 'Z', KeyEventKind::Release, 3400.0);
-        assert_eq!(game.chart.notes[0].held_since, Some(3000.0));
+        assert_eq!(game.chart().notes[0].held_since, Some(3000.0));
         key(&mut game, '/', KeyEventKind::Release, 5000.0);
         assert_eq!((game.perfect, game.miss), (2, 0));
     }
@@ -1667,8 +1668,8 @@ mod tests {
                     now,
                 );
             });
-            assert!(game.chart.notes[0].hit);
-            assert_eq!(game.chart.notes[1].held_since, Some(3000.0));
+            assert!(game.chart().notes[0].hit);
+            assert_eq!(game.chart().notes[1].held_since, Some(3000.0));
             assert_eq!((game.perfect, game.miss), (2, 1));
             handle_key(
                 KeyCode::Char(';'),
@@ -1679,7 +1680,7 @@ mod tests {
                 &mut state,
                 5000.0,
             );
-            assert!(game.chart.notes[1].hit);
+            assert!(game.chart().notes[1].hit);
             assert_eq!((game.perfect, game.miss), (3, 1));
         });
     }
@@ -1861,7 +1862,7 @@ mod tests {
         );
         game.check_misses(5170.0);
         assert_eq!((game.perfect, game.miss, game.combo), (2, 0, 2));
-        assert!(game.chart.notes[0].hit);
+        assert!(game.chart().notes[0].hit);
     }
 
     #[test]

@@ -2535,10 +2535,10 @@ mod tests {
                 });
                 if channels.starts_with('D') {
                     assert_eq!(game.miss, 0);
-                    assert!(game.chart.mines.iter().all(|mine| mine.exploded));
+                    assert!(game.chart().mines.iter().all(|mine| mine.exploded));
                 } else {
                     assert_eq!(game.perfect, if long { 18 } else { 9 });
-                    assert!(game.chart.notes.iter().all(|note| note.hit));
+                    assert!(game.chart().notes.iter().all(|note| note.hit));
                 }
             }
         }
@@ -3130,7 +3130,7 @@ mod tests {
         assert_eq!(lanes, (0..10).collect::<Vec<_>>());
         let mut game = crate::game::Game::new(chart);
         for key in "sdfklzxcnm".chars() {
-            let lane = crate::runtime::lane_for_key(key, &game.chart.keys).unwrap();
+            let lane = crate::runtime::lane_for_key(key, &game.chart().keys).unwrap();
             game.hit(lane, 2000.0);
         }
         assert_eq!(game.combo, 10);
