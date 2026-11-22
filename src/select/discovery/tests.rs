@@ -70,6 +70,34 @@ fn visits_reuse_unchanged_metadata_and_refresh_library() {
 }
 
 #[test]
+fn bmson_preview_is_resolved_relative_to_the_chart_on_each_visit() {
+    let dir = super::super::tests::tempdir();
+    let song = dir.join("song");
+    std::fs::create_dir(&song).unwrap();
+    let chart = song.join("chart.bmson");
+    let preview = song.join("tone.wav");
+    let mut value: serde_json::Value =
+        serde_json::from_str(include_str!("../../../tests/fixtures/minimal.bmson")).unwrap();
+    value["info"]["preview_music"] = serde_json::json!("tone.wav");
+    std::fs::write(&chart, value.to_string()).unwrap();
+    let mut state = crate::select::SelectorState::default();
+
+    std::fs::copy("tests/fixtures/tone.wav", dir.join("tone.wav")).unwrap();
+    assert_eq!(state.scan(&dir)[0].preview, None);
+    std::fs::copy("tests/fixtures/tone.wav", &preview).unwrap();
+    assert_eq!(state.scan(&dir)[0].preview.as_ref(), Some(&preview));
+    assert_eq!(counts(), (1, 1));
+    assert_eq!(
+        crate::bmson::read_meta(&chart).unwrap().preview.as_ref(),
+        Some(&preview)
+    );
+
+    std::fs::remove_file(&preview).unwrap();
+    assert_eq!(state.scan(&dir)[0].preview, None);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn progress_uses_the_displayed_revision_after_chart_replacement() {
     let dir = super::super::tests::tempdir();
     let path = dir.join("chart.bms");
