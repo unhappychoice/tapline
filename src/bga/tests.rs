@@ -334,6 +334,63 @@ fn extended_layers_opacity_and_poor_modes() {
 }
 
 #[test]
+fn trailing_switch_keeps_gameplay_open_and_renders_after_a_key_press() {
+    let dir = std::env::temp_dir().join(format!("tapline-bga-trailing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let color = [20, 40, 60, 255];
+    RgbaImage::from_pixel(SIZE, SIZE, Rgba(color))
+        .save(dir.join("frame.png"))
+        .unwrap();
+    let chart = crate::bms::load_bytes(
+        &dir.join("chart.bms"),
+        b"#BPM 120\n#WAV02 tone.wav\n#BMP01 frame.png\n#SWBGA01 100:500:11:0:255,0,0,0 01\n#00001:02\n#005A5:01\n#010A5:02\n",
+        0.0,
+        0,
+    )
+    .unwrap();
+    let images = Presentation::load_assets(&chart);
+    std::fs::remove_dir_all(dir).unwrap();
+
+    let (audio, _output) = crate::audio::playback_test_bank();
+    for (bank, end) in [
+        (audio, 12500.0),
+        (crate::audio::SampleBank::silent(), 14500.0),
+    ] {
+        let mut chart = chart.clone();
+        chart.duration_ms = bank.chart_duration_ms(&chart, false, false, 0.0);
+        assert_eq!(chart.duration_ms, end);
+        let mut game = Game::new(chart);
+        game.hit(0, 9999.0);
+        assert!(!game.advance_completion(10016.0));
+        assert_ne!(images.frame(&game, 10016.0).get_pixel(0, 0).0, color);
+        game.hit(0, 10016.0);
+        assert!(!game.advance_completion(10032.0));
+        assert_eq!(images.frame(&game, 10032.0).get_pixel(0, 0).0, color);
+        assert!(game.advance_completion(end));
+    }
+}
+
+#[test]
+fn undefined_and_unbound_trailing_switches_do_not_extend_gameplay() {
+    let (audio, _output) = crate::audio::playback_test_bank();
+    for (bank, end) in [(audio, 112.0), (crate::audio::SampleBank::silent(), 4500.0)] {
+        for event in ["", "#005A5:01", "#005A5:02"] {
+            let source = format!(
+                "#BPM 120\n#WAV02 tone.wav\n#SWBGA01 100:500:17:0:255,0,0,0 01\n#00001:02\n{event}\n"
+            );
+            let chart = crate::bms::load_bytes(
+                std::path::Path::new("chart.bms"),
+                source.as_bytes(),
+                0.0,
+                0,
+            )
+            .unwrap();
+            assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), end);
+        }
+    }
+}
+
+#[test]
 fn ten_key_double_play_renders_p2_key_bound_animations() {
     let dir = std::env::temp_dir().join(format!("tapline-bga-dp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

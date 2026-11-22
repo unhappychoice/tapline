@@ -11,6 +11,14 @@ pub struct Extensions {
     pub overlay_transparency: OverlayTransparency,
 }
 
+impl Extensions {
+    pub(crate) fn has_playable_switch(&self, id: u32) -> bool {
+        self.switches
+            .get(&id)
+            .is_some_and(|switch| switch.lane.is_some())
+    }
+}
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub enum OverlayTransparency {
     #[default]
