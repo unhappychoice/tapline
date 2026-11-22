@@ -655,14 +655,15 @@ fn loaded_mines_scale_damage_break_combo_and_allow_recovery_after_zz() {
 #[test]
 fn simultaneous_mines_each_apply_damage_while_a_normal_note_still_scores() {
     let path = write_text("#BPM 60\n#TOTAL 10\n#00011:01\n#00111:01\n#001D1:0A\n#001D1:0001\n");
-    let mut game = tapline::game::Game::new(bms::load(&path, 0.0).unwrap());
-    game.hit(0, 0.0);
+    let mut chart = bms::load(&path, 0.0).unwrap();
     // Two distinct timestamps within the same press window both detonate.
-    game.chart.mines[1].time_ms = 4040.0;
+    chart.mines[1].time_ms = 4040.0;
+    let mut game = tapline::game::Game::new(chart);
+    game.hit(0, 0.0);
     game.hit(0, 4000.0);
     assert_eq!(game.gauge.value(), 24.5);
     assert_eq!(game.perfect, 2);
     assert_eq!(game.miss, 0);
     assert_eq!(game.combo, 1);
-    assert!(game.chart.mines.iter().all(|mine| mine.exploded));
+    assert!(game.chart().mines.iter().all(|mine| mine.exploded));
 }

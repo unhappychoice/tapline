@@ -157,7 +157,7 @@ impl ImageBank {
     }
 
     fn visible_layers(&self, game: &Game, now_ms: f64) -> [Option<Layer>; 5] {
-        let poor_mode = game.chart.bga_extensions.poor_mode;
+        let poor_mode = game.chart().bga_extensions.poor_mode;
         let poor = (poor_mode != 2
             && game
                 .flash
@@ -183,7 +183,7 @@ impl ImageBank {
     fn styled_layer(&self, game: &Game, layer: BgaLayer, now_ms: f64) -> Option<Layer> {
         let image = self.layer(layer, now_ms)?;
         let state = self.4.state(layer, now_ms);
-        let extensions = &game.chart.bga_extensions;
+        let extensions = &game.chart().bga_extensions;
         let key = state.key.or_else(|| {
             (extensions.overlay_transparency == OverlayTransparency::BlackColorKey
                 && layer != BgaLayer::Base
@@ -201,7 +201,7 @@ impl ImageBank {
 
     fn switch_layer(&self, game: &Game, now_ms: f64) -> Option<Layer> {
         let (id, _, start) = game.bga_switch.active?;
-        let switch = game.chart.bga_extensions.switches.get(&id)?;
+        let switch = game.chart().bga_extensions.switches.get(&id)?;
         let elapsed = now_ms - start;
         let visible = elapsed >= 0.0
             && if switch.duration_ms == 0 {
