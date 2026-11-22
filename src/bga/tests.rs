@@ -210,6 +210,13 @@ fn preloaded_images_survive_deleted_files_and_bad_files_are_skipped() {
     .into();
     let mut game = Game::new(Chart {
         bmp_paths: paths,
+        bga: [1, 2, 3]
+            .map(|bmp_id| BgaEvent {
+                time_ms: bmp_id as f64,
+                layer: BgaLayer::Base,
+                bmp_id,
+            })
+            .into(),
         notes: vec![Note {
             time_ms: 1000.0,
             keysound: Some(7),
@@ -722,7 +729,14 @@ pub(super) fn load_bank(chart: &Chart) -> ImageBank {
 fn headless_judgments_and_hidden_presentation_never_load_images() {
     image_file::LOAD_CALLS.set(0);
     let mut chart = Chart {
-        bmp_paths: [(1, PathBuf::from("unused.png"))].into(),
+        bmp_paths: [(1, PathBuf::from("missing.png"))].into(),
+        bga: [1, 2]
+            .map(|bmp_id| BgaEvent {
+                time_ms: 0.0,
+                layer: BgaLayer::Base,
+                bmp_id,
+            })
+            .into(),
         notes: vec![
             Note {
                 time_ms: 100.0,

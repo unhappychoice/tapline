@@ -52,7 +52,7 @@ impl ImageBank {
         extensions: &Extensions,
     ) -> Self {
         Self(
-            bitmaps::load(paths, extensions),
+            bitmaps::load(paths, events, extensions),
             paths
                 .iter()
                 .filter(|(_, path)| is_video(path))
