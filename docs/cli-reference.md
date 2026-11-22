@@ -20,12 +20,13 @@ Automatic discovery chooses the first existing directory from
 `$TAPLINE_SONGS_DIR`, `./songs`, `./tests/fixtures`, and `$HOME/.tapline/songs`.
 On Windows, `%USERPROFILE%\.tapline\songs` is the final fallback if the
 `HOME` directory candidate is unavailable.
-If that directory contains no charts, the built-in chart plays; discovery does
-not continue to later directories. The same fallback applies to an empty or
-missing explicit `--dir`.
+If the initial scan finds no playable charts, tapline plays the built-in
+chart. Discovery stops at the first existing directory. An empty or missing
+explicit `--dir` also leads to the built-in chart on the initial scan.
 
-Direct-file and built-in play exit after the result screen. Playing from the
-selector returns there after the result screen.
+Direct-file and built-in play exit after the result screen. When you return
+from the result screen to the selector, tapline rescans the directory and
+shows the selector even if no playable charts remain.
 
 ## Gameplay keys
 
