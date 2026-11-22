@@ -17,7 +17,7 @@ pub const LANE_WIDTH: u16 = 7;
 /// Look up the anchor-key color for labels and ordinary notes.
 fn lane_key_color(game: &Game, lane: usize) -> Color {
     let keys = game
-        .chart
+        .chart()
         .keys
         .get(lane)
         .map(|v| v.as_slice())
@@ -27,7 +27,7 @@ fn lane_key_color(game: &Game, lane: usize) -> Color {
 
 fn note_style(game: &Game, lane: usize, held: bool) -> (u16, u16, Color) {
     let scratch = game
-        .chart
+        .chart()
         .lanes
         .get(lane)
         .is_some_and(|lane| lane.role == crate::chart::LaneRole::Scratch);
@@ -335,17 +335,19 @@ pub fn format_audio_badge(
     badge
 }
 
-/// Compact HUD tag summarising the base/overlay/poor BGA slots the way a
-/// real player would care about — one line, base36 IDs, dashes where a slot
-/// hasn't fired yet.
-pub fn format_bga_badge(bga_bank: &crate::bga::ImageBank, now_ms: f64) -> Option<String> {
+/// Compact HUD tag with chart-local object IDs and dashes for inactive layers.
+pub fn format_bga_badge(
+    bga_bank: &crate::bga::ImageBank,
+    now_ms: f64,
+    object_id_base: u32,
+) -> Option<String> {
     if !bga_bank.has_bga_events() {
         return None;
     }
     let fmt = |layer: BgaLayer| -> String {
         bga_bank
             .active_bga_id(layer, now_ms)
-            .map(bmp_id_label)
+            .map(|id| bmp_id_label(id, object_id_base))
             .unwrap_or_else(|| "--".to_string())
     };
     Some(format!(
@@ -356,13 +358,14 @@ pub fn format_bga_badge(bga_bank: &crate::bga::ImageBank, now_ms: f64) -> Option
     ))
 }
 
-fn bmp_id_label(id: u32) -> String {
-    const DIGITS: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    if id >= 36 * 36 {
+fn bmp_id_label(id: u32, object_id_base: u32) -> String {
+    const DIGITS: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let base = if object_id_base == 62 { 62 } else { 36 };
+    if id >= base * base {
         return format!("{:2X}", id.min(0xFF));
     }
-    let a = (id / 36) as usize;
-    let b = (id % 36) as usize;
+    let a = (id / base) as usize;
+    let b = (id % base) as usize;
     format!("{}{}", DIGITS[a] as char, DIGITS[b] as char)
 }
 
@@ -394,12 +397,12 @@ pub fn format_artist_line(artist: &str, subartist: &str) -> Option<String> {
 }
 
 fn format_difficulty_badge(game: &Game) -> String {
-    let lv = game.chart.playlevel.map(|v| format!("Lv {}", v));
-    let dif = match difficulty_label(game.chart.difficulty) {
+    let lv = game.chart().playlevel.map(|v| format!("Lv {}", v));
+    let dif = match difficulty_label(game.chart().difficulty) {
         "" => None,
         s => Some(s.to_string()),
     };
-    let bpm = format!("BPM {:.0}", game.chart.bpm);
+    let bpm = format!("BPM {:.0}", game.chart().bpm);
     let mut parts: Vec<String> = Vec::new();
     if let Some(d) = dif {
         parts.push(d);
@@ -408,9 +411,9 @@ fn format_difficulty_badge(game: &Game) -> String {
         parts.push(l);
     }
     parts.push(bpm);
-    parts.push(format!("{}K", game.chart.lane_count));
-    if !game.chart.genre.is_empty() {
-        parts.push(crate::terminal_text::sanitize(&game.chart.genre));
+    parts.push(format!("{}K", game.chart().lane_count));
+    if !game.chart().genre.is_empty() {
+        parts.push(crate::terminal_text::sanitize(&game.chart().genre));
     }
     parts.join("  ·  ")
 }
@@ -521,7 +524,7 @@ fn draw_gameplay_stats(
         Print(hud)
     )?;
 
-    if let Some(tag) = format_bga_badge(bank, now_ms) {
+    if let Some(tag) = format_bga_badge(bank, now_ms, game.chart().object_id_base) {
         let tag_x = cols.saturating_sub(tag.width() as u16 + 2);
         if tag_x > hud_x + hud_width {
             queue!(
@@ -562,8 +565,8 @@ pub(crate) fn draw_with_scroll_speed(
     scroll_speed: f64,
 ) -> anyhow::Result<()> {
     let (cols, rows) = terminal::size()?;
-    let lanes = game.chart.lane_count as u16;
-    let Some(layout) = PlayLayout::compute(cols, rows, game.chart.lane_count) else {
+    let lanes = game.chart().lane_count as u16;
+    let Some(layout) = PlayLayout::compute(cols, rows, game.chart().lane_count) else {
         return Ok(());
     };
     let layout = layout.with_scroll_speed(scroll_speed);
@@ -577,9 +580,9 @@ pub(crate) fn draw_with_scroll_speed(
 
     queue!(out, terminal::BeginSynchronizedUpdate)?;
 
-    draw_song_text(out, &game.chart.text_events, now_ms, cols)?;
+    draw_song_text(out, &game.chart().text_events, now_ms, cols)?;
 
-    let title = format_title_line(&game.chart.title, &game.chart.subtitle);
+    let title = format_title_line(&game.chart().title, &game.chart().subtitle);
     queue!(
         out,
         cursor::MoveTo(cols.saturating_sub(title.chars().count() as u16) / 2, 1),
@@ -628,7 +631,7 @@ pub(crate) fn draw_with_scroll_speed(
                 .unwrap_or(-9999.0)
             < 120.0;
         let keys = game
-            .chart
+            .chart()
             .keys
             .get(lane)
             .map(|v| v.as_slice())
@@ -655,7 +658,7 @@ pub(crate) fn draw_with_scroll_speed(
 
     draw_judgment_flash(out, game, cols, layout.judgment_row(), now_ms)?;
 
-    let key_hint = format_key_hint(&game.chart.keys);
+    let key_hint = format_key_hint(&game.chart().keys);
     let quit_hint = "  ·  quit Esc / Q";
     let (keys, _) = fit_terminal_line(
         &format!("keys {key_hint}"),
@@ -685,7 +688,7 @@ fn draw_notes_and_mines(
     layout: &PlayLayout,
 ) -> anyhow::Result<()> {
     let x0 = layout.x0;
-    let scroll = game.scroll.frame(&game.chart, now_ms);
+    let scroll = game.scroll.frame(game.chart(), now_ms);
     for mine in game.visible_mines(now_ms, layout.approach_distance) {
         let Some(y) = note_screen_y(scroll.distance(mine.time_ms), layout) else {
             continue;
@@ -786,8 +789,8 @@ pub fn draw_intro_full(
     queue!(out, terminal::BeginSynchronizedUpdate)?;
     crate::artwork::draw(
         out,
-        &game.chart.asset_dir,
-        &game.chart.stagefile,
+        &game.chart().asset_dir,
+        &game.chart().stagefile,
         stagefile_area(size),
     )?;
     draw_intro_content(
@@ -832,7 +835,7 @@ fn draw_intro_content(
     (samples_loaded, decode_failures): (usize, usize),
     (cols, rows): (u16, u16),
 ) -> anyhow::Result<()> {
-    let title = format_title_line(&game.chart.title, &game.chart.subtitle);
+    let title = format_title_line(&game.chart().title, &game.chart().subtitle);
     queue!(
         out,
         cursor::MoveTo(
@@ -845,7 +848,7 @@ fn draw_intro_content(
         style::SetAttribute(style::Attribute::Reset),
         ResetColor
     )?;
-    if let Some(art) = format_artist_line(&game.chart.artist, &game.chart.subartist) {
+    if let Some(art) = format_artist_line(&game.chart().artist, &game.chart().subartist) {
         queue!(
             out,
             cursor::MoveTo(
@@ -870,7 +873,7 @@ fn draw_intro_content(
             ResetColor
         )?;
     }
-    let key_hint = format_key_hint(&game.chart.keys);
+    let key_hint = format_key_hint(&game.chart().keys);
     let (msg, width) = fit_terminal_line(&format!("hit  {key_hint}  on the line"), cols);
     queue!(
         out,
@@ -1008,8 +1011,8 @@ fn result_lines(
         (format_result_gauge(game, cols), Color::Yellow),
     ];
     lines.extend(judgment_lines(game, cols).map(|line| (line, Color::DarkGrey)));
-    if !game.chart.maker.is_empty() {
-        lines.push((format!("chart by {}", game.chart.maker), Color::DarkGrey));
+    if !game.chart().maker.is_empty() {
+        lines.push((format!("chart by {}", game.chart().maker), Color::DarkGrey));
     }
     lines.extend(progress_lines(progress, cols).map(|line| (line, Color::Yellow)));
     let prompt = match destination {
@@ -1084,13 +1087,12 @@ mod tests {
         let mut chart = base_chart(4);
         chart.maker = format!("{credit}\x1b]52;c;VEVTVA==\x07\x1b[2J\u{9b}2J{controls}");
         let mut out = Vec::new();
-        let mut game = Game::new(chart);
-        draw_result_to(&mut out, &game, 120, 40).unwrap();
+        draw_result_to(&mut out, &Game::new(chart.clone()), 120, 40).unwrap();
         let rendered = String::from_utf8(out).unwrap();
         let expected = format!("chart by {credit}]52;c;VEVTVA==[2J2J");
-        game.chart.maker = format!("{credit}]52;c;VEVTVA==[2J2J");
+        chart.maker = format!("{credit}]52;c;VEVTVA==[2J2J");
         let mut sanitized_out = Vec::new();
-        draw_result_to(&mut sanitized_out, &game, 120, 40).unwrap();
+        draw_result_to(&mut sanitized_out, &Game::new(chart), 120, 40).unwrap();
         assert_eq!(rendered, String::from_utf8(sanitized_out).unwrap());
         assert!(rendered.contains(&expected));
         assert!(!rendered.contains("\x1b]52"));
@@ -1214,7 +1216,7 @@ mod tests {
             )
             .unwrap();
             let game = Game::new(chart);
-            for lane in 0..game.chart.lane_count {
+            for lane in 0..game.chart().lane_count {
                 let scratch = scratches.contains(&lane);
                 let (offset, width, color) = note_style(&game, lane, false);
                 assert_eq!((offset, width), if scratch { (1, 6) } else { (2, 4) });
@@ -1242,7 +1244,7 @@ mod tests {
             }
         }
         let game = Game::new(base_chart(9));
-        assert_eq!(game.chart.keys[0], vec!['A']);
+        assert_eq!(game.chart().keys[0], vec!['A']);
         assert_eq!(note_style(&game, 0, false), (2, 4, Color::White));
     }
 
@@ -1278,14 +1280,15 @@ mod tests {
                 );
                 let mut game = Game::new(loaded);
                 let mut saw_ending = false;
-                (0..=game.chart.duration_ms.ceil() as u64 + 16)
+                (0..=game.chart().duration_ms.ceil() as u64 + 16)
                     .step_by(16)
                     .try_for_each(|now| {
                         if game.advance_completion(now as f64) {
                             return Err(());
                         }
                         let mut out = Vec::new();
-                        draw_song_text(&mut out, &game.chart.text_events, now as f64, 80).unwrap();
+                        draw_song_text(&mut out, &game.chart().text_events, now as f64, 80)
+                            .unwrap();
                         saw_ending |= String::from_utf8(out).unwrap().contains("Ending");
                         Ok(())
                     })
@@ -1373,7 +1376,7 @@ mod tests {
     #[test]
     fn gameplay_stats_fit_the_minimum_four_lane_terminal() {
         let mut game = Game::new(crate::chart::built_in(120.0, 0.0));
-        assert!(playfield_fits(29, 13, game.chart.lane_count));
+        assert!(playfield_fits(29, 13, game.chart().lane_count));
         let bank = image_bank(&[]);
         let mut screen = crate::screen::Screen::new();
         screen.resize(29, 13);
@@ -1441,6 +1444,27 @@ mod tests {
     }
 
     #[test]
+    fn gameplay_bga_badge_uses_the_loaded_chart_object_id_base() {
+        for (header, labels) in [
+            ("#BASE 62", ["0A", "0a", "zz", "zy"]),
+            ("", ["0A", "0A", "ZZ", "ZY"]),
+        ] {
+            let source = format!("{header}\n#BPM 120\n#00104:0A0azzzy\n#00111:01\n");
+            let path = std::path::Path::new("badge.bms");
+            let game = Game::new(crate::bms::load_bytes(path, source.as_bytes(), 0.0, 0).unwrap());
+            let bank = crate::bga::Presentation::load_assets(game.chart());
+            assert_eq!(game.chart().bga.len(), labels.len());
+            for (event, label) in game.chart().bga.iter().zip(labels) {
+                let mut out = Vec::new();
+                draw_gameplay_stats(&mut out, &game, &bank, 80, event.time_ms).unwrap();
+                assert!(String::from_utf8(out)
+                    .unwrap()
+                    .contains(&format!("BGA {label}·--·--")));
+            }
+        }
+    }
+
+    #[test]
     fn gameplay_bga_badge_requires_space_to_the_right_of_accuracy() {
         let mut chart = base_chart(7);
         chart.bga.push(BgaEvent {
@@ -1448,12 +1472,12 @@ mod tests {
             layer: BgaLayer::Base,
             bmp_id: 1,
         });
-        let mut game = Game::new(chart);
-        let bank = image_bank(&game.chart.bga);
-        game.chart.bga.clear();
+        let bank = image_bank(&chart.bga);
+        chart.bga.clear();
+        let game = Game::new(chart);
 
         for (cols, badge_visible) in [(50, false), (80, true)] {
-            assert!(playfield_fits(cols, 13, game.chart.lane_count));
+            assert!(playfield_fits(cols, 13, game.chart().lane_count));
             let mut screen = crate::screen::Screen::new();
             screen.resize(cols, 13);
             draw_gameplay_stats(&mut screen, &game, &bank, cols, 0.0).unwrap();
@@ -1590,7 +1614,7 @@ mod tests {
                 game.release(1, end);
                 game.hit(2, time);
                 assert_eq!((game.perfect, game.great, game.miss), (2, 1, 0));
-                assert!(game.chart.mines[0].exploded);
+                assert!(game.chart().mines[0].exploded);
                 outcomes.push((game.score, game.max_combo, game.gauge.value()));
             }
             assert!(outcomes.windows(2).all(|pair| pair[0] == pair[1]));
@@ -1624,7 +1648,7 @@ mod tests {
             let layout = PlayLayout::compute(80, 24, 4).unwrap();
             let note = game.visible_notes(0.0, APPROACH_MS).next().unwrap();
             let range = long_note_scroll_range(
-                &game.scroll.frame(&game.chart, 0.0),
+                &game.scroll.frame(game.chart(), 0.0),
                 note.time_ms,
                 note.end_ms.unwrap(),
                 &layout,
@@ -1637,8 +1661,8 @@ mod tests {
             assert_eq!(range, Some((expected_top, layout.judgment_row())));
             if speed != 0.0 {
                 assert!(long_note_screen_range(
-                    game.chart.scroll_distance(2000.0, 0.0),
-                    game.chart.scroll_distance(6000.0, 0.0),
+                    game.chart().scroll_distance(2000.0, 0.0),
+                    game.chart().scroll_distance(6000.0, 0.0),
                     &layout,
                 )
                 .is_none());
@@ -1719,10 +1743,10 @@ mod tests {
             let layout = PlayLayout::compute(80, 109, 4).unwrap();
             let visible: Vec<_> = game.visible_notes(0.0, APPROACH_MS).collect();
             assert_eq!(visible.len(), 2, "scroll={scroll}, speed={speed}");
-            assert!(note_screen_y(game.chart.scroll_distance(1800.0, 0.0), &layout).is_some());
+            assert!(note_screen_y(game.chart().scroll_distance(1800.0, 0.0), &layout).is_some());
             assert!(long_note_screen_range(
-                game.chart.scroll_distance(1800.0, 0.0),
-                game.chart.scroll_distance(2000.0, 0.0),
+                game.chart().scroll_distance(1800.0, 0.0),
+                game.chart().scroll_distance(2000.0, 0.0),
                 &layout,
             )
             .is_some());
@@ -1752,7 +1776,7 @@ mod tests {
         let mut game = Game::new(chart);
         game.hit(0, 1000.0);
         assert!(format_result_gauge(&game, 80).ends_with("FAILED"));
-        assert!(game.advance_completion(game.chart.duration_ms.max(2000.0)));
+        assert!(game.advance_completion(game.chart().duration_ms.max(2000.0)));
         assert!(format_result_gauge(&game, 80).ends_with("CLEAR "));
     }
 
@@ -1874,7 +1898,7 @@ mod tests {
                 }?;
                 Some((note.lane, range, note.held_since.is_some()))
             };
-            let expected: Vec<_> = game.chart.notes.iter().filter_map(geometry).collect();
+            let expected: Vec<_> = game.chart().notes.iter().filter_map(geometry).collect();
             let actual: Vec<_> = game
                 .visible_notes(now, APPROACH_MS)
                 .filter_map(geometry)
@@ -1933,7 +1957,7 @@ mod tests {
             game.hit(0, 0.0);
             for now in [0.0, 500.0, 1060.0, 2000.0, 3500.0, 4000.0, 5900.0, 6200.0] {
                 game.check_misses(now);
-                let scroll = game.scroll.frame(&game.chart, now);
+                let scroll = game.scroll.frame(game.chart(), now);
                 let geometry = |note: &Note| {
                     if note.hit {
                         return None;
@@ -1951,7 +1975,7 @@ mod tests {
                         note.held_since.is_some(),
                     ))
                 };
-                let expected: Vec<_> = game.chart.notes.iter().filter_map(geometry).collect();
+                let expected: Vec<_> = game.chart().notes.iter().filter_map(geometry).collect();
                 let actual: Vec<_> = game
                     .visible_notes(now, APPROACH_MS)
                     .filter_map(geometry)
@@ -2071,11 +2095,11 @@ mod tests {
 
     #[test]
     fn bmp_id_label_uses_base36_with_two_digits() {
-        assert_eq!(bmp_id_label(0), "00");
-        assert_eq!(bmp_id_label(1), "01");
-        assert_eq!(bmp_id_label(35), "0Z");
-        assert_eq!(bmp_id_label(36), "10");
-        assert_eq!(bmp_id_label(36 * 36 - 1), "ZZ");
+        assert_eq!(bmp_id_label(0, 36), "00");
+        assert_eq!(bmp_id_label(1, 36), "01");
+        assert_eq!(bmp_id_label(35, 36), "0Z");
+        assert_eq!(bmp_id_label(36, 36), "10");
+        assert_eq!(bmp_id_label(36 * 36 - 1, 36), "ZZ");
     }
 
     fn image_bank(events: &[BgaEvent]) -> crate::bga::ImageBank {
@@ -2142,7 +2166,7 @@ mod tests {
 
     #[test]
     fn format_bga_badge_returns_none_when_the_chart_has_no_bga() {
-        assert!(format_bga_badge(&image_bank(&[]), 0.0).is_none());
+        assert!(format_bga_badge(&image_bank(&[]), 0.0, 36).is_none());
     }
 
     #[test]
@@ -2153,7 +2177,7 @@ mod tests {
             bmp_id: 1,
         }];
         let bank = image_bank(&evs);
-        assert_eq!(format_bga_badge(&bank, 200.0).unwrap(), "BGA 01·--·--");
+        assert_eq!(format_bga_badge(&bank, 200.0, 36).unwrap(), "BGA 01·--·--");
     }
 
     #[test]
@@ -2485,8 +2509,9 @@ mod progress_tests {
     fn minimum_result_screen_fits_comparisons_clear_credit_and_dismissal() {
         use crate::results::{Identity, Store};
 
-        let mut game = Game::new(crate::chart::built_in(120.0, 0.0));
-        game.chart.maker = "Chart Author 日本語❤️".into();
+        let mut chart = crate::chart::built_in(120.0, 0.0);
+        chart.maker = "Chart Author 日本語❤️".into();
+        let mut game = Game::new(chart);
         game.completed = true;
         let mut store = Store::default();
         let identity = Identity::built_in(120.0);

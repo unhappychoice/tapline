@@ -60,8 +60,9 @@ tapline --file song.bms --no-audio     # play a chart, silent
 tapline --built-in --bpm 160           # play the built-in practice chart
 ```
 
-Charts with `#PREVIEW` loop their preview audio while selected. Moving to another
-chart or leaving the selector stops playback. Use `--no-audio` to disable it.
+Charts with a BMS `#PREVIEW` or bmson `info.preview_music` file loop their preview
+audio while selected. Moving to another chart or leaving the selector stops
+playback. Use `--no-audio` to disable it.
 
 Inside the selector: `↑ ↓` / `j k` to move, `PageUp` / `PageDown` to page,
 `Home` / `End` (or `g` / `G`) to jump, `Enter` to play, `Esc` / `q` to quit.
@@ -357,8 +358,9 @@ whichever finger is closer.
 | 12    | `S D F/J K L A / Z X C V B ;` | 5K+scratch per side; P1 scratch uses A, P2 uses ; |
 | 16    | `S D F SPACE J K L A / Z X C V B N M ;` | 7K+scratch per side; P1 scratch uses A, P2 uses ; |
 | PMS (9 buttons) | `A S D F SPACE J K L ;` | spacebar is the center |
+| 9 (4+5 BMS DP) | `S D K L / Z X C N M` | four P1 keys and five P2 keys |
 | 10    | `S D F K L / Z X C N M` | five keys per side |
-| asymmetric DP | P1: `S D K L` (4K), 5K, or 7K keys; P2: `Z X N M` (4K), `Z X C N M` (5K), or `Z X C V B N M` (7K) | each side keeps its own width; scratch uses A for P1 and ; for P2 (P2 5K with scratch uses ZXCVB) |
+| asymmetric DP | P1: `S D K L` (4K), `S D F K L` (5K), or `S D F SPACE J K L` (7K); P2: `Z X N M` (4K), `Z X C N M` (5K), or `Z X C V B N M` (7K) | each side keeps its own width; scratch uses A for P1 and ; for P2 (5K with scratch uses F/J for the P1 center and `Z X C V B` for P2) |
 | 14    | `S D F SPACE J K L / Z X C V B N M` | 7K SP layout on the home row for P1, ZXCVBNM below for P2 |
 
 A 4+5 BMS double-play chart has nine lanes and uses `S D K L / Z X C N M`.

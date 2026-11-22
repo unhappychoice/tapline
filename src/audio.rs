@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 pub(crate) use volume::PlaybackVolume;
 
@@ -107,52 +107,57 @@ struct SampleData {
     decode_failures: usize,
 }
 
-/// Decoded samples and settings shared by all attempts of a loaded chart.
-#[derive(Default)]
-pub struct ChartAudio {
-    data: Arc<SampleData>,
+/// Lazily decoded samples and settings shared by all attempts of a loaded chart.
+pub struct ChartAudio<'a> {
+    chart: &'a Chart,
+    data: OnceLock<Arc<SampleData>>,
     muted: bool,
 }
 
-impl ChartAudio {
-    pub fn load(chart: &Chart, no_audio: bool) -> Self {
-        if no_audio {
-            return Self {
-                muted: true,
-                ..Self::default()
-            };
+impl<'a> ChartAudio<'a> {
+    pub fn load(chart: &'a Chart, no_audio: bool) -> Self {
+        Self {
+            chart,
+            data: OnceLock::new(),
+            muted: no_audio,
         }
-        Self::load_with(chart, |path| decode(path))
     }
 
     pub(crate) fn start_attempt(&self) -> SampleBank {
-        let (stream, bus) = if self.muted {
-            (None, None)
-        } else {
-            silence_stderr(open_master_bus).unzip()
-        };
-        self.playback(stream, bus)
+        self.start_attempt_with(
+            || silence_stderr(open_master_bus).map(|(stream, bus)| (Some(stream), bus)),
+            |path| decode(path),
+        )
     }
 
-    fn load_with(
-        chart: &Chart,
+    fn start_attempt_with(
+        &self,
+        open: impl FnOnce() -> Option<(Option<MixerDeviceSink>, MasterBus)>,
         decode_sample: impl Fn(&PathBuf) -> anyhow::Result<DecodedSample> + Sync,
-    ) -> Self {
+    ) -> SampleBank {
+        if self.muted {
+            return SampleBank::silent();
+        }
+        let Some((stream, bus)) = open() else {
+            return SampleBank::silent();
+        };
+        let data = self.data.get_or_init(|| self.decode_samples(decode_sample));
+        SampleBank::with_output(Arc::clone(data), stream, Some(bus))
+    }
+
+    fn decode_samples(
+        &self,
+        decode_sample: impl Fn(&PathBuf) -> anyhow::Result<DecodedSample> + Sync,
+    ) -> Arc<SampleData> {
+        let chart = self.chart;
         let (mut samples, decode_failures) = decode_all_with(gameplay_paths(chart), decode_sample);
         apply_sample_settings(&mut samples, &chart.sample_settings);
-        Self {
-            data: Arc::new(SampleData {
-                samples,
-                layers: chart.sound_layers.clone(),
-                slices: chart.sample_slices.clone(),
-                decode_failures,
-            }),
-            muted: false,
-        }
-    }
-
-    fn playback(&self, stream: Option<MixerDeviceSink>, bus: Option<MasterBus>) -> SampleBank {
-        SampleBank::with_output(Arc::clone(&self.data), stream, bus)
+        Arc::new(SampleData {
+            samples,
+            layers: chart.sound_layers.clone(),
+            slices: chart.sample_slices.clone(),
+            decode_failures,
+        })
     }
 }
 
@@ -1130,14 +1135,14 @@ mod tests {
                 game.hit(0, 1000.0);
                 game.check_misses(5000.0 + delay);
                 assert_eq!(game.perfect, 1);
-                assert!(game.chart.notes[0].held_since.is_some());
+                assert!(game.chart().notes[0].held_since.is_some());
                 let mut now = 5000.0 + delay + 16.0;
-                while now < game.chart.duration_ms {
+                while now < game.chart().duration_ms {
                     game.check_misses(now);
                     now += 16.0;
                 }
-                assert!(game.chart.notes[0].hit);
-                assert!(game.chart.notes[0].held_since.is_none());
+                assert!(game.chart().notes[0].hit);
+                assert!(game.chart().notes[0].held_since.is_none());
                 assert_eq!(game.perfect, 2);
                 assert_eq!(game.miss, 0);
             }
@@ -1167,13 +1172,11 @@ mod tests {
         for auto_ks in [false, true] {
             chart.duration_ms = bank.chart_duration_ms(&chart, auto_ks, false, 0.0);
             assert_eq!(chart.duration_ms, 5512.0);
-            let mut game = crate::game::Game::new(chart);
+            let mut game = crate::game::Game::new(chart.clone());
             game.hit(0, 1000.0);
             game.check_misses(5496.0);
             assert_eq!(game.perfect, 2);
-            assert!(game.chart.notes[0].hit);
-            chart = game.chart;
-            chart.notes[0].hit = false;
+            assert!(game.chart().notes[0].hit);
         }
         chart.notes[0].time_ms = 5000.0;
         chart.notes[0].end_ms = None;
@@ -1211,7 +1214,7 @@ mod tests {
             let mut game = crate::game::Game::new(chart);
             assert_eq!(game.hit(0, 1000.0 + good), Some(1));
             assert_eq!(game.good, 1);
-            assert!(1000.0 + good + 80.0 < game.chart.duration_ms);
+            assert!(1000.0 + good + 80.0 < game.chart().duration_ms);
         }
     }
 
