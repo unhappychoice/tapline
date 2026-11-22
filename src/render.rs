@@ -317,9 +317,9 @@ pub fn format_audio_badge(
         _ if !audio_on => return "silent (audio backend unavailable)".to_string(),
         _ => {}
     }
-    let mut badge = match (mode, samples, failures) {
-        (_, 0, 0) => "audio on · synth mode".to_string(),
-        (AudioMode::Synth, _, _) => format!("synth notes · {samples} samples"),
+    let mut badge = match (mode, samples) {
+        (_, 0) => "audio on · synth mode".to_string(),
+        (AudioMode::Synth, _) => format!("synth notes · {samples} samples"),
         _ => format!("audio on · {samples} samples"),
     };
     if failures > 0 {
@@ -1948,6 +1948,14 @@ mod tests {
     }
 
     #[test]
+    fn audio_badge_reports_synth_and_failures_when_all_samples_fail() {
+        assert_eq!(
+            format_audio_badge(AudioMode::Samples, true, 0, 1),
+            "audio on · synth mode · 1 failed to decode"
+        );
+    }
+
+    #[test]
     fn audio_badge_reports_a_healthy_sample_bank() {
         assert_eq!(
             format_audio_badge(AudioMode::Samples, true, 12, 0),
@@ -1957,7 +1965,10 @@ mod tests {
 
     #[test]
     fn audio_badge_calls_out_decode_failures_when_present() {
-        assert!(format_audio_badge(AudioMode::Samples, true, 8, 3).contains("3 failed"));
+        assert_eq!(
+            format_audio_badge(AudioMode::Samples, true, 8, 3),
+            "audio on · 8 samples · 3 failed to decode"
+        );
     }
 
     #[test]
