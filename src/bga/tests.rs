@@ -799,6 +799,70 @@ fn revealing_video_panel_seeks_to_the_active_event_position() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn late_video_reveal_recovers_last_frame_when_audio_outlasts_video() {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    if Command::new("ffmpeg").arg("-version").output().is_err() {
+        eprintln!("Skipping video integration test: ffmpeg is not installed");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("tapline-video-audio-tail-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("video.mp4");
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=red:s=64x64:r=120:d=2,drawbox=color=green:t=fill:enable='gte(t,1.99)'",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=mono:d=6",
+            "-c:v",
+            "mpeg4",
+            "-g",
+            "1",
+            "-c:a",
+            "aac",
+        ])
+        .arg(&path)
+        .status()
+        .unwrap()
+        .success());
+
+    let events = [BgaEvent {
+        time_ms: 0.0,
+        layer: BgaLayer::Base,
+        bmp_id: 1,
+    }];
+    let bank = ImageBank::load(&HashMap::from([(1, path)]), &events, &Extensions::default());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(LayerImage::Video(frame)) = bank.layer(BgaLayer::Base, 5000.0) {
+            assert!(frame.0.get_pixel(32, 32)[1] > 100);
+            assert_eq!(
+                bank.2.borrow()[timeline::slot(BgaLayer::Base)].start,
+                video::Start::End
+            );
+            assert!(matches!(
+                bank.layer(BgaLayer::Base, 6000.0),
+                Some(LayerImage::Video(held)) if held == frame
+            ));
+            break;
+        }
+        assert!(Instant::now() < deadline, "Expected the final video frame");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    drop(bank);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 pub(super) fn load_bank(chart: &Chart) -> ImageBank {
     Presentation::load_assets(chart)
 }

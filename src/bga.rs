@@ -240,12 +240,12 @@ impl Playback {
                 .and_then(video_worker::Worker::take_video);
         }
         if let Some(video) = &mut self.video {
-            let target = video::frame_index(elapsed);
-            if self.start != video::Start::End && video.is_behind(target, self.start.frame_index())
-            {
-                self.request(Some(path), video::Start::Frame(target));
-            } else if let Some(frame) = video.frame(elapsed) {
+            if let Some(frame) = video.frame(elapsed) {
                 self.displayed = Some(frame);
+            }
+            let target = video::frame_index(elapsed);
+            if video.is_behind(target) {
+                self.request(Some(path), video::Start::Frame(target));
             } else if matches!(self.start, video::Start::Frame(_)) && video.is_empty() {
                 self.request(Some(path), video::Start::End);
             }

@@ -98,7 +98,7 @@ impl Video {
                     }
                     let frame = Frame(Arc::new(RgbaImage::from_raw(SIZE, SIZE, bytes).unwrap()));
                     if start != Start::End
-                        && index >= requested.load(Ordering::Relaxed)
+                        && (index == first || index >= requested.load(Ordering::Relaxed))
                         && sender.send((index, frame.clone(), false)).is_err()
                     {
                         break;
@@ -120,12 +120,10 @@ impl Video {
         }
     }
 
-    pub fn is_behind(&self, target: u64, first: u64) -> bool {
-        let (index, eof) = self
-            .current
+    pub fn is_behind(&self, target: u64) -> bool {
+        self.current
             .as_ref()
-            .map_or((first, false), |(index, _, eof)| (*index, *eof));
-        !eof && target.saturating_sub(index) > SEEK_THRESHOLD
+            .is_some_and(|(index, _, eof)| !eof && target.saturating_sub(*index) > SEEK_THRESHOLD)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -168,17 +166,17 @@ impl Video {
 
 fn decoder_command(path: &Path, decoder: &Path, start: Start) -> Command {
     let mut command = Command::new(decoder);
-    match start {
-        Start::Beginning => {}
-        Start::Frame(index) => {
-            // Seek on the input so FFmpeg can jump to a keyframe before decoding.
-            command.args(["-ss", &format!("{:.6}", index as f64 / 30.0)]);
-        }
-        Start::End => {
-            // A seek past EOF has no frames. Read the tail to recover the final image.
-            command.args(["-sseof", "-1", "-noaccurate_seek"]);
-        }
+    if let Start::Frame(index) = start {
+        // Seek on the input so FFmpeg can jump to a keyframe before decoding.
+        command.args(["-ss", &format!("{:.6}", index as f64 / 30.0)]);
     }
+    // Recovery scans the video stream because the container may end after the video.
+    let timing = if start == Start::End {
+        command.args(["-vsync", "0"]);
+        ""
+    } else {
+        "setpts=PTS-STARTPTS,fps=30,"
+    };
     command
         .args([
             "-v", "error", "-nostdin",
@@ -189,9 +187,9 @@ fn decoder_command(path: &Path, decoder: &Path, start: Start) -> Command {
         .arg(path)
         .args([
             "-map", "0:v:0", "-an", "-vf",
-            "setpts=PTS-STARTPTS,fps=30,scale=64:64:force_original_aspect_ratio=decrease,format=rgba,pad=64:64:(ow-iw)/2:(oh-ih)/2:color=black@0",
-            "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1",
-        ]);
+        ])
+        .arg(format!("{timing}scale=64:64:force_original_aspect_ratio=decrease,format=rgba,pad=64:64:(ow-iw)/2:(oh-ih)/2:color=black@0"))
+        .args(["-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"]);
     command
 }
 
@@ -270,6 +268,7 @@ mod tests {
         let mut video = video_with_frames(frames);
         assert!(video.frame(0.0).is_none());
         assert!(video.frame(34.0).is_none());
+        assert!(!video.is_behind(1800));
 
         let first = Frame(Arc::new(RgbaImage::new(SIZE, SIZE)));
         sender.send((0, first.clone(), false)).unwrap();
