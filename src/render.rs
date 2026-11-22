@@ -328,17 +328,19 @@ pub fn format_audio_badge(
     badge
 }
 
-/// Compact HUD tag summarising the base/overlay/poor BGA slots the way a
-/// real player would care about — one line, base36 IDs, dashes where a slot
-/// hasn't fired yet.
-pub fn format_bga_badge(bga_bank: &crate::bga::ImageBank, now_ms: f64) -> Option<String> {
+/// Compact HUD tag with chart-local object IDs and dashes for inactive layers.
+pub fn format_bga_badge(
+    bga_bank: &crate::bga::ImageBank,
+    now_ms: f64,
+    object_id_base: u32,
+) -> Option<String> {
     if !bga_bank.has_bga_events() {
         return None;
     }
     let fmt = |layer: BgaLayer| -> String {
         bga_bank
             .active_bga_id(layer, now_ms)
-            .map(bmp_id_label)
+            .map(|id| bmp_id_label(id, object_id_base))
             .unwrap_or_else(|| "--".to_string())
     };
     Some(format!(
@@ -349,13 +351,14 @@ pub fn format_bga_badge(bga_bank: &crate::bga::ImageBank, now_ms: f64) -> Option
     ))
 }
 
-fn bmp_id_label(id: u32) -> String {
-    const DIGITS: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    if id >= 36 * 36 {
+fn bmp_id_label(id: u32, object_id_base: u32) -> String {
+    const DIGITS: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let base = if object_id_base == 62 { 62 } else { 36 };
+    if id >= base * base {
         return format!("{:2X}", id.min(0xFF));
     }
-    let a = (id / 36) as usize;
-    let b = (id % 36) as usize;
+    let a = (id / base) as usize;
+    let b = (id % base) as usize;
     format!("{}{}", DIGITS[a] as char, DIGITS[b] as char)
 }
 
@@ -514,7 +517,7 @@ fn draw_gameplay_stats(
         Print(hud)
     )?;
 
-    if let Some(tag) = format_bga_badge(bank, now_ms) {
+    if let Some(tag) = format_bga_badge(bank, now_ms, game.chart.object_id_base) {
         let tag_x = cols.saturating_sub(tag.width() as u16 + 2);
         if tag_x > hud_x + hud_width {
             queue!(
@@ -1413,6 +1416,27 @@ mod tests {
     }
 
     #[test]
+    fn gameplay_bga_badge_uses_the_loaded_chart_object_id_base() {
+        for (header, labels) in [
+            ("#BASE 62", ["0A", "0a", "zz", "zy"]),
+            ("", ["0A", "0A", "ZZ", "ZY"]),
+        ] {
+            let source = format!("{header}\n#BPM 120\n#00104:0A0azzzy\n#00111:01\n");
+            let path = std::path::Path::new("badge.bms");
+            let game = Game::new(crate::bms::load_bytes(path, source.as_bytes(), 0.0, 0).unwrap());
+            let bank = crate::bga::Presentation::load_assets(&game.chart);
+            assert_eq!(game.chart.bga.len(), labels.len());
+            for (event, label) in game.chart.bga.iter().zip(labels) {
+                let mut out = Vec::new();
+                draw_gameplay_stats(&mut out, &game, &bank, 80, event.time_ms).unwrap();
+                assert!(String::from_utf8(out)
+                    .unwrap()
+                    .contains(&format!("BGA {label}·--·--")));
+            }
+        }
+    }
+
+    #[test]
     fn gameplay_bga_badge_requires_space_to_the_right_of_accuracy() {
         let mut chart = base_chart(7);
         chart.bga.push(BgaEvent {
@@ -1966,11 +1990,11 @@ mod tests {
 
     #[test]
     fn bmp_id_label_uses_base36_with_two_digits() {
-        assert_eq!(bmp_id_label(0), "00");
-        assert_eq!(bmp_id_label(1), "01");
-        assert_eq!(bmp_id_label(35), "0Z");
-        assert_eq!(bmp_id_label(36), "10");
-        assert_eq!(bmp_id_label(36 * 36 - 1), "ZZ");
+        assert_eq!(bmp_id_label(0, 36), "00");
+        assert_eq!(bmp_id_label(1, 36), "01");
+        assert_eq!(bmp_id_label(35, 36), "0Z");
+        assert_eq!(bmp_id_label(36, 36), "10");
+        assert_eq!(bmp_id_label(36 * 36 - 1, 36), "ZZ");
     }
 
     fn image_bank(events: &[BgaEvent]) -> crate::bga::ImageBank {
@@ -2037,7 +2061,7 @@ mod tests {
 
     #[test]
     fn format_bga_badge_returns_none_when_the_chart_has_no_bga() {
-        assert!(format_bga_badge(&image_bank(&[]), 0.0).is_none());
+        assert!(format_bga_badge(&image_bank(&[]), 0.0, 36).is_none());
     }
 
     #[test]
@@ -2048,7 +2072,7 @@ mod tests {
             bmp_id: 1,
         }];
         let bank = image_bank(&evs);
-        assert_eq!(format_bga_badge(&bank, 200.0).unwrap(), "BGA 01·--·--");
+        assert_eq!(format_bga_badge(&bank, 200.0, 36).unwrap(), "BGA 01·--·--");
     }
 
     #[test]
