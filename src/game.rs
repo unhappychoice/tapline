@@ -1,5 +1,6 @@
 use crate::chart::{Chart, LnMode, Note};
 use crate::gauge::{Gauge, GaugeKind};
+use crate::interval_index::IntervalIndex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Judgment {
@@ -45,11 +46,11 @@ pub struct Game {
     next_miss: usize,
     miss_order: Vec<usize>,
     next_deadline: usize,
-    max_good: f64,
+    hit_indexes: Vec<IntervalIndex>,
     lane_notes: Vec<Vec<usize>>,
     lane_mines: Vec<Vec<usize>>,
     mine_index: crate::mine_visibility::MineIndex,
-    note_index: Option<crate::note_visibility::NoteIndex>,
+    note_index: IntervalIndex,
     #[cfg(test)]
     mine_visits: usize,
     held_notes: Vec<usize>,
@@ -141,11 +142,10 @@ impl Game {
             note.time_ms + JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms)).miss_after
         };
         miss_order.sort_by(|&a, &b| deadline(a).total_cmp(&deadline(b)).then(a.cmp(&b)));
-        let max_good = chart
-            .notes
+        let hit_indexes = lane_notes
             .iter()
-            .map(|note| JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms)).good)
-            .fold(0.0, f64::max);
+            .map(|ids| IntervalIndex::new(ids.iter().map(|&i| hit_interval(&chart, i))))
+            .collect();
         let mut events = chart.notes.clone();
         events.extend(chart.invisible_notes.iter().map(|note| Note {
             time_ms: note.time_ms,
@@ -162,8 +162,10 @@ impl Game {
         });
         let scroll = crate::scroll::ScrollMap::new(&chart.scroll);
         let mine_index = crate::mine_visibility::MineIndex::new(&chart.mines, &scroll);
-        let note_index = (!chart.scroll.is_empty() || !chart.speed.is_empty())
-            .then(|| crate::note_visibility::NoteIndex::new(&chart.notes, &scroll));
+        let note_index = IntervalIndex::new(chart.notes.iter().map(|note| {
+            let end = note.end_ms.unwrap_or(note.time_ms);
+            scroll.range(note.time_ms, end)
+        }));
         Self {
             scroll,
             mine_index,
@@ -174,7 +176,7 @@ impl Game {
             next_miss: 0,
             miss_order,
             next_deadline: 0,
-            max_good,
+            hit_indexes,
             lane_notes,
             lane_mines,
             #[cfg(test)]
@@ -248,7 +250,7 @@ impl Game {
         self.update_keysounds(now_ms);
         self.trigger_mines(lane, now_ms);
         let mut best: Option<(usize, f64)> = None;
-        for &i in self.hit_candidates(lane, now_ms) {
+        for i in self.hit_candidates(lane, now_ms) {
             let n = &self.chart.notes[i];
             if n.hit || n.held_since.is_some() || n.lane != lane {
                 continue;
@@ -276,7 +278,7 @@ impl Game {
                 self.held_notes.push(i);
                 self.held_notes.sort_unstable();
             } else {
-                self.chart.notes[i].hit = true;
+                self.mark_hit(i);
             }
             self.apply(j, now_ms);
             return keysound;
@@ -349,7 +351,7 @@ impl Game {
         } else {
             JudgmentWindows::for_scale(self.chart.judgment_scale(end_ms)).judge(dt)
         };
-        self.chart.notes[i].hit = true;
+        self.mark_hit(i);
         self.chart.notes[i].held_since = None;
         self.apply(j, now_ms);
     }
@@ -370,7 +372,7 @@ impl Game {
             }
             self.next_deadline += 1;
             if !note.hit && note.held_since.is_none() {
-                self.chart.notes[i].hit = true;
+                self.mark_hit(i);
                 self.apply(Judgment::Miss, now_ms);
             }
         }
@@ -398,7 +400,7 @@ impl Game {
                 }
             }) {
                 self.held_notes.remove(position);
-                self.chart.notes[i].hit = true;
+                self.mark_hit(i);
                 self.chart.notes[i].held_since = None;
                 self.apply(Judgment::Perfect, now_ms);
             } else {
@@ -407,13 +409,21 @@ impl Game {
         }
     }
 
-    /// Select lane-local note indexes within the inclusive good judgment window.
-    fn hit_candidates(&self, lane: usize, now_ms: f64) -> &[usize] {
-        let good = self.max_good;
-        let ids = &self.lane_notes[lane];
-        let start = ids.partition_point(|&i| self.chart.notes[i].time_ms < now_ms - good);
-        let end = ids.partition_point(|&i| self.chart.notes[i].time_ms <= now_ms + good);
-        &ids[start..end]
+    fn mark_hit(&mut self, index: usize) {
+        self.chart.notes[index].hit = true;
+        self.note_index.remove(index);
+    }
+
+    /// Select lane-local candidates in chart order.
+    fn hit_candidates(
+        &self,
+        lane: usize,
+        now_ms: f64,
+    ) -> impl ExactSizeIterator<Item = usize> + '_ {
+        self.hit_indexes[lane]
+            .matching(|min, max| min <= now_ms && now_ms <= max)
+            .into_iter()
+            .map(move |index| self.lane_notes[lane][index])
     }
 
     /// Select unexpired mines inside the current scroll-distance window.
@@ -426,36 +436,15 @@ impl Game {
         )
     }
 
-    /// Charts must keep their notes in ascending time order throughout play.
-    /// Include pending starts since the last miss check and older held LNs.
-    /// Scroll effects can bring any future note into view regardless of its timestamp.
+    /// Select notes whose scroll spans overlap the playfield, including held tails.
     pub fn visible_notes(&self, now_ms: f64, approach_ms: f64) -> impl Iterator<Item = &Note> {
-        let frame = self
-            .note_index
-            .as_ref()
-            .map(|index| (index, self.scroll.frame(&self.chart, now_ms)));
-        let (start, ordinary, indexed) = if let Some((index, frame)) = &frame {
-            let start = self.next_miss;
-            (start, 0..0, index.visible(frame, start, approach_ms))
-        } else {
-            let end = self
-                .chart
-                .notes
-                .partition_point(|n| n.time_ms <= now_ms + approach_ms);
-            let start = self.next_miss.min(end);
-            (start, start..end, Vec::new())
-        };
-        self.held_notes
-            .iter()
-            .copied()
-            .filter(move |&i| {
-                i < start
-                    && frame
-                        .as_ref()
-                        .is_none_or(|(index, frame)| index.note_overlaps(i, frame, approach_ms))
+        let frame = self.scroll.frame(&self.chart, now_ms);
+        self.note_index
+            .matching(|min, max| {
+                let (a, b) = (frame.transform(min), frame.transform(max));
+                !(a > approach_ms && b > approach_ms || a < -60.0 && b < -60.0)
             })
-            .chain(ordinary)
-            .chain(indexed)
+            .into_iter()
             .map(|i| {
                 #[cfg(test)]
                 self.render_visits.set(self.render_visits.get() + 1);
@@ -494,6 +483,15 @@ impl Game {
             self.perfect as f64 * 1.0 + self.great as f64 * 0.65 + self.good as f64 * 0.3;
         weighted / total as f64 * 100.0
     }
+}
+
+fn hit_interval(chart: &Chart, index: usize) -> (f64, f64) {
+    let time = chart.notes[index].time_ms;
+    // Round outward so the index includes boundaries accepted by the distance check.
+    let good = JudgmentWindows::for_scale(chart.judgment_scale(time))
+        .good
+        .next_up();
+    ((time - good).next_down(), (time + good).next_up())
 }
 
 #[cfg(test)]
@@ -797,6 +795,57 @@ mod tests {
     }
 
     #[test]
+    fn one_wide_window_does_not_force_scans_of_distant_or_judged_taps() {
+        const NOW: f64 = 600_000.0;
+        for extra in [0, 10_000] {
+            let mut notes = vec![note(0.0, 0)];
+            let past = (1..=extra).map(|i| i as f64 * 50.0);
+            notes.extend(past.clone().map(|time| note(time, 0)));
+            notes.extend([ln(550_000.0, NOW + 500.0, 1), note(NOW, 0)]);
+            notes.extend((0..extra).map(|i| note(NOW + 5000.0 + i as f64 * 50.0, 0)));
+            let mut chart = chart_with(notes, 4);
+            chart.def_exrank = Some(1_000_000.0);
+            chart.exrank_events.push(crate::chart::ExRankEvent {
+                time_ms: 1.0,
+                percent: 100.0,
+            });
+            let mut game = Game::new(chart);
+            for time in past {
+                game.hit(0, time);
+            }
+            game.hit(1, 550_000.0);
+            game.check_misses(NOW);
+            assert_eq!(game.next_miss, 0);
+            assert_eq!(game.perfect, extra + 1);
+
+            let hit_index = &game.hit_indexes[0];
+            hit_index.visits.set(0);
+            assert_eq!(
+                game.hit_candidates(0, NOW).collect::<Vec<_>>(),
+                [0, extra as usize + 2]
+            );
+            assert!(
+                hit_index.visits.get()
+                    <= 1 + 4 * (2 * extra + 2).next_power_of_two().ilog2() as usize
+            );
+
+            let visible: Vec<_> = game
+                .visible_notes(NOW, 1000.0)
+                .map(|note| (note.time_ms, note.held_since.is_some()))
+                .collect();
+            assert_eq!(visible, [(550_000.0, true), (NOW, false)]);
+            assert_eq!(game.render_visits.get(), 2);
+            assert!(
+                game.note_index.visits.get()
+                    <= 1 + 4 * (2 * extra + 3).next_power_of_two().ilog2() as usize
+            );
+            game.hit(0, NOW);
+            assert_eq!(game.perfect, extra + 2);
+            assert!(!game.chart().notes[0].hit);
+        }
+    }
+
+    #[test]
     fn distant_notes_and_spans_only_add_logarithmic_visits_with_a_speed_event() {
         for extra in [0usize, 100, 10_000] {
             let mut notes = vec![note(100.0, 0), ln(200.0, 300.0, 1)];
@@ -816,7 +865,7 @@ mod tests {
             let game = Game::new(chart);
             assert_eq!(game.visible_notes(0.0, 1000.0).count(), 2);
             assert_eq!(game.render_visits.get(), 2);
-            let index = game.note_index.as_ref().unwrap();
+            let index = &game.note_index;
             assert!(index.visits.get() <= 1 + 2 * (extra + 2).next_power_of_two().ilog2() as usize);
         }
     }
@@ -865,7 +914,7 @@ mod tests {
             vec![note(860.0, 0), note(1000.0, 1), note(1140.0, 0)],
             4,
         ));
-        assert_eq!(g.hit_candidates(0, 1000.0), &[0, 2]);
+        assert_eq!(g.hit_candidates(0, 1000.0).collect::<Vec<_>>(), [0, 2]);
         g.hit(0, 1000.0);
         assert!(g.chart().notes[0].hit);
         assert!(!g.chart().notes[2].hit);

@@ -231,7 +231,7 @@ fn narrowed_windows_can_expire_later_notes_before_earlier_notes() {
     assert!(!game.chart().notes[0].hit);
     assert!(game.chart().notes[1].hit);
     assert_eq!(game.miss, 1);
-    assert_eq!(game.visible_notes(later + 80.1, 1000.0).count(), 1);
+    assert_eq!(game.visible_notes(later + 80.1, 1000.0).count(), 0);
     game.check_misses(820.1);
     assert_eq!(game.miss, 2);
 }
