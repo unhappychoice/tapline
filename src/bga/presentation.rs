@@ -1,65 +1,106 @@
-use super::ImageBank;
+use super::{bitmaps, ImageBank};
 use crate::chart::Chart;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::{
+    sync::mpsc::{self, Receiver, TryRecvError},
+    sync::Arc,
+};
 
 pub struct Presentation {
     pub bank: ImageBank,
+    prepared: bool,
+}
+
+pub(crate) struct ChartImages<'a> {
+    chart: &'a Chart,
     preparation: Preparation,
 }
 
 enum Preparation {
     Deferred,
-    Loading(Receiver<ImageBank>),
-    Finished,
+    Loading(Receiver<Arc<bitmaps::Bitmaps>>),
+    Ready(Arc<bitmaps::Bitmaps>),
+    Failed,
 }
 
 impl Presentation {
-    pub fn new(chart: &Chart, visible: bool) -> Self {
-        if visible {
-            return Self {
-                bank: Self::load_assets(chart),
-                preparation: Preparation::Finished,
-            };
-        }
-        Self {
-            bank: ImageBank::load(&Default::default(), &chart.bga, &chart.bga_extensions),
-            preparation: Preparation::Deferred,
-        }
-    }
-
-    pub fn prepare_deferred(
-        &mut self,
-        chart: &Chart,
-        visible: bool,
-        load: impl FnOnce(&Chart) -> ImageBank + Send + 'static,
-    ) {
-        match &self.preparation {
-            Preparation::Deferred if visible => self.start_loading(chart, load),
-            Preparation::Loading(receiver) => match receiver.try_recv() {
-                Ok(bank) => {
-                    self.bank = bank;
-                    self.preparation = Preparation::Finished;
-                }
-                Err(TryRecvError::Disconnected) => self.preparation = Preparation::Finished,
-                Err(TryRecvError::Empty) => {}
-            },
-            _ => {}
-        }
-    }
-
     pub fn load_assets(chart: &Chart) -> ImageBank {
         ImageBank::load(&chart.bmp_paths, &chart.bga, &chart.bga_extensions)
     }
 
+    pub(crate) fn new(images: &mut ChartImages<'_>, visible: bool) -> Self {
+        if visible && matches!(images.preparation, Preparation::Deferred) {
+            images.preparation = Preparation::Ready(load_bitmaps(images.chart));
+        }
+        let bitmaps = visible.then(|| images.ready()).flatten();
+        Self {
+            prepared: bitmaps.is_some(),
+            bank: images.bank(bitmaps),
+        }
+    }
+
+    pub(crate) fn prepare_deferred(&mut self, images: &mut ChartImages<'_>, visible: bool) {
+        self.prepare_with(images, visible, load_bitmaps);
+    }
+
+    pub(crate) fn prepare_with(
+        &mut self,
+        images: &mut ChartImages<'_>,
+        visible: bool,
+        load: impl FnOnce(&Chart) -> Arc<bitmaps::Bitmaps> + Send + 'static,
+    ) {
+        if self.prepared || !visible {
+            return;
+        }
+        if matches!(images.preparation, Preparation::Deferred) {
+            images.start_loading(load);
+        }
+        if let Some(bitmaps) = images.ready() {
+            self.bank = images.bank(Some(bitmaps));
+            self.prepared = true;
+        }
+    }
+}
+
+impl<'a> ChartImages<'a> {
+    pub(crate) fn new(chart: &'a Chart) -> Self {
+        Self {
+            chart,
+            preparation: Preparation::Deferred,
+        }
+    }
+
+    fn bank(&self, bitmaps: Option<Arc<bitmaps::Bitmaps>>) -> ImageBank {
+        let paths = Default::default();
+        ImageBank::with_bitmaps(
+            bitmaps.as_ref().map_or(&paths, |_| &self.chart.bmp_paths),
+            &self.chart.bga,
+            &self.chart.bga_extensions,
+            bitmaps.unwrap_or_default(),
+        )
+    }
+
+    fn ready(&mut self) -> Option<Arc<bitmaps::Bitmaps>> {
+        if let Preparation::Loading(receiver) = &self.preparation {
+            self.preparation = match receiver.try_recv() {
+                Ok(bitmaps) => Preparation::Ready(bitmaps),
+                Err(TryRecvError::Disconnected) => Preparation::Failed,
+                Err(TryRecvError::Empty) => return None,
+            };
+        }
+        match &self.preparation {
+            Preparation::Ready(bitmaps) => Some(Arc::clone(bitmaps)),
+            _ => None,
+        }
+    }
+
     fn start_loading(
         &mut self,
-        chart: &Chart,
-        load: impl FnOnce(&Chart) -> ImageBank + Send + 'static,
+        load: impl FnOnce(&Chart) -> Arc<bitmaps::Bitmaps> + Send + 'static,
     ) {
         let assets = Chart {
-            bmp_paths: chart.bmp_paths.clone(),
-            bga: chart.bga.clone(),
-            bga_extensions: chart.bga_extensions.clone(),
+            bmp_paths: self.chart.bmp_paths.clone(),
+            bga: self.chart.bga.clone(),
+            bga_extensions: self.chart.bga_extensions.clone(),
             ..Chart::default()
         };
         let (sender, receiver) = mpsc::channel();
@@ -71,7 +112,15 @@ impl Presentation {
         self.preparation = if worker.is_ok() {
             Preparation::Loading(receiver)
         } else {
-            Preparation::Finished
+            Preparation::Failed
         };
     }
+}
+
+pub(crate) fn load_bitmaps(chart: &Chart) -> Arc<bitmaps::Bitmaps> {
+    Arc::new(bitmaps::load(
+        &chart.bmp_paths,
+        &chart.bga,
+        &chart.bga_extensions,
+    ))
 }

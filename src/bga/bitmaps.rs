@@ -7,11 +7,13 @@ use std::{
     sync::Arc,
 };
 
+pub(crate) type Bitmaps = HashMap<u32, Arc<RgbaImage>>;
+
 pub(super) fn load(
     paths: &HashMap<u32, PathBuf>,
     events: &[BgaEvent],
     extensions: &Extensions,
-) -> HashMap<u32, Arc<RgbaImage>> {
+) -> Bitmaps {
     if paths.is_empty() {
         return HashMap::new();
     }

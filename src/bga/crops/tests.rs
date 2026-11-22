@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    bga::{image_file::LOAD_CALLS, Effect, EffectEvent, Presentation, Switch},
+    bga::{image_file::LOAD_CALLS, ChartImages, Effect, EffectEvent, Presentation, Switch},
     chart::{BgaEvent, BgaLayer},
 };
 use image::Rgba;
@@ -107,7 +107,7 @@ fn presentation_decodes_only_reachable_sources_and_preserves_bitmap_and_crop_pix
         })
         .into();
     LOAD_CALLS.set(0);
-    let presentation = Presentation::new(&chart, true);
+    let presentation = Presentation::new(&mut ChartImages::new(&chart), true);
     std::fs::remove_dir_all(dir).unwrap();
 
     assert_eq!(LOAD_CALLS.get(), 2);
@@ -174,7 +174,7 @@ fn missing_and_invalid_sources_are_attempted_once_and_preserve_existing_images()
     assert_eq!(calls, [(path.clone(), 1), (missing, 1)].into());
     let mut bank = super::super::ImageBank::default();
     let original = RgbaImage::from_pixel(SIZE, SIZE, Rgba([12, 34, 56, 255]));
-    bank.0.insert(10, original.clone().into());
+    Arc::make_mut(&mut bank.0).insert(10, original.clone().into());
     bank.prepare_crops(&chart);
     assert_eq!(bank.0.len(), 1);
     assert_eq!(bank.0[&10].as_ref(), &original);
