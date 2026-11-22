@@ -336,6 +336,7 @@ fn build_chart(
         invisible_notes,
         p2_invisible_notes,
         bgm,
+        object_id_base: pass.base,
         bga,
         bga_extensions: bga_extensions::collect(pass.bga_extensions, &raw, &timeline, pass.base),
         text_events,

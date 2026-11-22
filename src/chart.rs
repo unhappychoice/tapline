@@ -140,6 +140,7 @@ pub struct Chart {
     pub scroll: Vec<ScrollEvent>,
     /// Display speed changes in ascending time order.
     pub speed: Vec<ScrollEvent>,
+    pub object_id_base: u32,
     pub bga: Vec<BgaEvent>,
     pub bga_extensions: crate::bga::Extensions,
     pub text_events: Vec<TextEvent>,
@@ -224,6 +225,7 @@ impl Default for Chart {
             bgm: Vec::new(),
             scroll: Vec::new(),
             speed: Vec::new(),
+            object_id_base: 36,
             bga: Vec::new(),
             bga_extensions: Default::default(),
             text_events: Vec::new(),
