@@ -168,21 +168,16 @@ impl Store {
     /// Replaces the file with this snapshot. Use [`update`] to merge a completed run.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         use std::io::Write;
-        fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
-        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        let result = (|| -> anyhow::Result<()> {
-            file.write_all(&serde_json::to_vec_pretty(self)?)?;
-            file.sync_all()?;
-            drop(file);
-            fs::rename(&temporary, path)?;
-            Ok(())
-        })();
-        let _ = fs::remove_file(temporary);
-        result
+        let directory = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        fs::create_dir_all(directory)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+        temporary.write_all(&serde_json::to_vec_pretty(self)?)?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(path).map_err(|error| error.error)?;
+        Ok(())
     }
 }
 

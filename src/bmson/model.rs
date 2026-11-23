@@ -26,7 +26,7 @@ pub struct Info {
     pub init_bpm: f64,
     pub total: Option<f64>,
     pub judge_rank: Option<f64>,
-    pub resolution: Option<u32>,
+    pub resolution: Option<i64>,
     pub mode_hint: Option<String>,
     pub level: Option<u32>,
     pub chart_name: Option<String>,

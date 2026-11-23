@@ -212,6 +212,20 @@ fn invalid_unreferenced_extended_bpm_does_not_abort_an_otherwise_valid_chart() {
 }
 
 #[test]
+fn invalid_stop_definitions_do_not_change_note_timing() {
+    for stop in ["0", "-48", "NaN", "invalid"] {
+        let path = write_text(&format!(
+            "#BPM 120\n#STOP01 {stop}\n#STOP02 48\n#00109:0102\n#00111:01010101\n"
+        ));
+        let chart = bms::load(&path, 0.0).unwrap_or_else(|e| panic!("STOP01 {stop}: {e}"));
+        let note_times: Vec<_> = chart.notes.iter().map(|note| note.time_ms).collect();
+
+        assert_eq!(note_times, [2000.0, 2500.0, 3000.0, 4000.0], "{stop}");
+        assert!(bms::read_meta(&path).is_ok(), "STOP01 {stop}");
+    }
+}
+
+#[test]
 fn overflowing_timing_is_rejected_before_creating_notes() {
     for text in [
         "#BPM 1e-308\n#00111:0101\n",

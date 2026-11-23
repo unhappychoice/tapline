@@ -41,7 +41,6 @@ impl PlayOptions {
 }
 
 pub struct ChartPlayback<'a> {
-    chart: &'a chart::Chart,
     audio: audio::ChartAudio<'a>,
     images: ChartImages<'a>,
 }
@@ -49,7 +48,6 @@ pub struct ChartPlayback<'a> {
 impl<'a> ChartPlayback<'a> {
     pub fn new(chart: &'a chart::Chart, no_audio: bool) -> Self {
         Self {
-            chart,
             audio: audio::ChartAudio::load(chart, no_audio),
             images: ChartImages::new(chart),
         }
@@ -65,7 +63,6 @@ impl<'a> ChartPlayback<'a> {
         play_with_assets(
             out,
             args,
-            self.chart,
             &self.audio,
             &mut self.images,
             identity,
@@ -104,14 +101,29 @@ pub fn play_attempt(
     destination: ResultDestination,
 ) -> Result<ResultAction> {
     let audio = audio::ChartAudio::load(chart, args.no_audio);
-    play_loaded_attempt(out, args, chart, &audio, identity, destination)
+    play_loaded_attempt(out, args, &audio, identity, destination)
 }
 
-/// Play one attempt using audio prepared for this loaded chart.
+/// Play one attempt of the chart bound to the prepared audio.
+///
+/// Each attempt gets fresh playback state and reuses any decoded samples.
+/// Passing a separate chart is a compile-time error, even if both charts
+/// use the same sample IDs.
+///
+/// ```compile_fail,E0061
+/// use std::io::Stdout;
+/// use tapline::{audio::ChartAudio, chart::Chart, cli::Args, render::ResultDestination};
+///
+/// fn mismatched_attempt(out: &mut Stdout, args: &Args, chart_a: &Chart, chart_b: &Chart) {
+///     let audio = ChartAudio::load(chart_a, args.no_audio);
+///     let _ = tapline::runtime::play_loaded_attempt(
+///         out, args, chart_b, &audio, None, ResultDestination::Exit,
+///     );
+/// }
+/// ```
 pub fn play_loaded_attempt(
     out: &mut Stdout,
     args: &Args,
-    chart: &chart::Chart,
     audio: &audio::ChartAudio<'_>,
     identity: Option<&crate::results::Identity>,
     destination: ResultDestination,
@@ -119,9 +131,8 @@ pub fn play_loaded_attempt(
     play_with_assets(
         out,
         args,
-        chart,
         audio,
-        &mut ChartImages::new(chart),
+        &mut ChartImages::new(audio.chart()),
         identity,
         destination,
     )
@@ -130,13 +141,13 @@ pub fn play_loaded_attempt(
 fn play_with_assets(
     out: &mut Stdout,
     args: &Args,
-    chart: &chart::Chart,
     audio: &audio::ChartAudio<'_>,
     images: &mut ChartImages<'_>,
     identity: Option<&crate::results::Identity>,
     destination: ResultDestination,
 ) -> Result<ResultAction> {
     let opts = PlayOptions::from_args(args);
+    let chart = audio.chart();
     let bank = audio.start_attempt();
     let duration_ms =
         bank.chart_duration_ms(chart, opts.auto_ks, opts.synth_mode, opts.audio_lead_ms);
@@ -207,18 +218,43 @@ fn run_game(
     let mut state = LoopState::new(build_auto_notes(game, opts));
 
     while !state.quit {
-        let (cols, rows) = terminal::size()?;
-        let now = state.update_size(bank, game, elapsed_ms(start), cols, rows);
-        if advance_frame(game, bank, opts, &mut state, now) {
+        let size = terminal::size()?;
+        if run_frame(
+            game,
+            bank,
+            opts,
+            &mut state,
+            (&mut bga, images),
+            size,
+            elapsed_ms(start),
+        )? {
             break;
         }
-        let visible = render::bga_panel_visible(cols, rows, game.chart().lane_count);
-        bga.prepare_cached_images(images, visible);
-        draw_frame(out, game, bank, opts, &mut state, &bga, now)?;
+        state.screen.present(out)?;
         pump_input(out, game, bank, opts, &mut state, start, next_frame)?;
         next_frame = advance_deadline(next_frame);
     }
     Ok(())
+}
+
+fn run_frame(
+    game: &mut game::Game,
+    bank: &audio::SampleBank,
+    opts: &PlayOptions,
+    state: &mut LoopState,
+    (bga, images): (&mut Presentation, &mut ChartImages<'_>),
+    size: (u16, u16),
+    wall_ms: f64,
+) -> Result<bool> {
+    let (cols, rows) = size;
+    let now = state.update_size(bank, game, wall_ms, cols, rows);
+    if advance_frame(game, bank, opts, state, now) {
+        return Ok(true);
+    }
+    let visible = render::bga_panel_visible(cols, rows, game.chart().lane_count);
+    bga.prepare_cached_images(images, visible);
+    draw_frame(game, bank, opts, state, bga, size, now)?;
+    Ok(false)
 }
 
 struct LoopState {
@@ -322,15 +358,14 @@ fn advance_frame(
 }
 
 fn draw_frame(
-    out: &mut Stdout,
     game: &mut game::Game,
     bank: &audio::SampleBank,
     opts: &PlayOptions,
     state: &mut LoopState,
     bga: &Presentation,
+    size @ (cols, rows): (u16, u16),
     now: f64,
 ) -> Result<()> {
-    let (cols, rows) = terminal::size()?;
     state.screen.resize(cols, rows);
     let mode: u8 = if now < opts.countdown_ms { 1 } else { 2 };
     if mode != state.prev_mode {
@@ -345,9 +380,8 @@ fn draw_frame(
         render::draw_size_warning(&mut state.screen, game.chart().lane_count)?;
         state.prev_mode = 0;
     } else {
-        draw_mode(state, game, bank, opts, bga, (cols, rows), now)?;
+        draw_mode(state, game, bank, opts, bga, size, now)?;
     }
-    state.screen.present(out)?;
     Ok(())
 }
 
@@ -378,7 +412,7 @@ fn draw_mode(
         );
     }
     game.check_misses(now);
-    render::draw_with_scroll_speed(&mut state.screen, game, bga, now, opts.scroll_speed)
+    render::draw_at_size(&mut state.screen, game, bga, size, now, opts.scroll_speed)
 }
 
 fn fire_scheduled_audio(
@@ -729,6 +763,51 @@ mod tests {
     use crate::game::Game;
 
     #[test]
+    fn undersized_frame_warns_and_keeps_chart_time_and_scheduled_audio_paused() {
+        let mut chart = base_chart(
+            4,
+            vec![Note {
+                time_ms: 3000.0,
+                ..Note::default()
+            }],
+        );
+        chart.bgm = vec![BgmEvent {
+            time_ms: 3000.0,
+            keysound: 1,
+        }];
+        let mut images = ChartImages::new(&chart);
+        let mut game = Game::new(chart.clone());
+        let bank = SampleBank::silent();
+        let options = opts(true);
+        let mut state = LoopState::new(build_auto_notes(&game, &options));
+        let mut bga = Presentation::with_cached_images(&mut images, false);
+
+        state.update_size(&bank, &mut game, 3000.0, 40, 24);
+        for (size, wall_ms, paused, cursor) in
+            [((28, 24), 3200.0, true, 0), ((29, 24), 3400.0, false, 1)]
+        {
+            assert!(!run_frame(
+                &mut game,
+                &bank,
+                &options,
+                &mut state,
+                (&mut bga, &mut images),
+                size,
+                wall_ms,
+            )
+            .unwrap());
+            let mut output = Vec::new();
+            state.screen.present(&mut output).unwrap();
+            let output = String::from_utf8(output).unwrap();
+
+            assert_eq!(output.contains("Paused: need 29x13"), paused);
+            assert_eq!(output.contains('═'), !paused);
+            assert_eq!(state.clock_ms, 3000.0);
+            assert_eq!((state.bgm_cursor, state.note_snd_cursor), (cursor, cursor));
+        }
+    }
+
+    #[test]
     fn insufficient_dimensions_freeze_startup_and_resize_judgments() {
         let bank = SampleBank::silent();
         let mut game = Game::new(base_chart(
@@ -1034,6 +1113,65 @@ mod tests {
         let now = state.update_size(&bank, &mut game, 5112.0, 80, 24);
         assert!(advance_frame(&mut game, &bank, &options, &mut state, now));
         assert!(game.completed);
+    }
+
+    #[test]
+    fn completion_waits_only_for_started_or_scheduled_note_audio() {
+        for (auto_ks, press, expected_end) in [
+            (false, false, 2192.0),
+            (false, true, 14_172.0),
+            (true, false, 14_032.0),
+        ] {
+            let (bank, _output) = audio::playback_test_bank();
+            let options = PlayOptions {
+                synth_mode: false,
+                ..opts(auto_ks)
+            };
+            let mut chart = base_chart(
+                4,
+                vec![Note {
+                    time_ms: 2000.0,
+                    keysound: Some(1),
+                    ..Note::default()
+                }],
+            );
+            chart.duration_ms = bank.chart_duration_ms(&chart, auto_ks, false, 0.0);
+            assert_eq!(
+                chart.duration_ms,
+                if auto_ks { expected_end } else { 2192.0 }
+            );
+            let mut game = Game::new(chart);
+            let mut state = LoopState::new(build_auto_notes(&game, &options));
+            assert!(!advance_frame(
+                &mut game, &bank, &options, &mut state, 2000.0
+            ));
+            if press {
+                handle_key(
+                    KeyCode::Char('s'),
+                    KeyEventKind::Press,
+                    &mut game,
+                    &bank,
+                    &options,
+                    &mut state,
+                    2140.0,
+                );
+            }
+            assert!(!advance_frame(
+                &mut game,
+                &bank,
+                &options,
+                &mut state,
+                expected_end - 1.0,
+            ));
+            assert!(advance_frame(
+                &mut game,
+                &bank,
+                &options,
+                &mut state,
+                expected_end,
+            ));
+            assert_eq!((game.good, game.miss), if press { (1, 0) } else { (0, 1) });
+        }
     }
 
     #[test]
@@ -1893,6 +2031,43 @@ mod tests {
             );
             assert_eq!((game.perfect, game.miss, game.combo), (2, misses, combo));
             assert_eq!(game.score - score, game::Judgment::Perfect.points() + combo);
+        }
+    }
+
+    #[test]
+    fn printable_key_repeat_does_not_hit_and_release_judges_charge_tail() {
+        for (key, lane) in [('s', 0), (' ', 3)] {
+            for (release_ms, expected) in [(4000.0, (1, 0, 1)), (5060.0, (1, 1, 0))] {
+                let note = Note {
+                    time_ms: 3000.0,
+                    end_ms: Some(5000.0),
+                    lane,
+                    ..Note::default()
+                };
+                let mut game = Game::new(base_chart(7, vec![note]));
+                let mut state = LoopState::new(Vec::new());
+                let bank = SampleBank::silent();
+                let options = opts(false);
+                let mut send = |game: &mut Game, kind, now| {
+                    handle_key(
+                        KeyCode::Char(key),
+                        kind,
+                        game,
+                        &bank,
+                        &options,
+                        &mut state,
+                        now,
+                    );
+                };
+
+                send(&mut game, KeyEventKind::Repeat, 3000.0);
+                assert_eq!(game.perfect, 0);
+                send(&mut game, KeyEventKind::Press, 3000.0);
+                send(&mut game, KeyEventKind::Release, release_ms);
+                assert_eq!((game.perfect, game.great, game.miss), expected);
+                game.check_misses(5200.0);
+                assert_eq!((game.perfect, game.great, game.miss), expected);
+            }
         }
     }
 

@@ -85,7 +85,12 @@ pub(crate) fn parse_meta(
 
 pub(crate) fn resolve_preview(path: &Path, preview: Option<&str>) -> Option<PathBuf> {
     let name = preview.filter(|name| !name.is_empty())?;
-    AssetIndex::new(path.parent().unwrap_or(Path::new("."))).resolve_path(name, AUDIO_EXTENSIONS)
+    let assets = AssetIndex::new(path.parent().unwrap_or(Path::new(".")));
+    resolve_indexed_preview(&assets, name)
+}
+
+pub(crate) fn resolve_indexed_preview(assets: &AssetIndex, name: &str) -> Option<PathBuf> {
+    assets.resolve_path(name, AUDIO_EXTENSIONS)
 }
 
 pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {
@@ -415,7 +420,13 @@ fn collect_lane_occupancy(
     pass: &HeaderPass,
     lanes: LaneMap,
 ) -> SideOccupancy {
-    let raw = merge_note_lines(raw, lanes, pass);
+    let note_lines = raw.iter().filter(|(_, ch, _)| {
+        (lanes.normal)(ch).is_some()
+            || (lanes.long)(ch).is_some()
+            || (lanes.invisible)(ch).is_some()
+            || (lanes.mine)(ch).is_some()
+    });
+    let raw = merge_note_lines(note_lines, lanes, pass);
     let mut occupancy = SideOccupancy::default();
     let mut long_counts = HashMap::<usize, usize>::new();
     for (_, ch, data) in &raw {
@@ -549,6 +560,7 @@ fn p2_mine_channel_to_lane(ch: &str) -> Option<usize> {
 #[cfg(test)]
 thread_local! {
     static MATERIALIZATION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DECODED_SLOTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn accumulate_side(
@@ -561,7 +573,7 @@ fn accumulate_side(
     #[cfg(test)]
     MATERIALIZATION_CALLS.with(|calls| calls.set(calls.get() + 1));
     let base = pass.base;
-    let raw = merge_note_lines(raw, lanes, pass);
+    let raw = merge_note_lines(raw.iter(), lanes, pass);
     let raw = raw.as_slice();
     let mut acc = ChartAcc::default();
     for (measure, ch, data) in raw {
@@ -597,13 +609,13 @@ fn accumulate_side(
     acc
 }
 
-fn merge_note_lines(
-    raw: &[(u32, String, String)],
+fn merge_note_lines<'a>(
+    raw: impl Iterator<Item = &'a (u32, String, String)>,
     lanes: LaneMap,
     pass: &HeaderPass,
 ) -> Vec<(u32, String, String)> {
     let mut seen = HashSet::new();
-    let mut merged = raw.to_vec();
+    let mut merged: Vec<_> = raw.cloned().collect();
     for (measure, ch, data) in merged.iter_mut().rev() {
         let slots = if (lanes.mine)(ch).is_some() {
             parse_slots(data, 36)
@@ -1944,6 +1956,8 @@ fn parse_id(value: &str, base: u32) -> Option<u32> {
 fn parse_slots(data: &str, base: u32) -> Vec<u32> {
     let bytes = data.as_bytes();
     let take = bytes.len() - (bytes.len() % 2);
+    #[cfg(test)]
+    DECODED_SLOTS.with(|slots| slots.set(slots.get() + take / 2));
     (0..take)
         .step_by(2)
         .map(|i| {
@@ -3212,6 +3226,22 @@ mod tests {
             std::fs::write(&path, channels).unwrap();
             assert!(load_with_seed(&path, 0.0, 0).is_err(), "{channels}");
             assert!(read_meta_with_seed(&path, 0).is_err(), "{channels}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn metadata_skips_bgm_and_opposite_side_slots_during_lane_detection() {
+        let dir = tempdir();
+        let path = dir.join("dense-bgm.bms");
+        for count in [1, 10_000] {
+            let bgm = "01".repeat(count);
+            std::fs::write(&path, format!("#BPM 120\n#00101:{bgm}\n#00111:01\n")).unwrap();
+            DECODED_SLOTS.with(|slots| slots.set(0));
+            assert_eq!(read_meta_with_seed(&path, 0).unwrap().lane_count, 4);
+            // Only the P1 slot is decoded, once during merge and once during occupancy.
+            DECODED_SLOTS.with(|slots| assert_eq!(slots.get(), 2));
+            assert_eq!(load_with_seed(&path, 0.0, 0).unwrap().lane_count, 4);
         }
         std::fs::remove_dir_all(dir).unwrap();
     }

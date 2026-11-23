@@ -537,6 +537,7 @@ fn held_video_composite_is_reused_until_layers_style_or_width_change() {
         });
     });
     Arc::make_mut(&mut bank.0).remove(&1);
+    bank.1.insert(1, "video.mp4".into());
     let playback = &mut bank.2.get_mut()[timeline::slot(BgaLayer::Base)];
     playback.event = Some(0);
     playback.video = Some(video::Video::test_frame([255, 0, 0, 255]));
@@ -732,6 +733,147 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
         draw(&mut output, &game, &bank, 2000.0, 18, 4, 16).unwrap();
         assert!(String::from_utf8(output).unwrap().contains('▀'));
     }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn revealing_video_panel_seeks_to_the_active_event_position() {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    if Command::new("ffmpeg").arg("-version").output().is_err() {
+        eprintln!("Skipping video integration test: ffmpeg is not installed");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("tapline-video-seek-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("video.mp4");
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=red:s=64x64:r=30:d=60,drawbox=color=green:t=fill:enable='gte(t,59.9)'",
+            "-vf",
+            "tpad=stop_mode=clone:stop_duration=2",
+            "-c:v",
+            "mpeg4",
+            "-g",
+            "30",
+        ])
+        .arg(&path)
+        .status()
+        .unwrap()
+        .success());
+
+    let chart = Chart {
+        bga: [1_000.0, 70_000.0]
+            .map(|time_ms| BgaEvent {
+                time_ms,
+                layer: BgaLayer::Base,
+                bmp_id: 1,
+            })
+            .to_vec(),
+        ..Default::default()
+    };
+    let game = Game::new(chart);
+    for previously_visible in [false, true] {
+        let bank = ImageBank::load(
+            &HashMap::from([(1, path.clone())]),
+            &game.chart().bga,
+            &Extensions::default(),
+        );
+        let wait_for = |time, channel, start| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                draw(&mut std::io::sink(), &game, &bank, time, 18, 4, 16).unwrap();
+                let frame = bank.5.borrow();
+                let pixel = frame.as_ref().unwrap().pixels.get_pixel(8, 8);
+                if pixel[channel] > 100 {
+                    assert_eq!(bank.2.borrow()[timeline::slot(BgaLayer::Base)].start, start);
+                    break;
+                }
+                assert!(Instant::now() < deadline, "Expected video at {time} ms");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+
+        if previously_visible {
+            wait_for(1_000.0, 0, video::Start::Beginning);
+        }
+        let mut hidden = Vec::new();
+        draw(&mut hidden, &game, &bank, 61_000.0, 17, 4, 16).unwrap();
+        assert!(hidden.is_empty());
+        wait_for(61_000.0, 1, video::Start::Frame(1800));
+        wait_for(70_000.0, 0, video::Start::Beginning);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn late_video_reveal_recovers_last_frame_when_audio_outlasts_video() {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    if Command::new("ffmpeg").arg("-version").output().is_err() {
+        eprintln!("Skipping video integration test: ffmpeg is not installed");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("tapline-video-audio-tail-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("video.mp4");
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=red:s=64x64:r=120:d=2,drawbox=color=green:t=fill:enable='gte(t,1.99)'",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=mono:d=6",
+            "-c:v",
+            "mpeg4",
+            "-g",
+            "1",
+            "-c:a",
+            "aac",
+        ])
+        .arg(&path)
+        .status()
+        .unwrap()
+        .success());
+
+    let events = [BgaEvent {
+        time_ms: 0.0,
+        layer: BgaLayer::Base,
+        bmp_id: 1,
+    }];
+    let bank = ImageBank::load(&HashMap::from([(1, path)]), &events, &Extensions::default());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(LayerImage::Video(frame)) = bank.layer(BgaLayer::Base, 5000.0) {
+            assert!(frame.0.get_pixel(32, 32)[1] > 100);
+            assert_eq!(
+                bank.2.borrow()[timeline::slot(BgaLayer::Base)].start,
+                video::Start::End
+            );
+            assert!(matches!(
+                bank.layer(BgaLayer::Base, 6000.0),
+                Some(LayerImage::Video(held)) if held == frame
+            ));
+            break;
+        }
+        assert!(Instant::now() < deadline, "Expected the final video frame");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    drop(bank);
     std::fs::remove_dir_all(dir).unwrap();
 }
 

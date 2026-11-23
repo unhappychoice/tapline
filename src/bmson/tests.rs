@@ -190,15 +190,36 @@ fn metadata_rejects_invalid_format_mode_and_timing() {
 }
 
 #[test]
-fn overflowing_events_are_rejected_before_asset_resolution() {
-    let mut data = base();
-    data["info"]["init_bpm"] = json!(1e-300);
-    data["info"]["resolution"] = json!(240);
-    for note in [
-        json!({"x":0,"y":1_000_000_000}),
-        json!({"x":1,"y":1,"l":u32::MAX}),
-    ] {
-        data["sound_channels"] = json!([{"name":"missing.wav","notes":[note]}]);
+fn event_timing_overflow_is_rejected_before_building_channels_or_resolving_assets() {
+    let mut background = base();
+    background["info"]["init_bpm"] = json!(1e-300);
+    background["info"]["resolution"] = json!(240);
+    background["sound_channels"] = json!([{"name":"tone.wav","notes":[
+        {"x":0,"y":1_000_000_000}
+    ]}]);
+
+    let mut long_note = base();
+    long_note["info"]["init_bpm"] = json!(6e-297);
+    long_note["sound_channels"] = json!([{"name":"tone.wav","notes":[
+        {"x":1,"y":4_000_000_000_u32,"l":1_000_000_000}
+    ]}]);
+    let mut head_only = long_note.clone();
+    head_only["sound_channels"][0]["notes"][0]["l"] = json!(0);
+    with_chart(&head_only, |path| assert!(read_meta(path).is_ok()));
+
+    let mut max_length = background.clone();
+    max_length["sound_channels"] = json!([{"name":"missing.wav","notes":[
+        {"x":1,"y":1,"l":u32::MAX}
+    ]}]);
+
+    let mut variants = vec![background, long_note, max_length];
+    for layer in ["bga_events", "layer_events", "poor_events"] {
+        let mut data = base();
+        data["info"]["init_bpm"] = json!(1e-300);
+        data["bga"] = json!({(layer): [{"y":1_000_000_000,"id":1}]});
+        variants.push(data);
+    }
+    for data in variants {
         with_chart(&data, |path| {
             CHANNEL_BUILDS.set(0);
             ASSET_RESOLUTIONS.set(0);
@@ -206,7 +227,9 @@ fn overflowing_events_are_rejected_before_asset_resolution() {
                 read_meta(path).unwrap_err().to_string(),
                 "Event timing overflow"
             );
-            assert!(crate::select::scan(path.parent().unwrap()).is_empty());
+            assert!(crate::select::SelectorState::default()
+                .scan(path.parent().unwrap())
+                .is_empty());
             assert_eq!(
                 load(path, 0.0).err().unwrap().to_string(),
                 "Event timing overflow"

@@ -10,7 +10,12 @@ impl Timeline {
         ensure!(lead.is_finite() && lead >= 0.0, "Invalid lead-in");
         ensure!(data.info.init_bpm > 0.0, "Invalid initial BPM");
         ensure!(data.bpm_events.iter().all(|e| e.bpm > 0.0), "Invalid BPM");
-        let resolution = data.info.resolution.filter(|&r| r > 0).unwrap_or(240) as f64;
+        let resolution = data
+            .info
+            .resolution
+            .map(i64::unsigned_abs)
+            .filter(|&r| r != 0)
+            .unwrap_or(240) as f64;
         let mut bpms: Vec<_> = data.bpm_events.iter().collect();
         let mut stops: Vec<_> = data.stop_events.iter().collect();
         bpms.sort_by_key(|e| e.y);
@@ -22,7 +27,7 @@ impl Timeline {
             60_000.0 / data.info.init_bpm / resolution,
             resolution,
         )?;
-        // With nonnegative timing steps and stops, the latest pulse bounds all event times.
+        // BPM and STOP control points make the timeline nondecreasing.
         ensure!(
             timeline.time(last_event_pulse(data)).is_finite(),
             "Event timing overflow"
@@ -89,12 +94,12 @@ impl Timeline {
 }
 
 fn last_event_pulse(data: &Bmson) -> u64 {
-    let sound_ends = data
+    let sound_pulses = data
         .sound_channels
         .iter()
         .flat_map(|channel| &channel.notes)
         .map(|note| u64::from(note.y) + u64::from(note.l));
-    let image_pulses = [
+    let bga_pulses = [
         &data.bga.bga_events,
         &data.bga.layer_events,
         &data.bga.poor_events,
@@ -102,7 +107,7 @@ fn last_event_pulse(data: &Bmson) -> u64 {
     .into_iter()
     .flatten()
     .map(|event| u64::from(event.y));
-    sound_ends.chain(image_pulses).max().unwrap_or(0)
+    sound_pulses.chain(bga_pulses).max().unwrap_or(0)
 }
 
 #[cfg(test)]
