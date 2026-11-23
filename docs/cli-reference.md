@@ -91,5 +91,20 @@ prints `audio backend unavailable` to standard error and exits with status `1`.
 | `-h, --help` | Print help and exit. |
 | `-V, --version` | Print the package version and exit. |
 
-For key bindings, chart-format support, random seeds, and personal-best storage
-settings, see the [README](https://github.com/unhappychoice/tapline/blob/main/README.md).
+## Environment variables
+
+| Variable | Behavior |
+| -------- | -------- |
+| `TAPLINE_SONGS_DIR` | First directory checked during [automatic chart discovery](#chart-selection). If the path is missing or is not a directory, discovery continues with the next candidate. |
+| `TAPLINE_DATA_DIR` | Directory for `results.json`, overriding the platform default. |
+| `TAPLINE_RANDOM_SEED` | Unsigned 64-bit integer used for BMS branch selection. If unset or invalid, tapline generates a seed. Reuse the same seed with an unchanged chart to reproduce the branch in the selector or with `--file`. |
+
+Without `TAPLINE_DATA_DIR`, tapline looks for `results.json` in these directories:
+
+- Linux: `$XDG_DATA_HOME/tapline` if `XDG_DATA_HOME` is an absolute path,
+  otherwise `$HOME/.local/share/tapline`.
+- macOS: `$HOME/Library/Application Support/tapline`.
+- Windows: `%LOCALAPPDATA%\tapline`.
+
+For chart-format support and how records are tracked, see the
+[README](https://github.com/unhappychoice/tapline/blob/main/README.md).
