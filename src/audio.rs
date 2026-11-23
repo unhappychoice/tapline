@@ -402,7 +402,9 @@ impl SampleBank {
     }
 
     fn replace_sample(&self, id: u32, handle: voice::VoiceHandle) {
-        if let Some(previous) = self.playing.borrow_mut().insert(id, handle) {
+        let mut playing = self.playing.borrow_mut();
+        playing.retain(|_, handle| handle.is_live());
+        if let Some(previous) = playing.insert(id, handle) {
             previous.stop();
         }
     }
@@ -1579,6 +1581,25 @@ mod tests {
 
     fn sustained_sample() -> DecodedSample {
         DecodedSample::new(1, 44_100, Arc::new(vec![0.5; 44_100]))
+    }
+
+    #[test]
+    fn sequential_samples_reclaim_finished_playback_handles() {
+        let (mixer, mut output) = rodio::mixer::mixer(rodio::nz!(2), rodio::nz!(44_100));
+        let sample = DecodedSample::new(2, 44_100, Arc::new(vec![0.5; 2]));
+        let data = SampleData {
+            samples: (0..256).map(|id| (id, sample.clone())).collect(),
+            ..SampleData::default()
+        };
+        let bank = SampleBank::with_output(Arc::new(data), None, Some(master::master_bus(&mixer)));
+
+        (0..256).for_each(|id| {
+            assert!(bank.start_sound(id, 1.0).is_some());
+            assert_eq!(bank.playing.borrow().len(), 1, "sample {id}");
+            let peak = output.by_ref().take(4096).fold(0.0_f32, f32::max);
+            assert_eq!(peak, 0.5, "sample {id}");
+            assert_eq!(output.next(), Some(0.0));
+        });
     }
 
     #[test]
