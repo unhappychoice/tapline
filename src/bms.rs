@@ -358,6 +358,7 @@ fn build_chart(
         keys: Lane::bindings(&lanes),
         lanes,
         wav_paths,
+        wav_fallbacks: HashMap::new(),
         sample_settings: pass.sample_settings,
         sample_slices: HashMap::new(),
         sound_layers: HashMap::new(),

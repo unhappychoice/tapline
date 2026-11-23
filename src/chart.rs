@@ -154,6 +154,8 @@ pub struct Chart {
     pub sample_settings: std::collections::HashMap<u32, crate::sample_settings::SampleSettings>,
     pub sound_layers: std::collections::HashMap<u32, Vec<u32>>,
     pub sample_slices: std::collections::HashMap<u32, SampleSlice>,
+    /// Ordered fallback paths for bmson sound slices.
+    pub wav_fallbacks: std::collections::HashMap<u32, Arc<[PathBuf]>>,
     pub wav_paths: std::collections::HashMap<u32, Arc<Path>>,
 }
 
@@ -239,6 +241,7 @@ impl Default for Chart {
             sample_settings: Default::default(),
             sound_layers: std::collections::HashMap::new(),
             sample_slices: std::collections::HashMap::new(),
+            wav_fallbacks: std::collections::HashMap::new(),
             wav_paths: std::collections::HashMap::new(),
         }
     }

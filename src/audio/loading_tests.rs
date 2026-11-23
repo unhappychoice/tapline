@@ -171,6 +171,50 @@ fn bmson_decodes_regular_audio_and_extension_fallback_without_a_device() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn bmson_tries_ogg_only_when_named_wav_fails_to_decode() {
+    let dir = tempdir();
+    let path = dir.join("chart.bmson");
+    let chart_text = include_str!("../../tests/fixtures/minimal.bmson");
+    std::fs::write(&path, chart_text.replace("tone.wav", "kick.wav")).unwrap();
+    let wav = dir.join("kick.wav");
+    let ogg = dir.join("KICK.OGG");
+    std::fs::write(&ogg, include_bytes!("../../tests/fixtures/tone.ogg")).unwrap();
+
+    for (wav_bytes, expected_paths, expected_rate) in [
+        (
+            &b"invalid audio"[..],
+            vec![wav.clone(), ogg.clone()],
+            16_000,
+        ),
+        (
+            &include_bytes!("../../tests/fixtures/tone.wav")[..],
+            vec![wav.clone()],
+            8_000,
+        ),
+    ] {
+        std::fs::write(&wav, wav_bytes).unwrap();
+        let chart = crate::bmson::load(&path, 0.0).unwrap();
+        let audio = ChartAudio::load(&chart, false);
+        let calls = std::sync::Mutex::new(Vec::new());
+        let (bank, _output) = test_playback(&audio, |path| {
+            calls.lock().unwrap().push(path.to_path_buf());
+            decode(path)
+        });
+
+        assert_eq!(calls.into_inner().unwrap(), expected_paths);
+        assert_eq!(bank.decode_failures, 0);
+        assert_eq!(bank.sample_count(), 3);
+        let first = &bank.data.samples[&0];
+        assert_eq!(first.sample_rate, expected_rate);
+        for id in 0..3 {
+            assert!(Arc::ptr_eq(&first.data, &bank.data.samples[&id].data));
+            assert!(bank.start_sound(id, 1.0).is_some());
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn chart_audio_skips_file_and_directory_links_to_other_directories() {

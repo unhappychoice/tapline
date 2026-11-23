@@ -37,12 +37,23 @@ impl AssetIndex {
     }
 
     pub(crate) fn resolve_path(&self, name: &str, extensions: &[&str]) -> Option<PathBuf> {
-        let path = normalized_asset_path(name)?;
-        self.find(&path).or_else(|| {
-            extensions
-                .iter()
-                .find_map(|ext| self.find(&path.with_extension(ext)))
-        })
+        self.resolve_candidates(name, extensions).next()
+    }
+
+    pub(crate) fn resolve_candidates<'a>(
+        &'a self,
+        name: &str,
+        extensions: &'a [&'a str],
+    ) -> impl Iterator<Item = PathBuf> + 'a {
+        normalized_asset_path(name)
+            .into_iter()
+            .flat_map(move |path| {
+                self.find(&path).into_iter().chain(
+                    extensions
+                        .iter()
+                        .filter_map(move |ext| self.find(&path.with_extension(ext))),
+                )
+            })
     }
 
     fn find(&self, path: &Path) -> Option<PathBuf> {
