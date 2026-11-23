@@ -41,7 +41,6 @@ impl PlayOptions {
 }
 
 pub struct ChartPlayback<'a> {
-    chart: &'a chart::Chart,
     audio: audio::ChartAudio<'a>,
     images: ChartImages<'a>,
 }
@@ -49,7 +48,6 @@ pub struct ChartPlayback<'a> {
 impl<'a> ChartPlayback<'a> {
     pub fn new(chart: &'a chart::Chart, no_audio: bool) -> Self {
         Self {
-            chart,
             audio: audio::ChartAudio::load(chart, no_audio),
             images: ChartImages::new(chart),
         }
@@ -65,7 +63,6 @@ impl<'a> ChartPlayback<'a> {
         play_with_assets(
             out,
             args,
-            self.chart,
             &self.audio,
             &mut self.images,
             identity,
@@ -104,14 +101,29 @@ pub fn play_attempt(
     destination: ResultDestination,
 ) -> Result<ResultAction> {
     let audio = audio::ChartAudio::load(chart, args.no_audio);
-    play_loaded_attempt(out, args, chart, &audio, identity, destination)
+    play_loaded_attempt(out, args, &audio, identity, destination)
 }
 
-/// Play one attempt using audio prepared for this loaded chart.
+/// Play one attempt of the chart bound to the prepared audio.
+///
+/// Each attempt gets fresh playback state and reuses any decoded samples.
+/// Passing a separate chart is a compile-time error, even if both charts
+/// use the same sample IDs.
+///
+/// ```compile_fail,E0061
+/// use std::io::Stdout;
+/// use tapline::{audio::ChartAudio, chart::Chart, cli::Args, render::ResultDestination};
+///
+/// fn mismatched_attempt(out: &mut Stdout, args: &Args, chart_a: &Chart, chart_b: &Chart) {
+///     let audio = ChartAudio::load(chart_a, args.no_audio);
+///     let _ = tapline::runtime::play_loaded_attempt(
+///         out, args, chart_b, &audio, None, ResultDestination::Exit,
+///     );
+/// }
+/// ```
 pub fn play_loaded_attempt(
     out: &mut Stdout,
     args: &Args,
-    chart: &chart::Chart,
     audio: &audio::ChartAudio<'_>,
     identity: Option<&crate::results::Identity>,
     destination: ResultDestination,
@@ -119,9 +131,8 @@ pub fn play_loaded_attempt(
     play_with_assets(
         out,
         args,
-        chart,
         audio,
-        &mut ChartImages::new(chart),
+        &mut ChartImages::new(audio.chart()),
         identity,
         destination,
     )
@@ -130,13 +141,13 @@ pub fn play_loaded_attempt(
 fn play_with_assets(
     out: &mut Stdout,
     args: &Args,
-    chart: &chart::Chart,
     audio: &audio::ChartAudio<'_>,
     images: &mut ChartImages<'_>,
     identity: Option<&crate::results::Identity>,
     destination: ResultDestination,
 ) -> Result<ResultAction> {
     let opts = PlayOptions::from_args(args);
+    let chart = audio.chart();
     let bank = audio.start_attempt();
     let duration_ms =
         bank.chart_duration_ms(chart, opts.auto_ks, opts.synth_mode, opts.audio_lead_ms);

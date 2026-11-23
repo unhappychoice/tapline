@@ -13,9 +13,10 @@ rendering modules. Start with [the entry point](https://github.com/unhappychoice
    chart from `select.rs`. The session retains `SelectorState` between plays.
 3. `cli::load_session` reads the chart bytes, creates a results identity, and
    calls the BMS or bmson loader. Both produce the shared `chart::Chart` model.
-4. The session decodes the samples and applies their settings once per loaded
-   chart. `runtime::play_loaded_attempt` starts fresh playback, adjusts the
-   playback duration, creates `game::Game`, and runs the input and drawing loop.
+4. The session uses `runtime::ChartPlayback` to keep audio and artwork for the
+   loaded chart across attempts. The public `runtime::play_loaded_attempt` API
+   takes a `ChartAudio` and uses its chart for gameplay and playback duration.
+   Both paths start fresh playback and reuse decoded samples when available.
 5. The runtime stops playback, saves completed results, displays the result
    screen, and returns the player's action. Retry reuses the loaded chart,
    identity, and decoded audio. Dismissing results returns to the selector or
