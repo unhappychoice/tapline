@@ -12,6 +12,10 @@ fn load_value(value: Value) -> anyhow::Result<tapline::chart::Chart> {
 }
 
 fn load_with_lead_in(value: Value, lead_in_ms: f64) -> anyhow::Result<tapline::chart::Chart> {
+    with_chart_file(value, |path| bmson::load(path, lead_in_ms))
+}
+
+fn with_chart_file<T>(value: Value, run: impl FnOnce(&Path) -> T) -> T {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static COUNT: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -22,7 +26,7 @@ fn load_with_lead_in(value: Value, lead_in_ms: f64) -> anyhow::Result<tapline::c
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("test.bmson");
     std::fs::write(&path, value.to_string()).unwrap();
-    let result = bmson::load(&path, lead_in_ms);
+    let result = run(&path);
     std::fs::remove_dir_all(dir).unwrap();
     result
 }
@@ -144,6 +148,45 @@ fn selector_discovers_bmson_metadata() {
     assert_eq!(chart.notes.len(), 2);
     assert_eq!(chart.notes[0].time_ms, 1000.0);
     assert!(bmson::is_bmson(Path::new("chart.BMSON")));
+}
+
+#[test]
+fn selector_and_gameplay_accept_signed_and_default_resolutions() {
+    [
+        (None, 1500.0, 1875.0),
+        (Some(Value::Null), 1500.0, 1875.0),
+        (Some(json!(0)), 1500.0, 1875.0),
+        (Some(json!(240)), 1500.0, 1875.0),
+        (Some(json!(-240)), 1500.0, 1875.0),
+        (Some(json!(480)), 1250.0, 1437.5),
+        (Some(json!(-480)), 1250.0, 1437.5),
+    ]
+    .into_iter()
+    .for_each(|(resolution, start_ms, end_ms)| {
+        let mut data: Value = serde_json::from_str(include_str!("fixtures/minimal.bmson")).unwrap();
+        if let Some(value) = &resolution {
+            data["info"]["resolution"] = value.clone();
+        }
+        data["stop_events"] = json!([{"y":240,"duration":120}]);
+        let (discovered, chart) = with_chart_file(data, |path| {
+            let discovered = select::scan(path.parent().unwrap())
+                .iter()
+                .any(|entry| entry.path == path);
+            (discovered, bmson::load(path, 1000.0))
+        });
+        assert!(discovered, "resolution: {resolution:?}");
+        let chart = chart.unwrap();
+        assert_eq!(
+            chart.notes[1].time_ms, start_ms,
+            "resolution: {resolution:?}"
+        );
+        assert_eq!(
+            chart.notes[1].end_ms,
+            Some(end_ms),
+            "resolution: {resolution:?}"
+        );
+        assert_eq!(chart.bgm[0].time_ms, end_ms, "resolution: {resolution:?}");
+    });
 }
 
 #[test]

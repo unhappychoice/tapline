@@ -10,7 +10,12 @@ impl Timeline {
         ensure!(lead.is_finite() && lead >= 0.0, "Invalid lead-in");
         ensure!(data.info.init_bpm > 0.0, "Invalid initial BPM");
         ensure!(data.bpm_events.iter().all(|e| e.bpm > 0.0), "Invalid BPM");
-        let resolution = data.info.resolution.filter(|&r| r > 0).unwrap_or(240) as f64;
+        let resolution = data
+            .info
+            .resolution
+            .map(i64::unsigned_abs)
+            .filter(|&r| r != 0)
+            .unwrap_or(240) as f64;
         let mut bpms: Vec<_> = data.bpm_events.iter().collect();
         let mut stops: Vec<_> = data.stop_events.iter().collect();
         bpms.sort_by_key(|e| e.y);
