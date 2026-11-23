@@ -4,6 +4,23 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::process::Command;
 
 #[test]
+fn alternate_screen_requests_printable_key_events() {
+    if std::env::var_os("TAPLINE_RAW_MODE_TEST_CHILD").is_none() {
+        check_in_child();
+        return;
+    }
+
+    let mut output = Vec::new();
+    // Kitty flags 2 (event types) and 8 (all keys as escape codes).
+    with_alt_screen(&mut output, |output| {
+        assert!(output.ends_with(b"\x1b[>10u"));
+        Ok(())
+    })
+    .unwrap();
+    assert!(output.windows(5).any(|bytes| bytes == b"\x1b[<1u"));
+}
+
+#[test]
 fn initialization_output_failure_restores_terminal() {
     check_output_failure(1);
 }

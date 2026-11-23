@@ -1897,6 +1897,43 @@ mod tests {
     }
 
     #[test]
+    fn printable_key_repeat_does_not_hit_and_release_judges_charge_tail() {
+        for (key, lane) in [('s', 0), (' ', 3)] {
+            for (release_ms, expected) in [(4000.0, (1, 0, 1)), (5060.0, (1, 1, 0))] {
+                let note = Note {
+                    time_ms: 3000.0,
+                    end_ms: Some(5000.0),
+                    lane,
+                    ..Note::default()
+                };
+                let mut game = Game::new(base_chart(7, vec![note]));
+                let mut state = LoopState::new(Vec::new());
+                let bank = SampleBank::silent();
+                let options = opts(false);
+                let mut send = |game: &mut Game, kind, now| {
+                    handle_key(
+                        KeyCode::Char(key),
+                        kind,
+                        game,
+                        &bank,
+                        &options,
+                        &mut state,
+                        now,
+                    );
+                };
+
+                send(&mut game, KeyEventKind::Repeat, 3000.0);
+                assert_eq!(game.perfect, 0);
+                send(&mut game, KeyEventKind::Press, 3000.0);
+                send(&mut game, KeyEventKind::Release, release_ms);
+                assert_eq!((game.perfect, game.great, game.miss), expected);
+                game.check_misses(5200.0);
+                assert_eq!((game.perfect, game.great, game.miss), expected);
+            }
+        }
+    }
+
+    #[test]
     fn lane_release_applies_overdue_charge_note_tail_once() {
         let note = Note {
             time_ms: 3000.0,

@@ -10,13 +10,14 @@ pub fn with_alt_screen<W: Write, F: FnOnce(&mut W) -> Result<()>>(out: &mut W, f
     terminal::enable_raw_mode()?;
     let mut raw_mode = RawModeGuard(true);
     execute!(out, terminal::EnterAlternateScreen, cursor::Hide)?;
-    // Best-effort: ask the terminal to report key up events so long-note
-    // releases can be judged. Terminals that don't understand the kitty
-    // keyboard protocol will ignore this — the runtime falls back to
-    // auto-releasing LNs when they cross the miss window.
+    // Printable keys need escape-code reporting to send repeat and release events.
+    // Terminals that ignore the request still use automatic long-note completion.
     let pushed = execute!(
         out,
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+        )
     )
     .is_ok();
     let result = f(out);
