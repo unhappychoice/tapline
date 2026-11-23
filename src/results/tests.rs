@@ -108,13 +108,6 @@ fn persistence_round_trip_replaces_file_and_rejects_corrupt_storage() {
         .is_none());
     let first = Store::load(&path).unwrap().get(&id).unwrap().clone();
     let second = game(200, 3, 3, 1);
-    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-    fs::write(&temporary, "blocked").unwrap();
-    assert!(matches!(
-        update(&path, &id, &second, true),
-        Err(UpdateError::Write(Some(previous))) if previous == first
-    ));
-    fs::remove_file(temporary).unwrap();
     assert_eq!(update(&path, &id, &second, true).unwrap(), Some(first));
     assert_eq!(
         Store::load(&path).unwrap().get(&id).unwrap().best.score,

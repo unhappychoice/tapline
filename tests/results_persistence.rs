@@ -9,37 +9,24 @@ use tapline::{
 };
 
 #[test]
-fn temporary_file_collision_preserves_saved_results_and_pending_file() {
+fn stale_temporary_file_does_not_block_repeated_saves() {
     let dir = directory();
     let path = dir.join("results.json");
     let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
     let identity = Identity::built_in(120.0);
     let mut store = recorded_store(&identity, 100);
     store.save(&path).unwrap();
-    let original = std::fs::read(&path).unwrap();
-    std::fs::write(&temporary, b"pending write").unwrap();
-    record_score(&mut store, &identity, 200);
+    std::fs::write(&temporary, b"interrupted write").unwrap();
 
-    assert!(store.save(&path).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), original);
-    assert_eq!(std::fs::read(&temporary).unwrap(), b"pending write");
-    assert_eq!(
-        Store::load(&path)
-            .unwrap()
-            .get(&identity)
-            .unwrap()
-            .best
-            .score,
-        100
-    );
-
-    std::fs::remove_file(&temporary).unwrap();
-    store.save(&path).unwrap();
-    assert_eq!(
-        Store::load(&path).unwrap().get(&identity),
-        store.get(&identity)
-    );
-    assert!(!temporary.exists());
+    (2..=3).for_each(|run| {
+        record_score(&mut store, &identity, run * 100);
+        store.save(&path).unwrap();
+        assert_eq!(
+            Store::load(&path).unwrap().get(&identity),
+            store.get(&identity)
+        );
+        assert_eq!(std::fs::read(&temporary).unwrap(), b"interrupted write");
+    });
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -53,11 +40,10 @@ fn failed_replacement_removes_temporary_file_and_allows_retry() {
     let identity = Identity::built_in(120.0);
     let store = recorded_store(&identity, 100);
 
-    assert!(store.save(&path).is_err());
+    let result = store.save(&path);
+    assert!(result.is_err());
     assert_eq!(std::fs::read(&marker).unwrap(), b"existing data");
-    assert!(!path
-        .with_extension(format!("{}.tmp", std::process::id()))
-        .exists());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
 
     std::fs::remove_dir_all(&path).unwrap();
     store.save(&path).unwrap();
@@ -65,6 +51,33 @@ fn failed_replacement_removes_temporary_file_and_allows_retry() {
         Store::load(&path).unwrap().get(&identity),
         store.get(&identity)
     );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn open_reader_keeps_the_previous_snapshot_after_replacement() {
+    use std::io::Read;
+
+    let dir = directory();
+    let path = dir.join("results.json");
+    let identity = Identity::built_in(120.0);
+    let mut store = recorded_store(&identity, 100);
+    store.save(&path).unwrap();
+    let mut reader = std::fs::File::open(&path).unwrap();
+    let original = std::fs::read(&path).unwrap();
+
+    record_score(&mut store, &identity, 200);
+    store.save(&path).unwrap();
+
+    let mut snapshot = Vec::new();
+    reader.read_to_end(&mut snapshot).unwrap();
+    assert_eq!(snapshot, original);
+    assert_eq!(
+        Store::load(&path).unwrap().get(&identity),
+        store.get(&identity)
+    );
+    drop(reader);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
