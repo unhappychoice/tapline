@@ -190,6 +190,34 @@ fn metadata_rejects_invalid_format_mode_and_timing() {
 }
 
 #[test]
+fn overflowing_events_are_rejected_before_asset_resolution() {
+    let mut data = base();
+    data["info"]["init_bpm"] = json!(1e-300);
+    data["info"]["resolution"] = json!(240);
+    for note in [
+        json!({"x":0,"y":1_000_000_000}),
+        json!({"x":1,"y":1,"l":u32::MAX}),
+    ] {
+        data["sound_channels"] = json!([{"name":"missing.wav","notes":[note]}]);
+        with_chart(&data, |path| {
+            CHANNEL_BUILDS.set(0);
+            ASSET_RESOLUTIONS.set(0);
+            assert_eq!(
+                read_meta(path).unwrap_err().to_string(),
+                "Event timing overflow"
+            );
+            assert!(crate::select::scan(path.parent().unwrap()).is_empty());
+            assert_eq!(
+                load(path, 0.0).err().unwrap().to_string(),
+                "Event timing overflow"
+            );
+            assert_eq!(CHANNEL_BUILDS.get(), 0);
+            assert_eq!(ASSET_RESOLUTIONS.get(), 0);
+        });
+    }
+}
+
+#[test]
 fn gameplay_layer_validation_is_deferred_until_selection() {
     let mut data = base();
     data["sound_channels"] = json!([{"name":"missing.wav","notes":[

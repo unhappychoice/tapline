@@ -15,13 +15,19 @@ impl Timeline {
         let mut stops: Vec<_> = data.stop_events.iter().collect();
         bpms.sort_by_key(|e| e.y);
         stops.sort_by_key(|e| e.y);
-        Self::from_events(
+        let timeline = Self::from_events(
             bpms.into_iter(),
             stops.into_iter(),
             lead,
             60_000.0 / data.info.init_bpm / resolution,
             resolution,
-        )
+        )?;
+        // With nonnegative timing steps and stops, the latest pulse bounds all event times.
+        ensure!(
+            timeline.time(last_event_pulse(data)).is_finite(),
+            "Event timing overflow"
+        );
+        Ok(timeline)
     }
 
     pub fn time(&self, pulse: u64) -> f64 {
@@ -80,6 +86,23 @@ impl Timeline {
         }
         Ok(Self { points })
     }
+}
+
+fn last_event_pulse(data: &Bmson) -> u64 {
+    let sound_ends = data
+        .sound_channels
+        .iter()
+        .flat_map(|channel| &channel.notes)
+        .map(|note| u64::from(note.y) + u64::from(note.l));
+    let image_pulses = [
+        &data.bga.bga_events,
+        &data.bga.layer_events,
+        &data.bga.poor_events,
+    ]
+    .into_iter()
+    .flatten()
+    .map(|event| u64::from(event.y));
+    sound_ends.chain(image_pulses).max().unwrap_or(0)
 }
 
 #[cfg(test)]
