@@ -1037,6 +1037,65 @@ mod tests {
     }
 
     #[test]
+    fn completion_waits_only_for_started_or_scheduled_note_audio() {
+        for (auto_ks, press, expected_end) in [
+            (false, false, 2192.0),
+            (false, true, 14_172.0),
+            (true, false, 14_032.0),
+        ] {
+            let (bank, _output) = audio::playback_test_bank();
+            let options = PlayOptions {
+                synth_mode: false,
+                ..opts(auto_ks)
+            };
+            let mut chart = base_chart(
+                4,
+                vec![Note {
+                    time_ms: 2000.0,
+                    keysound: Some(1),
+                    ..Note::default()
+                }],
+            );
+            chart.duration_ms = bank.chart_duration_ms(&chart, auto_ks, false, 0.0);
+            assert_eq!(
+                chart.duration_ms,
+                if auto_ks { expected_end } else { 2192.0 }
+            );
+            let mut game = Game::new(chart);
+            let mut state = LoopState::new(build_auto_notes(&game, &options));
+            assert!(!advance_frame(
+                &mut game, &bank, &options, &mut state, 2000.0
+            ));
+            if press {
+                handle_key(
+                    KeyCode::Char('s'),
+                    KeyEventKind::Press,
+                    &mut game,
+                    &bank,
+                    &options,
+                    &mut state,
+                    2140.0,
+                );
+            }
+            assert!(!advance_frame(
+                &mut game,
+                &bank,
+                &options,
+                &mut state,
+                expected_end - 1.0,
+            ));
+            assert!(advance_frame(
+                &mut game,
+                &bank,
+                &options,
+                &mut state,
+                expected_end,
+            ));
+            assert_eq!((game.good, game.miss), if press { (1, 0) } else { (0, 1) });
+        }
+    }
+
+    #[test]
     fn completion_waits_for_an_invisible_keysound_played_by_a_manual_press() {
         let (bank, _output) = audio::playback_test_bank();
         let bank = bank
