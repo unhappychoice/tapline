@@ -1,4 +1,4 @@
-use super::video::Video;
+use super::video::{Start, Video};
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
@@ -7,7 +7,7 @@ use std::{
 
 #[derive(Default)]
 struct Mailbox {
-    pending: Option<Option<PathBuf>>,
+    pending: Option<(Option<PathBuf>, Start)>,
     ready: Option<Video>,
     closed: bool,
 }
@@ -19,7 +19,7 @@ pub(super) struct Worker {
 
 impl Worker {
     pub fn start<D>(
-        open: impl FnMut(&Path) -> Option<(D, Video)> + Send + 'static,
+        open: impl FnMut(&Path, Start) -> Option<(D, Video)> + Send + 'static,
     ) -> Option<Self> {
         let shared = Arc::new((Mutex::default(), Condvar::new()));
         let worker = Arc::clone(&shared);
@@ -33,10 +33,10 @@ impl Worker {
         })
     }
 
-    pub fn request(&self, path: Option<PathBuf>) {
+    pub fn request(&self, path: Option<PathBuf>, start: Start) {
         let (mailbox, wake) = &*self.shared;
         let mut state = mailbox.lock().unwrap();
-        state.pending = Some(path);
+        state.pending = Some((path, start));
         state.ready = None;
         wake.notify_one();
     }
@@ -61,7 +61,7 @@ impl Drop for Worker {
 
 fn run<D>(
     (mailbox, wake): &(Mutex<Mailbox>, Condvar),
-    mut open: impl FnMut(&Path) -> Option<(D, Video)>,
+    mut open: impl FnMut(&Path, Start) -> Option<(D, Video)>,
 ) {
     let mut decoder = None;
     let mut state = mailbox.lock().unwrap();
@@ -80,10 +80,10 @@ fn run<D>(
         if state.closed {
             break;
         }
-        let path = state.pending.take().unwrap();
+        let (path, start) = state.pending.take().unwrap();
         drop(state);
 
-        let opened = path.as_deref().and_then(&mut open);
+        let opened = path.as_deref().and_then(|path| open(path, start));
         state = mailbox.lock().unwrap();
         if let Some((process, video)) = opened {
             decoder = Some(process);
