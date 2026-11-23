@@ -190,6 +190,52 @@ fn metadata_rejects_invalid_format_mode_and_timing() {
 }
 
 #[test]
+fn event_timing_overflow_is_rejected_before_building_channels_or_resolving_assets() {
+    let mut background = base();
+    background["info"]["init_bpm"] = json!(1e-300);
+    background["info"]["resolution"] = json!(240);
+    background["sound_channels"] = json!([{"name":"tone.wav","notes":[
+        {"x":0,"y":1_000_000_000}
+    ]}]);
+
+    let mut long_note = base();
+    long_note["info"]["init_bpm"] = json!(6e-297);
+    long_note["sound_channels"] = json!([{"name":"tone.wav","notes":[
+        {"x":1,"y":4_000_000_000_u32,"l":1_000_000_000}
+    ]}]);
+    let mut head_only = long_note.clone();
+    head_only["sound_channels"][0]["notes"][0]["l"] = json!(0);
+    with_chart(&head_only, |path| assert!(read_meta(path).is_ok()));
+
+    let mut variants = vec![background, long_note];
+    for layer in ["bga_events", "layer_events", "poor_events"] {
+        let mut data = base();
+        data["info"]["init_bpm"] = json!(1e-300);
+        data["bga"] = json!({(layer): [{"y":1_000_000_000,"id":1}]});
+        variants.push(data);
+    }
+    for data in variants {
+        with_chart(&data, |path| {
+            CHANNEL_BUILDS.set(0);
+            ASSET_RESOLUTIONS.set(0);
+            assert_eq!(
+                read_meta(path).unwrap_err().to_string(),
+                "Event timing overflow"
+            );
+            assert!(crate::select::SelectorState::default()
+                .scan(path.parent().unwrap())
+                .is_empty());
+            assert_eq!(
+                load(path, 0.0).err().unwrap().to_string(),
+                "Event timing overflow"
+            );
+            assert_eq!(CHANNEL_BUILDS.get(), 0);
+            assert_eq!(ASSET_RESOLUTIONS.get(), 0);
+        });
+    }
+}
+
+#[test]
 fn gameplay_layer_validation_is_deferred_until_selection() {
     let mut data = base();
     data["sound_channels"] = json!([{"name":"missing.wav","notes":[
