@@ -58,18 +58,24 @@ pub(super) fn load(
 }
 
 fn reachable_ids(events: &[BgaEvent], extensions: &Extensions) -> HashSet<u32> {
-    let switch_frames = extensions.events.iter().filter_map(|event| {
-        let Effect::Switch(id) = event.effect else {
-            return None;
-        };
-        let switch = extensions.switches.get(&id)?;
-        switch.lane.map(|_| switch.pattern.iter().copied())
-    });
     events
         .iter()
         .map(|event| event.bmp_id)
-        .chain(switch_frames.flatten())
+        .chain(switch_frame_ids(extensions))
         .collect()
+}
+
+fn switch_frame_ids(extensions: &Extensions) -> impl Iterator<Item = u32> + '_ {
+    let mut seen = HashSet::new();
+    extensions
+        .events
+        .iter()
+        .filter_map(move |event| match event.effect {
+            Effect::Switch(id) if seen.insert(id) => extensions.switches.get(&id),
+            _ => None,
+        })
+        .filter(|switch| switch.lane.is_some())
+        .flat_map(|switch| switch.pattern.iter().copied())
 }
 
 fn render(source: &DynamicImage) -> RgbaImage {
@@ -85,3 +91,6 @@ fn render(source: &DynamicImage) -> RgbaImage {
     );
     canvas
 }
+
+#[cfg(test)]
+mod tests;
