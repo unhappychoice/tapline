@@ -1,15 +1,20 @@
 use rodio::Source;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 /// Handle that cuts off the voice it was created with.
-#[derive(Default)]
-pub(crate) struct VoiceHandle(Arc<AtomicBool>);
+pub(crate) struct VoiceHandle(Weak<AtomicBool>);
 
 impl VoiceHandle {
     pub(crate) fn stop(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        if let Some(stopped) = self.0.upgrade() {
+            stopped.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn is_live(&self) -> bool {
+        self.0.strong_count() > 0
     }
 }
 
@@ -21,8 +26,8 @@ pub(crate) struct Voice<S> {
 }
 
 pub(crate) fn voice<S: Source<Item = f32>>(inner: S) -> (Voice<S>, VoiceHandle) {
-    let handle = VoiceHandle::default();
-    let stopped = Arc::clone(&handle.0);
+    let stopped = Arc::new(AtomicBool::new(false));
+    let handle = VoiceHandle(Arc::downgrade(&stopped));
     (Voice { inner, stopped }, handle)
 }
 
