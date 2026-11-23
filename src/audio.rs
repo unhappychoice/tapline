@@ -8,9 +8,7 @@ use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Source};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
-use std::path::Path;
-#[cfg(test)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 pub(crate) use volume::PlaybackVolume;
@@ -156,7 +154,8 @@ impl<'a> ChartAudio<'a> {
         decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
     ) -> Arc<SampleData> {
         let chart = self.chart;
-        let (mut samples, decode_failures) = decode_all_with(gameplay_paths(chart), decode_sample);
+        let (mut samples, decode_failures) =
+            decode_candidates(gameplay_paths(chart), decode_sample);
         apply_sample_settings(&mut samples, &chart.sample_settings);
         Arc::new(SampleData {
             samples,
@@ -436,7 +435,7 @@ fn apply_sample_settings(
     });
 }
 
-fn gameplay_paths(chart: &Chart) -> impl Iterator<Item = (&u32, &Path)> {
+fn gameplay_paths(chart: &Chart) -> impl Iterator<Item = (u32, &Path, &[PathBuf])> {
     let required: HashSet<_> = chart
         .bgm
         .iter()
@@ -445,9 +444,11 @@ fn gameplay_paths(chart: &Chart) -> impl Iterator<Item = (&u32, &Path)> {
         .chain(chart.invisible_notes.iter().map(|note| &note.keysound))
         .flat_map(|id| sound_ids(&chart.sound_layers, id))
         .collect();
-    required
-        .into_iter()
-        .filter_map(|id| chart.wav_paths.get(id).map(|path| (id, path.as_ref())))
+    required.into_iter().filter_map(|id| {
+        let path = chart.wav_paths.get(id)?;
+        let fallbacks = chart.wav_fallbacks.get(id).map_or(&[][..], Arc::as_ref);
+        Some((*id, path.as_ref(), fallbacks))
+    })
 }
 
 fn sound_ids<'a>(layers: &'a HashMap<u32, Vec<u32>>, id: &'a u32) -> &'a [u32] {
@@ -505,23 +506,43 @@ fn decode_all_with<'a, P: AsRef<Path> + ?Sized + 'a>(
     wav_paths: impl IntoIterator<Item = (&'a u32, &'a P)>,
     decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
 ) -> (HashMap<u32, DecodedSample>, usize) {
-    let mut ids_by_path: HashMap<&Path, Vec<u32>> = HashMap::new();
-    wav_paths.into_iter().for_each(|(&id, path)| {
-        ids_by_path.entry(path.as_ref()).or_default().push(id);
+    decode_candidates(
+        wav_paths
+            .into_iter()
+            .map(|(&id, path)| (id, path.as_ref(), &[][..])),
+        decode_sample,
+    )
+}
+
+fn decode_candidates<'a>(
+    paths: impl IntoIterator<Item = (u32, &'a Path, &'a [PathBuf])>,
+    decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
+) -> (HashMap<u32, DecodedSample>, usize) {
+    let mut ids_by_paths = HashMap::<_, Vec<_>>::new();
+    paths.into_iter().for_each(|(id, primary, fallbacks)| {
+        ids_by_paths
+            .entry((primary, fallbacks))
+            .or_default()
+            .push(id);
     });
-    ids_by_path
+    ids_by_paths
         .par_iter()
-        .map(|(path, ids)| (ids, decode_sample(path)))
+        .map(|((primary, fallbacks), ids)| {
+            let sample = std::iter::once(*primary)
+                .chain(fallbacks.iter().map(PathBuf::as_path))
+                .find_map(|path| decode_sample(path).ok());
+            (ids, sample)
+        })
         .collect::<Vec<_>>()
         .into_iter()
         .fold(
             (HashMap::new(), 0),
             |(mut samples, failures), (ids, result)| match result {
-                Ok(sample) => {
+                Some(sample) => {
                     samples.extend(ids.iter().map(|&id| (id, sample.clone())));
                     (samples, failures)
                 }
-                Err(_) => (samples, failures + ids.len()),
+                None => (samples, failures + ids.len()),
             },
         )
 }

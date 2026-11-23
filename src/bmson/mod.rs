@@ -137,7 +137,7 @@ fn add_channel(
 ) -> Result<()> {
     #[cfg(test)]
     tests::CHANNEL_BUILDS.with(|count| count.set(count.get() + 1));
-    let path = asset_path(assets, &channel.name, &["wav", "ogg", "mp3"]).map(Arc::<Path>::from);
+    let (path, fallbacks) = audio_paths(assets, &channel.name);
     let mut notes: Vec<_> = channel.notes.iter().collect();
     notes.sort_by_key(|n| n.y);
     let mut groups = notes
@@ -152,6 +152,9 @@ fn add_channel(
         let id = u32::try_from(chart.sample_slices.len()).context("Too many sound slices")?;
         if let Some(path) = &path {
             chart.wav_paths.insert(id, Arc::clone(path));
+            if !fallbacks.is_empty() {
+                chart.wav_fallbacks.insert(id, Arc::clone(&fallbacks));
+            }
         }
         chart.sample_slices.insert(
             id,
@@ -188,6 +191,22 @@ fn lane(x: u32, count: usize, mode: &str) -> Option<usize> {
         _ if (1..=count).contains(&x) => Some(x - 1),
         _ => None,
     }
+}
+
+fn audio_paths(assets: &AssetIndex, name: &str) -> (Option<Arc<Path>>, Arc<[PathBuf]>) {
+    #[cfg(test)]
+    tests::ASSET_RESOLUTIONS.with(|count| count.set(count.get() + 1));
+    let mut candidates = assets.resolve_candidates(name, &["wav", "ogg", "mp3"]);
+    let primary = candidates.next();
+    let extension = primary.as_deref().and_then(Path::extension);
+    let fallbacks = candidates
+        .filter(|path| {
+            !extension
+                .zip(path.extension())
+                .is_some_and(|(primary, candidate)| primary.eq_ignore_ascii_case(candidate))
+        })
+        .collect();
+    (primary.map(Arc::from), fallbacks)
 }
 
 fn asset_path(assets: &AssetIndex, name: &str, extensions: &[&str]) -> Option<PathBuf> {
