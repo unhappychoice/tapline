@@ -85,7 +85,12 @@ pub(crate) fn parse_meta(
 
 pub(crate) fn resolve_preview(path: &Path, preview: Option<&str>) -> Option<PathBuf> {
     let name = preview.filter(|name| !name.is_empty())?;
-    AssetIndex::new(path.parent().unwrap_or(Path::new("."))).resolve_path(name, AUDIO_EXTENSIONS)
+    let assets = AssetIndex::new(path.parent().unwrap_or(Path::new(".")));
+    resolve_indexed_preview(&assets, name)
+}
+
+pub(crate) fn resolve_indexed_preview(assets: &AssetIndex, name: &str) -> Option<PathBuf> {
+    assets.resolve_path(name, AUDIO_EXTENSIONS)
 }
 
 pub fn load(path: &Path, lead_in_ms: f64) -> Result<Chart> {

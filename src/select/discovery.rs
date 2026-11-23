@@ -1,5 +1,5 @@
 use super::ChartEntry;
-use crate::{bms, chart_file, results::Identity};
+use crate::{assets::AssetIndex, bms, chart_file, results::Identity};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -47,12 +47,13 @@ impl Discovery {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
+        let assets = AssetIndex::new(dir);
         for entry in entries.flatten() {
             let path = entry.path();
             if entry.file_type().is_ok_and(|ty| ty.is_dir()) {
                 self.walk(&path, depth + 1, out, seed);
             } else if is_bms(&path) {
-                out.extend(self.chart(&path, seed, chart_file::read));
+                out.extend(self.chart(&path, &assets, seed, chart_file::read));
             }
         }
     }
@@ -60,6 +61,7 @@ impl Discovery {
     fn chart(
         &mut self,
         path: &Path,
+        assets: &AssetIndex,
         seed: &impl Fn() -> u64,
         read: impl FnOnce(&Path) -> anyhow::Result<Vec<u8>>,
     ) -> Option<ChartEntry> {
@@ -67,7 +69,7 @@ impl Discovery {
         let is_bmson = crate::bmson::is_bmson(path);
         if let Some((stamp, cached)) = self.metadata.get(path) {
             if before.as_ref() == Some(stamp) {
-                let mut entry = cached.for_visit();
+                let mut entry = cached.for_visit(assets);
                 if !is_bmson {
                     let seed = seed();
                     entry.meta.random_seed = seed;
@@ -89,7 +91,7 @@ impl Discovery {
             entry: ChartEntry { meta, identity },
             preview,
         };
-        let entry = cached.for_visit();
+        let entry = cached.for_visit(assets);
         if let Some(stamp) =
             before.filter(|before| !draws_random && Some(before) == stamp(path).as_ref())
         {
@@ -100,9 +102,12 @@ impl Discovery {
 }
 
 impl CachedMeta {
-    fn for_visit(&self) -> ChartEntry {
+    fn for_visit(&self, assets: &AssetIndex) -> ChartEntry {
         let mut entry = self.entry.clone();
-        entry.meta.preview = bms::resolve_preview(&entry.path, self.preview.as_deref());
+        entry.meta.preview = self
+            .preview
+            .as_deref()
+            .and_then(|name| bms::resolve_indexed_preview(assets, name));
         entry
     }
 }

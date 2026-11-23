@@ -70,6 +70,47 @@ fn visits_reuse_unchanged_metadata_and_refresh_library() {
 }
 
 #[test]
+fn charts_share_one_preview_index_per_directory_on_each_scan() {
+    use crate::assets::DIRECTORY_VISITS;
+    use std::fs;
+
+    let dir = super::super::tests::tempdir();
+    for name in ["first.bms", "second.bms"] {
+        fs::write(dir.join(name), "#PREVIEW preview.wav\n#00111:01\n").unwrap();
+    }
+    let exact = dir.join("preview.wav");
+    let folded = dir.join("PREVIEW.WAV");
+    let fallback = dir.join("preview.ogg");
+    fs::write(&exact, []).unwrap();
+    let case_sensitive = !folded.exists();
+    if case_sensitive {
+        fs::write(&folded, []).unwrap();
+    }
+    let mut state = crate::select::SelectorState::default();
+    let mut scan = |expected: Option<&Path>| {
+        DIRECTORY_VISITS.set(0);
+        let charts = state.scan(&dir);
+        assert_eq!(charts.len(), 2);
+        assert!(charts
+            .iter()
+            .all(|chart| chart.preview.as_deref() == expected));
+        assert_eq!(DIRECTORY_VISITS.get(), 1);
+        assert_eq!(counts(), (2, 2));
+    };
+
+    scan(Some(&exact));
+    scan(Some(&exact));
+    if case_sensitive {
+        fs::remove_file(folded).unwrap();
+    }
+    fs::rename(exact, &fallback).unwrap();
+    scan(Some(&fallback));
+    fs::remove_file(fallback).unwrap();
+    scan(None);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bmson_preview_is_resolved_relative_to_the_chart_on_each_visit() {
     let dir = super::super::tests::tempdir();
     let song = dir.join("song");
@@ -136,7 +177,7 @@ fn rescan_skips_an_oversized_symlink_target_after_a_raced_read() {
 
     let mut discovery = Discovery::default();
     let seed = || 0;
-    let first = discovery.chart(&chart, &seed, |path| {
+    let first = discovery.chart(&chart, &AssetIndex::new(&dir), &seed, |path| {
         fs::remove_file(path)?;
         symlink(&small, path)?;
         let bytes = chart_file::read(path)?;
