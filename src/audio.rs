@@ -125,6 +125,10 @@ impl<'a> ChartAudio<'a> {
         }
     }
 
+    pub(crate) fn chart(&self) -> &'a Chart {
+        self.chart
+    }
+
     pub(crate) fn start_attempt(&self) -> SampleBank {
         self.start_attempt_with(
             || silence_stderr(open_master_bus).map(|(stream, bus)| (Some(stream), bus)),
