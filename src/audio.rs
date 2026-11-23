@@ -243,15 +243,11 @@ impl SampleBank {
         if !self.enabled {
             return chart.duration_ms;
         }
-        let notes = chart.notes.iter().map(|note| {
-            let time = if auto_ks {
-                (note.time_ms - audio_lead_ms).max(0.0)
-            } else {
-                note.time_ms
-                    + crate::game::JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms))
-                        .good
-            };
-            (time, self.hit_sound(note.keysound, synth_mode))
+        let notes = chart.notes.iter().filter(|_| auto_ks).map(|note| {
+            (
+                (note.time_ms - audio_lead_ms).max(0.0),
+                self.hit_sound(note.keysound, synth_mode),
+            )
         });
         let bgm = chart.bgm.iter().map(|event| {
             (
@@ -299,20 +295,21 @@ impl SampleBank {
                     .iter()
                     .map(|mine| mine.time_ms + crate::game::MINE_WINDOW),
             )
-            .fold(0.0, f64::max);
+            .reduce(f64::max);
         // Leave one frame after the strict miss boundary for judgment processing.
         let invisible_end = chart
             .invisible_notes
             .iter()
             .map(|note| note.time_ms + 2500.0)
             .fold(0.0, f64::max);
+        let event_end = invisible_end
+            .max(chart.visual_deadline_ms())
+            .max(chart.trailing_stop_completion_ms.unwrap_or(0.0));
         audio_end
-            .map(|end| {
-                end.max(judgment_end + 32.0)
-                    .max(invisible_end)
-                    .max(chart.visual_deadline_ms())
-                    .max(chart.trailing_stop_completion_ms.unwrap_or(0.0))
-            })
+            .into_iter()
+            .chain(judgment_end.map(|end| end + 32.0))
+            .chain((event_end > 0.0).then_some(event_end))
+            .reduce(f64::max)
             .unwrap_or(chart.duration_ms)
     }
 
@@ -726,7 +723,7 @@ mod tests {
             let mut chart = bmson_duration_chart(serde_json::json!([
                 {"name": "long.wav", "notes": [{"x": 1, "y": 0}]}
             ]));
-            let expected = if auto_ks { 192.0 } else { 252.0 };
+            let expected = 192.0;
             assert_eq!(
                 bank.hit_sound(chart.notes[0].keysound, true),
                 HitSound::Synth
@@ -805,7 +802,7 @@ mod tests {
         [false, true].into_iter().for_each(|auto_ks| {
             assert_eq!(
                 bank.chart_duration_ms(&chart, auto_ks, false, 0.0),
-                10032.0 + if auto_ks { 0.0 } else { 140.0 }
+                if auto_ks { 10032.0 } else { 192.0 }
             );
         });
         let short_id = chart.sound_layers.values().next().unwrap()[0];
@@ -821,7 +818,7 @@ mod tests {
         [false, true].into_iter().for_each(|auto_ks| {
             assert_eq!(
                 bank.chart_duration_ms(&chart, auto_ks, false, 0.0),
-                10032.0 + if auto_ks { 0.0 } else { 140.0 }
+                if auto_ks { 10032.0 } else { 192.0 }
             );
         });
         Arc::make_mut(&mut bank.data).samples.remove(&short_id);
@@ -841,10 +838,14 @@ mod tests {
             ]));
             let bank = bank_for_bmson(&chart);
             [false, true].into_iter().for_each(|auto_ks| {
-                let delay = if auto_ks || lane == 0 { 0.0 } else { 140.0 };
+                let expected = if auto_ks || lane == 0 {
+                    10032.0
+                } else {
+                    9192.0
+                };
                 assert_eq!(
                     bank.chart_duration_ms(&chart, auto_ks, false, 0.0),
-                    10032.0 + delay
+                    expected
                 );
             });
         });
@@ -898,7 +899,7 @@ mod tests {
         for stop in ["#STP 002.500 1000", "#STOP01 96\n#00209:0001"] {
             std::fs::write(&path, format!("#BPM 120\n#00011:01\n{stop}\n")).unwrap();
             let mut chart = crate::bms::load(&path, 0.0).unwrap();
-            assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 10172.0);
+            assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 9500.0);
             chart.duration_ms = bank.chart_duration_ms(&chart, false, true, 0.0);
             assert_eq!(chart.duration_ms, 9500.0);
             let mut game = crate::game::Game::new(chart);
@@ -906,7 +907,7 @@ mod tests {
             assert!(!game.advance_completion(9499.0));
             assert!(game.advance_completion(9500.0));
         }
-        for (stop, expected) in [("", 1252.0), ("#STP 000.000 1000", 2252.0)] {
+        for (stop, expected) in [("", 1192.0), ("#STP 000.000 1000", 2192.0)] {
             std::fs::write(&path, format!("#BPM 120\n#00011:0001\n{stop}\n")).unwrap();
             let chart = crate::bms::load(&path, 0.0).unwrap();
             assert_eq!(bank.chart_duration_ms(&chart, false, true, 0.0), expected);
@@ -995,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn duration_covers_earlier_samples_late_hits_and_long_note_judgments() {
+    fn duration_covers_scheduled_audio_and_pending_judgments() {
         let mut bank = duration_bank();
         let mut chart = crate::chart::Chart {
             duration_ms: 30000.0,
@@ -1010,7 +1011,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 14172.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 10032.0);
         assert_eq!(bank.chart_duration_ms(&chart, true, false, 0.0), 14032.0);
         chart.notes[0].end_ms = Some(20000.0);
         assert_eq!(bank.chart_duration_ms(&chart, true, false, 0.0), 20192.0);
@@ -1087,7 +1088,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_lead_preserves_manual_keysound_allowance_and_silent_duration() {
+    fn audio_lead_preserves_manual_judgment_deadline_and_silent_duration() {
         let bank = duration_bank_with_length(1000);
         let chart = Chart {
             lane_count: 4,
@@ -1100,7 +1101,7 @@ mod tests {
             ..Default::default()
         };
         [-5000.0, 0.0, 5000.0].into_iter().for_each(|lead| {
-            assert_eq!(bank.chart_duration_ms(&chart, false, false, lead), 3172.0);
+            assert_eq!(bank.chart_duration_ms(&chart, false, false, lead), 2192.0);
             [false, true].into_iter().for_each(|auto_ks| {
                 let silent_chart = Chart {
                     duration_ms: SampleBank::silent()
@@ -1158,7 +1159,7 @@ mod tests {
     }
 
     #[test]
-    fn duration_tracks_extended_rank_at_note_start_and_end() {
+    fn duration_tracks_extended_rank_at_judgment_deadline() {
         let bank = duration_bank_with_length(80);
         let mut chart = Chart {
             rank: Some(0),
@@ -1170,7 +1171,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 1392.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 1352.0);
         assert_eq!(bank.chart_duration_ms(&chart, true, false, 0.0), 1352.0);
         chart.exrank_events = vec![crate::chart::ExRankEvent {
             time_ms: 2000.0,
@@ -1188,11 +1189,11 @@ mod tests {
         }
         chart.notes[0].time_ms = 5000.0;
         chart.notes[0].end_ms = None;
-        assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 5532.0);
+        assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 5512.0);
     }
 
     #[test]
-    fn duration_covers_audio_from_latest_ranked_good_hit() {
+    fn duration_preserves_ranked_judgment_windows() {
         let bank = duration_bank_with_length(80);
         for (rank, good, miss) in [
             (Some(0), 70.0, 80.0),
@@ -1214,7 +1215,7 @@ mod tests {
                 ..Default::default()
             };
             chart.duration_ms = bank.chart_duration_ms(&chart, false, false, 0.0);
-            assert_eq!(chart.duration_ms, 1000.0 + good + 80.0 + 32.0);
+            assert_eq!(chart.duration_ms, 1000.0 + miss + 32.0);
             assert_eq!(
                 bank.chart_duration_ms(&chart, true, false, 0.0),
                 1000.0 + miss + 32.0
@@ -1222,7 +1223,7 @@ mod tests {
             let mut game = crate::game::Game::new(chart);
             assert_eq!(game.hit(0, 1000.0 + good), Some(1));
             assert_eq!(game.good, 1);
-            assert!(1000.0 + good + 80.0 < game.chart().duration_ms);
+            assert!(game.advance_completion(1000.0 + miss + 32.0));
         }
     }
 
