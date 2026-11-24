@@ -21,10 +21,8 @@ const MAX_PREVIEW_SAMPLES: usize = crate::audio::MAX_DECODED_SAMPLES;
 
 impl SelectionPreview<rodio::source::Repeat<BoundedPreview<Decoder<BufReader<File>>>>> {
     pub(crate) fn audio() -> Option<Self> {
-        Self::new(|path| {
-            bounded_source(path, MAX_PREVIEW_SAMPLES).map(Source::repeat_infinite)
-        })
-        .ok()
+        Self::new(|path| bounded_source(path, MAX_PREVIEW_SAMPLES).map(Source::repeat_infinite))
+            .ok()
     }
 }
 
@@ -146,7 +144,7 @@ fn bounded_source(
 /// Caps a source at a fixed number of samples before it is handed to
 /// `repeat_infinite`, so the loop buffer it builds can never grow past that
 /// budget no matter how long the underlying file is.
-struct BoundedPreview<S> {
+pub(crate) struct BoundedPreview<S> {
     inner: S,
     remaining: usize,
 }
