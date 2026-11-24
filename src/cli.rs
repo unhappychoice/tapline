@@ -65,7 +65,7 @@ pub struct Args {
 impl Args {
     /// Reject combined timing values that would overflow the built-in chart duration.
     pub fn validate(&self) -> Result<(), clap::Error> {
-        if built_in_duration(self.bpm, self.countdown_ms).is_finite() {
+        if crate::chart::built_in_duration(self.bpm, self.countdown_ms).is_finite() {
             Ok(())
         } else {
             Err(clap::Error::raw(
@@ -179,7 +179,7 @@ pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::cha
 /// Parse a positive, finite BPM that keeps the built-in chart duration finite.
 fn parse_bpm(value: &str) -> Result<f64, String> {
     let bpm = value.parse::<f64>().map_err(|err| err.to_string())?;
-    if bpm.is_finite() && bpm > 0.0 && built_in_duration(bpm, 0.0).is_finite() {
+    if bpm.is_finite() && bpm > 0.0 && crate::chart::built_in_duration(bpm, 0.0).is_finite() {
         Ok(bpm)
     } else {
         Err(
@@ -187,11 +187,6 @@ fn parse_bpm(value: &str) -> Result<f64, String> {
                 .into(),
         )
     }
-}
-
-fn built_in_duration(bpm: f64, countdown_ms: f64) -> f64 {
-    let section = 16.0 * (60_000.0 / bpm);
-    (0..4).fold(countdown_ms, |time, _| time + section) + 2000.0
 }
 
 /// Parse a finite countdown, allowing zero to start without a delay.
