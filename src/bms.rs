@@ -416,17 +416,19 @@ fn build_timeline(
     Timeline::build(lead_in_ms, pass.bpm, &scales, &events, max_measure)
 }
 
+fn is_side_channel(ch: &str, lanes: LaneMap) -> bool {
+    (lanes.normal)(ch).is_some()
+        || (lanes.long)(ch).is_some()
+        || (lanes.invisible)(ch).is_some()
+        || (lanes.mine)(ch).is_some()
+}
+
 fn collect_lane_occupancy(
     raw: &[(u32, String, String)],
     pass: &HeaderPass,
     lanes: LaneMap,
 ) -> SideOccupancy {
-    let note_lines = raw.iter().filter(|(_, ch, _)| {
-        (lanes.normal)(ch).is_some()
-            || (lanes.long)(ch).is_some()
-            || (lanes.invisible)(ch).is_some()
-            || (lanes.mine)(ch).is_some()
-    });
+    let note_lines = raw.iter().filter(|(_, ch, _)| is_side_channel(ch, lanes));
     let raw = merge_note_lines(note_lines, lanes, pass);
     let mut occupancy = SideOccupancy::default();
     let mut long_counts = HashMap::<usize, usize>::new();
@@ -562,6 +564,7 @@ fn p2_mine_channel_to_lane(ch: &str) -> Option<usize> {
 thread_local! {
     static MATERIALIZATION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static DECODED_SLOTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static MERGED_PAYLOAD_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn accumulate_side(
@@ -574,10 +577,11 @@ fn accumulate_side(
     #[cfg(test)]
     MATERIALIZATION_CALLS.with(|calls| calls.set(calls.get() + 1));
     let base = pass.base;
-    let raw = merge_note_lines(raw.iter(), lanes, pass);
-    let raw = raw.as_slice();
+    let note_lines = raw.iter().filter(|(_, ch, _)| is_side_channel(ch, lanes));
+    let merged = merge_note_lines(note_lines, lanes, pass);
+    let merged = merged.as_slice();
     let mut acc = ChartAcc::default();
-    for (measure, ch, data) in raw {
+    for (measure, ch, data) in merged {
         if let Some(lane) = (lanes.normal)(ch) {
             push_normal_slots(&mut acc, lane, *measure, data, timeline, base);
         } else if let Some(lane) = (lanes.invisible)(ch) {
@@ -594,19 +598,24 @@ fn accumulate_side(
                         keysound: *slot,
                     });
                 });
-        } else if collect_bgm && ch == "01" {
-            push_bgm_slots(&mut acc, *measure, data, timeline, base);
+        }
+    }
+    if collect_bgm {
+        for (measure, ch, data) in raw {
+            if ch == "01" {
+                push_bgm_slots(&mut acc, *measure, data, timeline, base);
+            }
         }
     }
     if let Some(lnobj) = pass.lnobj {
         promote_lnobj(&mut acc.notes, lnobj);
     }
     if pass.lntype == 2 {
-        materialize_continuous_long_notes(&mut acc, raw, timeline, lanes.long, base);
+        materialize_continuous_long_notes(&mut acc, merged, timeline, lanes.long, base);
     } else {
-        materialize_long_notes_with(&mut acc, raw, timeline, lanes.long, base);
+        materialize_long_notes_with(&mut acc, merged, timeline, lanes.long, base);
     }
-    materialize_mines_with(&mut acc, raw, timeline, lanes.mine);
+    materialize_mines_with(&mut acc, merged, timeline, lanes.mine);
     acc
 }
 
@@ -616,7 +625,13 @@ fn merge_note_lines<'a>(
     pass: &HeaderPass,
 ) -> Vec<(u32, String, String)> {
     let mut seen = HashSet::new();
-    let mut merged: Vec<_> = raw.cloned().collect();
+    let mut merged: Vec<_> = raw
+        .map(|row| {
+            #[cfg(test)]
+            MERGED_PAYLOAD_BYTES.with(|bytes| bytes.set(bytes.get() + row.2.len()));
+            row.clone()
+        })
+        .collect();
     for (measure, ch, data) in merged.iter_mut().rev() {
         let slots = if (lanes.mine)(ch).is_some() {
             parse_slots(data, 36)
@@ -3245,6 +3260,132 @@ mod tests {
             assert_eq!(load_with_seed(&path, 0.0, 0).unwrap().lane_count, 4);
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn loading_never_copies_bgm_payloads_as_bgm_size_grows() {
+        let dir = tempdir();
+        let path = dir.join("dense-bgm-load.bms");
+        for count in [1, 10_000] {
+            let bgm = "01".repeat(count);
+            // Single-play chart: no P2 channels present.
+            std::fs::write(&path, format!("#BPM 120\n#00101:{bgm}\n#00111:01\n")).unwrap();
+            MERGED_PAYLOAD_BYTES.with(|bytes| bytes.set(0));
+            let chart = load_with_seed(&path, 0.0, 0).unwrap();
+            // Neither side clones the "01" BGM row during duplicate-note merging.
+            MERGED_PAYLOAD_BYTES.with(|bytes| assert_eq!(bytes.get(), 2));
+            assert_eq!(chart.bgm.len(), count);
+            assert_eq!(chart.notes.len(), 1);
+            assert!(chart.p2_notes.is_empty());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn single_play_load_keeps_bgm_multiplicity_and_dedupes_every_note_kind() {
+        let dir = tempdir();
+        let path = dir.join("dedup-sp.bms");
+        std::fs::write(
+            &path,
+            "\
+#TITLE SP
+#BPM 120
+#00101:0102030405060708
+#00111:0100
+#00111:0200
+#00131:0100
+#00131:0200
+#00152:0100
+#00152:0200
+#00152:0009
+#001D1:0100
+#001D1:0200
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(
+            chart.bgm.iter().map(|e| e.keysound).collect::<Vec<_>>(),
+            (1..=8).collect::<Vec<_>>(),
+            "BGM keeps every slot; duplicate-note merging never touches channel 01"
+        );
+        assert_eq!(
+            chart.notes.len(),
+            2,
+            "the duplicate definitions each collapse to a single note"
+        );
+        let plain = chart
+            .notes
+            .iter()
+            .find(|n| n.end_ms.is_none())
+            .expect("deduplicated plain note");
+        assert_eq!(plain.lane, 0);
+        assert_eq!(
+            plain.keysound,
+            Some(2),
+            "the later definition wins the duplicate slot"
+        );
+        let long = chart
+            .notes
+            .iter()
+            .find(|n| n.end_ms.is_some())
+            .expect("long note survives the duplicate start");
+        assert_eq!(long.lane, 1);
+        assert_eq!(long.keysound, Some(2));
+        assert_eq!(chart.invisible_notes.len(), 1);
+        assert_eq!(chart.invisible_notes[0].keysound, 2);
+        assert_eq!(chart.mines.len(), 1);
+        assert_eq!(chart.mines[0].damage, 2);
+    }
+
+    #[test]
+    fn double_play_load_keeps_bgm_multiplicity_and_dedupes_every_p2_note_kind() {
+        let dir = tempdir();
+        let path = dir.join("dedup-dp.bms");
+        std::fs::write(
+            &path,
+            "\
+#TITLE DP
+#PLAYER 2
+#BPM 120
+#00101:0102030405060708
+#00111:01
+#00121:0100
+#00121:0200
+#00141:0100
+#00141:0200
+#00162:0100
+#00162:0200
+#00162:0009
+#001E1:0100
+#001E1:0200
+",
+        )
+        .unwrap();
+        let chart = load(&path, 0.0).unwrap();
+        assert_eq!(
+            chart.bgm.iter().map(|e| e.keysound).collect::<Vec<_>>(),
+            (1..=8).collect::<Vec<_>>()
+        );
+        assert!(chart.p2_notes.is_empty(), "P2 pool is drained into the main pool");
+        assert!(chart.p2_mines.is_empty());
+        assert!(chart.p2_invisible_notes.is_empty());
+        let plain_p2 = chart
+            .notes
+            .iter()
+            .find(|n| n.end_ms.is_none() && n.keysound == Some(2))
+            .expect("deduplicated P2 plain note");
+        assert_eq!(plain_p2.keysound, Some(2));
+        let long_p2 = chart
+            .notes
+            .iter()
+            .find(|n| n.end_ms.is_some())
+            .expect("P2 long note survives the duplicate start");
+        assert_eq!(long_p2.keysound, Some(2));
+        assert_eq!(chart.mines.len(), 1);
+        assert_eq!(chart.mines[0].damage, 2);
+        assert_eq!(chart.invisible_notes.len(), 1);
+        assert_eq!(chart.invisible_notes[0].keysound, 2);
     }
 
     #[test]
