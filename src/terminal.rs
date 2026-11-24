@@ -9,23 +9,11 @@ use std::io::{self, Write};
 pub fn with_alt_screen<W: Write, F: FnOnce(&mut W) -> Result<()>>(out: &mut W, f: F) -> Result<()> {
     terminal::enable_raw_mode()?;
     let mut raw_mode = RawModeGuard(true);
-    execute!(out, terminal::EnterAlternateScreen, cursor::Hide)?;
-    // Printable keys need escape-code reporting to send repeat and release events.
-    // Terminals that ignore the request still use automatic long-note completion.
-    let pushed = execute!(
-        out,
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
-        )
-    )
-    .is_ok();
-    let result = f(out);
-    if pushed {
-        let _ = execute!(out, PopKeyboardEnhancementFlags);
-    }
-    // Best-effort: a result already produced by `f` (e.g. a completed and
-    // saved play) must not be discarded because a cleanup write fails.
+    let result = execute!(out, terminal::EnterAlternateScreen, cursor::Hide)
+        .map_err(anyhow::Error::from)
+        .and_then(|()| run_session(out, f));
+    // Setup may have changed the display before reporting an output error.
+    // Preserve the setup or session result even if restoring the display fails.
     let _ = execute!(out, cursor::Show, terminal::LeaveAlternateScreen);
     let _ = raw_mode.restore();
     result
@@ -40,6 +28,24 @@ pub fn show_load_error(out: &mut impl Write, error: &anyhow::Error) -> Result<()
             }
         }
     }
+}
+
+fn run_session<W: Write, F: FnOnce(&mut W) -> Result<()>>(out: &mut W, f: F) -> Result<()> {
+    // Printable keys need escape-code reporting to send repeat and release events.
+    // Terminals that ignore the request still use automatic long-note completion.
+    let pushed = execute!(
+        out,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+        )
+    )
+    .is_ok();
+    let result = f(out);
+    if pushed {
+        let _ = execute!(out, PopKeyboardEnhancementFlags);
+    }
+    result
 }
 
 fn draw_load_error(out: &mut impl Write, error: &anyhow::Error) -> Result<()> {

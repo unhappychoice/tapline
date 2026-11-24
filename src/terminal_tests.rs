@@ -32,7 +32,11 @@ fn restoration_output_failure_restores_terminal() {
 
 fn check_output_failure(fail_on_flush: usize) {
     if std::env::var_os("TAPLINE_RAW_MODE_TEST_CHILD").is_some() {
-        let mut output = FailingOutput { fail_on_flush };
+        let mut output = FailingOutput {
+            bytes: Vec::new(),
+            flushes: 0,
+            fail_on_flush,
+        };
         let mut ran = false;
         let result = with_alt_screen(&mut output, |_| {
             ran = true;
@@ -41,6 +45,8 @@ fn check_output_failure(fail_on_flush: usize) {
         });
         assert_eq!(ran, fail_on_flush != 1);
         if fail_on_flush == 1 {
+            assert_eq!(output.bytes, b"\x1b[?1049h\x1b[?25l\x1b[?25h\x1b[?1049l");
+            assert_eq!(output.flushes, 2);
             // Initialization failed before `f` ran: there is no inner
             // result to preserve, so the write error must propagate.
             assert_eq!(
@@ -120,17 +126,19 @@ fn settings(file: &File) -> libc::termios {
 }
 
 struct FailingOutput {
+    bytes: Vec<u8>,
+    flushes: usize,
     fail_on_flush: usize,
 }
 
 impl Write for FailingOutput {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        Ok(bytes.len())
+        self.bytes.write(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.fail_on_flush -= 1;
-        if self.fail_on_flush == 0 {
+        self.flushes += 1;
+        if self.flushes == self.fail_on_flush {
             assert!(terminal::is_raw_mode_enabled()?);
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "output failed"));
         }
