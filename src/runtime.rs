@@ -38,6 +38,18 @@ impl PlayOptions {
             audio_lead_ms: args.audio_lead_ms,
         }
     }
+
+    /// Builds options whose `no_audio` matches the mute setting the audio
+    /// bank was actually loaded with, ignoring `args.no_audio` if it
+    /// disagrees. This keeps the countdown badge and the scheduled audio it
+    /// describes in sync for callers that prepare a `ChartAudio` separately
+    /// from the `Args` passed to playback.
+    fn from_args_and_audio(args: &Args, audio: &audio::ChartAudio<'_>) -> Self {
+        Self {
+            no_audio: audio.muted(),
+            ..Self::from_args(args)
+        }
+    }
 }
 
 pub struct ChartPlayback<'a> {
@@ -146,7 +158,7 @@ fn play_with_assets(
     identity: Option<&crate::results::Identity>,
     destination: ResultDestination,
 ) -> Result<ResultAction> {
-    let opts = PlayOptions::from_args(args);
+    let opts = PlayOptions::from_args_and_audio(args, audio);
     let chart = audio.chart();
     let bank = audio.start_attempt();
     let duration_ms =
@@ -1374,6 +1386,27 @@ mod tests {
         let args = Args::parse_from(["tapline", "--auto-ks"]);
         let opts = PlayOptions::from_args(&args);
         assert!(opts.auto_ks);
+    }
+
+    #[test]
+    fn play_options_from_args_and_audio_follows_the_prepared_audio_mute_setting() {
+        use crate::cli::Args;
+        use clap::Parser;
+
+        let chart = base_chart(4, Vec::new());
+        for (args_no_audio, audio_no_audio) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let mut args = Args::parse_from(["tapline"]);
+            args.no_audio = args_no_audio;
+            let audio = audio::ChartAudio::load(&chart, audio_no_audio);
+            let opts = PlayOptions::from_args_and_audio(&args, &audio);
+            assert_eq!(
+                opts.no_audio, audio_no_audio,
+                "no_audio must track the prepared audio, not args.no_audio \
+                 (args={args_no_audio}, audio={audio_no_audio})"
+            );
+        }
     }
 
     // ---------- fire_scheduled_audio ----------
