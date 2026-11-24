@@ -31,6 +31,7 @@ fn unavailable_audio_backend_skips_decoding_and_allows_silent_play() {
     let audio = ChartAudio::load(&chart, false);
     let calls = AtomicUsize::new(0);
     let bank = audio.start_attempt_with(
+        false,
         || None,
         |_| {
             calls.fetch_add(1, Ordering::Relaxed);
@@ -111,6 +112,100 @@ fn gameplay_decodes_only_referenced_bms_wavs() {
     assert!(bank
         .start_hit(invisible.lane, keysound, false, 1.0)
         .is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn synth_mode_chart(dir: &Path) -> Chart {
+    let wav = include_bytes!("../../tests/fixtures/tone.wav");
+    for name in ["keysound_only.wav", "bgm_only.wav", "shared.wav"] {
+        std::fs::write(dir.join(name), wav).unwrap();
+    }
+    let path = dir.join("chart.bms");
+    std::fs::write(
+        &path,
+        "#BPM 120\n#WAV01 keysound_only.wav\n#WAV02 bgm_only.wav\n#WAV03 shared.wav\n\
+         #00101:02\n#00111:01\n#00112:03\n#00201:03\n",
+    )
+    .unwrap();
+    crate::bms::load(&path, 0.0).unwrap()
+}
+
+#[test]
+fn explicit_synth_mode_skips_keysound_only_assets_but_still_decodes_bgm_and_shared_ids() {
+    let dir = tempdir();
+    let chart = synth_mode_chart(&dir);
+    let keysound_only = chart.wav_paths[&1].to_path_buf();
+    let bgm_only = chart.wav_paths[&2].to_path_buf();
+    let shared = chart.wav_paths[&3].to_path_buf();
+
+    let audio = ChartAudio::load(&chart, false);
+    let calls = std::sync::Mutex::new(Vec::new());
+    let (bank, _output) = test_playback_with_mode(&audio, true, |path| {
+        calls.lock().unwrap().push(path.to_path_buf());
+        decode(path)
+    });
+    let decoded_paths = calls.into_inner().unwrap();
+
+    assert!(!decoded_paths.contains(&keysound_only));
+    assert!(decoded_paths.contains(&bgm_only));
+    assert!(decoded_paths.contains(&shared));
+    assert_eq!(bank.sample_count(), 2);
+
+    // BGM still plays its real samples in explicit synth mode.
+    assert!(bank.start_sound(2, 1.0).is_some());
+    assert!(bank.start_sound(3, 1.0).is_some());
+
+    // Manual and automatic hits synthesize instead of using (undecoded) samples.
+    let note = chart
+        .notes
+        .iter()
+        .find(|note| note.keysound == Some(1))
+        .copied()
+        .unwrap();
+    assert_eq!(bank.hit_sound(note.keysound, true), HitSound::Synth);
+    assert!(bank
+        .start_hit(note.lane, note.keysound, true, 1.0)
+        .is_some());
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn later_ordinary_attempt_decodes_and_plays_keysounds_skipped_by_an_earlier_synth_attempt() {
+    let dir = tempdir();
+    let chart = synth_mode_chart(&dir);
+    let keysound_only = chart.wav_paths[&1].to_path_buf();
+
+    let audio = ChartAudio::load(&chart, false);
+    let synth_calls = std::sync::Mutex::new(Vec::new());
+    let (_synth_bank, _synth_output) = test_playback_with_mode(&audio, true, |path| {
+        synth_calls.lock().unwrap().push(path.to_path_buf());
+        decode(path)
+    });
+    assert!(!synth_calls.into_inner().unwrap().contains(&keysound_only));
+
+    let ordinary_calls = std::sync::Mutex::new(Vec::new());
+    let (bank, _output) = test_playback_with_mode(&audio, false, |path| {
+        ordinary_calls.lock().unwrap().push(path.to_path_buf());
+        decode(path)
+    });
+    assert!(ordinary_calls
+        .into_inner()
+        .unwrap()
+        .contains(&keysound_only));
+    assert_eq!(bank.sample_count(), 3);
+
+    let note = chart
+        .notes
+        .iter()
+        .find(|note| note.keysound == Some(1))
+        .copied()
+        .unwrap();
+    assert_eq!(bank.hit_sound(note.keysound, false), HitSound::Sample(1));
+    assert!(bank
+        .start_hit(note.lane, note.keysound, false, 1.0)
+        .is_some());
+
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -296,9 +391,21 @@ fn test_playback(
     audio: &ChartAudio<'_>,
     decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
 ) -> (SampleBank, rodio::mixer::MixerSource) {
+    test_playback_with_mode(audio, false, decode_sample)
+}
+
+fn test_playback_with_mode(
+    audio: &ChartAudio<'_>,
+    synth_mode: bool,
+    decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
+) -> (SampleBank, rodio::mixer::MixerSource) {
     let (mixer, output) = rodio::mixer::mixer(rodio::nz!(2), rodio::nz!(44_100));
     (
-        audio.start_attempt_with(|| Some((None, master::master_bus(&mixer))), decode_sample),
+        audio.start_attempt_with(
+            synth_mode,
+            || Some((None, master::master_bus(&mixer))),
+            decode_sample,
+        ),
         output,
     )
 }
@@ -332,9 +439,9 @@ fn retry_reuses_decoded_sources_and_starts_with_fresh_voices() {
         Ok(DecodedSample::new(2, 44_100, Arc::new(samples)))
     };
 
-    let silent = audio.start_attempt_with(|| None, decode_sample);
+    let silent = audio.start_attempt_with(false, || None, decode_sample);
     assert!(!silent.enabled);
-    assert!(audio.data.get().is_none());
+    assert!(audio.data.lock().unwrap().is_none());
 
     for _ in 0..2 {
         let (bank, mut output) = test_playback(&audio, decode_sample);
