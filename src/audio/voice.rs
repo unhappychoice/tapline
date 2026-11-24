@@ -14,8 +14,18 @@ impl VoiceHandle {
     }
 
     pub(crate) fn is_live(&self) -> bool {
+        #[cfg(test)]
+        LIVENESS_CHECKS.with(|count| count.set(count.get() + 1));
         self.0.strong_count() > 0
     }
+}
+
+/// Per-thread count of `is_live` calls, reset and inspected by tests that
+/// verify cleanup cost stays bounded instead of rescanning every live
+/// handle. Thread-local so it stays accurate when tests run in parallel.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static LIVENESS_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// A source that ends as soon as its handle is stopped or its samples run

@@ -6,7 +6,7 @@ use rayon::prelude::*;
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Source};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -177,6 +177,10 @@ pub struct SampleBank {
     bus: Option<MasterBus>,
     data: Arc<SampleData>,
     playing: RefCell<HashMap<u32, voice::VoiceHandle>>,
+    /// IDs due for a liveness check, in the order they were last started.
+    /// Draining a bounded number per start amortizes reclamation instead of
+    /// rescanning every live handle on each `start_sound` call.
+    cleanup_queue: RefCell<VecDeque<u32>>,
     pub enabled: bool,
     /// Number of `wav_paths` entries that failed to decode.
     pub decode_failures: usize,
@@ -235,6 +239,7 @@ impl SampleBank {
             bus,
             data,
             playing: RefCell::new(HashMap::new()),
+            cleanup_queue: RefCell::new(VecDeque::new()),
         }
     }
 
@@ -407,11 +412,29 @@ impl SampleBank {
             .map(|sample| sample_source(sample, self.data.slices.get(&id)).amplify(gain))
     }
 
+    /// Number of stale handles checked per start. Bounding this keeps starting
+    /// a batch of voices linear in the batch size instead of rescanning every
+    /// live handle for each voice started (see issue #468).
+    const CLEANUP_BATCH: usize = 4;
+
     fn replace_sample(&self, id: u32, handle: voice::VoiceHandle) {
         let mut playing = self.playing.borrow_mut();
-        playing.retain(|_, handle| handle.is_live());
         if let Some(previous) = playing.insert(id, handle) {
             previous.stop();
+        }
+        let mut cleanup_queue = self.cleanup_queue.borrow_mut();
+        cleanup_queue.push_back(id);
+        for _ in 0..Self::CLEANUP_BATCH {
+            let Some(candidate) = cleanup_queue.pop_front() else {
+                break;
+            };
+            match playing.get(&candidate).map(voice::VoiceHandle::is_live) {
+                Some(true) => cleanup_queue.push_back(candidate),
+                Some(false) => {
+                    playing.remove(&candidate);
+                }
+                None => {}
+            }
         }
     }
 
@@ -1632,6 +1655,30 @@ mod tests {
             assert_eq!(peak, 0.5, "sample {id}");
             assert_eq!(output.next(), Some(0.0));
         });
+    }
+
+    #[test]
+    fn starting_a_live_batch_does_not_rescan_every_handle_per_voice() {
+        let mut bank = SampleBank::silent();
+        let sample = sustained_sample();
+        let voice_count = 512u32;
+        (0..voice_count).for_each(|id| {
+            Arc::make_mut(&mut bank.data)
+                .samples
+                .insert(id, sample.clone());
+        });
+        voice::LIVENESS_CHECKS.with(|count| count.set(0));
+        let voices: Vec<_> = (0..voice_count)
+            .map(|id| bank.start_voice(id, 1.0).unwrap())
+            .collect();
+        let checks = voice::LIVENESS_CHECKS.with(|count| count.get());
+        assert_eq!(bank.playing.borrow().len(), voice_count as usize);
+        assert!(
+            checks <= voice_count as usize * SampleBank::CLEANUP_BATCH,
+            "expected at most {} liveness checks for {voice_count} voices, got {checks}",
+            voice_count as usize * SampleBank::CLEANUP_BATCH
+        );
+        assert_eq!(voices.len(), voice_count as usize);
     }
 
     #[test]
