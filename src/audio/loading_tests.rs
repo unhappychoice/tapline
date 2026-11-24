@@ -163,7 +163,9 @@ fn explicit_synth_mode_skips_keysound_only_assets_but_still_decodes_bgm_and_shar
         .copied()
         .unwrap();
     assert_eq!(bank.hit_sound(note.keysound, true), HitSound::Synth);
-    assert!(bank.start_hit(note.lane, note.keysound, true, 1.0).is_some());
+    assert!(bank
+        .start_hit(note.lane, note.keysound, true, 1.0)
+        .is_some());
 
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -187,7 +189,10 @@ fn later_ordinary_attempt_decodes_and_plays_keysounds_skipped_by_an_earlier_synt
         ordinary_calls.lock().unwrap().push(path.to_path_buf());
         decode(path)
     });
-    assert!(ordinary_calls.into_inner().unwrap().contains(&keysound_only));
+    assert!(ordinary_calls
+        .into_inner()
+        .unwrap()
+        .contains(&keysound_only));
     assert_eq!(bank.sample_count(), 3);
 
     let note = chart
