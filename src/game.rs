@@ -119,6 +119,33 @@ impl JudgmentWindows {
     }
 }
 
+/// The deadline by which a note's judgment must be resolved, following the
+/// chart's long note mode. `#LNMODE 1` holds resolve the instant their tail
+/// is reached; CN/HCN holds (and every tap) keep a rank-scaled miss window
+/// past their reference time.
+pub(crate) fn note_deadline_ms(chart: &Chart, note: &Note) -> f64 {
+    match note.end_ms {
+        Some(end) if chart.ln_mode == LnMode::Ln => end,
+        Some(end) => end + JudgmentWindows::for_scale(chart.judgment_scale(end)).miss_after,
+        None => {
+            note.time_ms
+                + JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms)).miss_after
+        }
+    }
+}
+
+/// The latest time any note or mine in the chart could still have a pending
+/// judgment, used to gate chart completion alongside audio and other event
+/// deadlines.
+pub(crate) fn judgment_deadline_ms(chart: &Chart) -> Option<f64> {
+    chart
+        .notes
+        .iter()
+        .map(|note| note_deadline_ms(chart, note))
+        .chain(chart.mines.iter().map(|mine| mine.time_ms + MINE_WINDOW))
+        .reduce(f64::max)
+}
+
 impl Game {
     /// Builds gameplay indexes for the chart. Notes and scroll/speed events
     /// must be time-sorted. Mines may be in any order.
@@ -396,14 +423,15 @@ impl Game {
                 self.miss_visits += 1;
             }
             let i = self.held_notes[position];
-            if self.chart.notes[i].end_ms.is_some_and(|end| {
+            let resolved = self.chart.notes[i].end_ms.is_some() && {
+                let deadline = note_deadline_ms(&self.chart, &self.chart.notes[i]);
                 if self.chart.ln_mode == LnMode::Ln {
-                    end <= now_ms
+                    deadline <= now_ms
                 } else {
-                    end + JudgmentWindows::for_scale(self.chart.judgment_scale(end)).miss_after
-                        < now_ms
+                    deadline < now_ms
                 }
-            }) {
+            };
+            if resolved {
                 self.held_notes.remove(position);
                 self.mark_hit(i);
                 self.chart.notes[i].held_since = None;
