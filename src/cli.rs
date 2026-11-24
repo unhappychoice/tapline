@@ -320,7 +320,9 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
+    // macOS filesystems (APFS/HFS+) reject invalid UTF-8 byte sequences in
+    // filenames, unlike Linux, which allows arbitrary bytes.
     fn dir_flag_scans_a_non_utf8_directory_name() {
         use std::os::unix::ffi::OsStringExt;
 
@@ -499,7 +501,9 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
+    // macOS filesystems (APFS/HFS+) reject invalid UTF-8 byte sequences in
+    // filenames, unlike Linux, which allows arbitrary bytes.
     fn default_songs_dir_env_var_accepts_non_utf8_directory_names() {
         use std::os::unix::ffi::OsStringExt;
 
