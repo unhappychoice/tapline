@@ -128,8 +128,7 @@ pub(crate) fn note_deadline_ms(chart: &Chart, note: &Note) -> f64 {
         Some(end) if chart.ln_mode == LnMode::Ln => end,
         Some(end) => end + JudgmentWindows::for_scale(chart.judgment_scale(end)).miss_after,
         None => {
-            note.time_ms
-                + JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms)).miss_after
+            note.time_ms + JudgmentWindows::for_scale(chart.judgment_scale(note.time_ms)).miss_after
         }
     }
 }
