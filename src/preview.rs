@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 pub(crate) struct SelectionPreview<T> {
     selected: Option<usize>,
@@ -11,9 +12,19 @@ pub(crate) struct SelectionPreview<T> {
     work: Arc<(Mutex<Work<T>>, Condvar)>,
 }
 
-impl SelectionPreview<rodio::source::Repeat<Decoder<BufReader<File>>>> {
+/// Upper bound on the number of decoded samples a preview may feed into
+/// `repeat_infinite`. In rodio 0.23.0, `repeat_infinite` buffers its source
+/// internally and that buffer retains every decoded sample for the next lap,
+/// so capping the source here caps how much of a long preview stays resident
+/// in memory for the lifetime of the loop.
+const MAX_PREVIEW_SAMPLES: usize = crate::audio::MAX_DECODED_SAMPLES;
+
+impl SelectionPreview<rodio::source::Repeat<BoundedPreview<Decoder<BufReader<File>>>>> {
     pub(crate) fn audio() -> Option<Self> {
-        Self::new(|path| load_source(path).map(Source::repeat_infinite)).ok()
+        Self::new(|path| {
+            bounded_source(path, MAX_PREVIEW_SAMPLES).map(Source::repeat_infinite)
+        })
+        .ok()
     }
 }
 
@@ -125,6 +136,60 @@ fn load_source(path: &Path) -> Option<Decoder<BufReader<File>>> {
     Decoder::try_from(file).ok()
 }
 
+fn bounded_source(
+    path: &Path,
+    max_samples: usize,
+) -> Option<BoundedPreview<Decoder<BufReader<File>>>> {
+    load_source(path).map(|source| BoundedPreview::new(source, max_samples))
+}
+
+/// Caps a source at a fixed number of samples before it is handed to
+/// `repeat_infinite`, so the loop buffer it builds can never grow past that
+/// budget no matter how long the underlying file is.
+struct BoundedPreview<S> {
+    inner: S,
+    remaining: usize,
+}
+
+impl<S> BoundedPreview<S> {
+    fn new(inner: S, max_samples: usize) -> Self {
+        Self {
+            inner,
+            remaining: max_samples,
+        }
+    }
+}
+
+impl<S: Source<Item = f32>> Iterator for BoundedPreview<S> {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let sample = self.inner.next()?;
+        self.remaining -= 1;
+        Some(sample)
+    }
+}
+
+impl<S: Source<Item = f32>> Source for BoundedPreview<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        self.inner
+            .current_span_len()
+            .map(|len| len.min(self.remaining))
+    }
+    fn channels(&self) -> rodio::ChannelCount {
+        self.inner.channels()
+    }
+    fn sample_rate(&self) -> rodio::SampleRate {
+        self.inner.sample_rate()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,6 +250,22 @@ mod tests {
             .take(samples.len() * 3)
             .collect();
         assert_eq!(repeated, samples.repeat(3));
+    }
+
+    #[test]
+    fn oversized_preview_cannot_retain_more_than_the_configured_sample_budget() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tone.wav");
+        let full: Vec<_> = load_source(&path).unwrap().collect();
+        let budget = full.len() / 3;
+        assert!(budget > 0 && budget < full.len());
+
+        let looped: Vec<_> = bounded_source(&path, budget)
+            .unwrap()
+            .repeat_infinite()
+            .take(budget * 4)
+            .collect();
+        let expected: Vec<_> = full[..budget].repeat(4);
+        assert_eq!(looped, expected);
     }
 
     #[test]

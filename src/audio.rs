@@ -591,7 +591,7 @@ fn synth_ping(freq: f32, duration_ms: u32, sample_rate: u32) -> Vec<f32> {
 /// chart-referenced file could decode into gigabytes of PCM before gameplay
 /// even starts; this is far beyond any real keysound or BGM track, so it never
 /// affects legitimate charts.
-const MAX_DECODED_SAMPLES: usize = 48_000 * 60 * 10 * 2;
+pub(crate) const MAX_DECODED_SAMPLES: usize = 48_000 * 60 * 10 * 2;
 
 fn decode(path: &std::path::Path) -> anyhow::Result<DecodedSample> {
     decode_capped(path, MAX_DECODED_SAMPLES)
