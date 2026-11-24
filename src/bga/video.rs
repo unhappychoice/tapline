@@ -25,7 +25,7 @@ impl PartialEq for Frame {
 
 impl Eq for Frame {}
 
-const SEEK_THRESHOLD: u64 = 30;
+pub(super) const SEEK_THRESHOLD: u64 = 30;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Start {
@@ -120,10 +120,11 @@ impl Video {
         }
     }
 
-    pub fn is_behind(&self, target: u64) -> bool {
-        self.current
-            .as_ref()
-            .is_some_and(|(index, _, eof)| !eof && target.saturating_sub(*index) > SEEK_THRESHOLD)
+    pub fn needs_seek(&self, target: u64, start: Start, skipped_ahead: bool) -> bool {
+        self.current.as_ref().is_some_and(|(index, _, eof)| {
+            !eof && target.saturating_sub(*index) > SEEK_THRESHOLD
+                && (*index > start.frame_index() || skipped_ahead)
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -325,7 +326,7 @@ mod tests {
         let mut video = video_with_frames(frames);
         assert!(video.frame(0.0).is_none());
         assert!(video.frame(34.0).is_none());
-        assert!(!video.is_behind(1800));
+        assert!(!video.needs_seek(1800, Start::Beginning, true));
 
         let first = Frame(Arc::new(RgbaImage::new(SIZE, SIZE)));
         sender.send((0, first.clone(), false)).unwrap();
@@ -345,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_keeps_a_slow_seek_until_its_first_frame_arrives() {
+    fn playback_keeps_a_slow_seek_while_the_decoder_catches_up() {
         let (sender, frames) = sync_channel(1);
         let mut playback = super::super::Playback {
             start: Start::Frame(1800),
@@ -353,14 +354,41 @@ mod tests {
             ..Default::default()
         };
         let path = Path::new("video.mp4");
-        assert!(playback.frame(path, 62_000.0).is_none());
+        for elapsed in (60_000..61_500).step_by(16) {
+            assert!(playback.frame(path, f64::from(elapsed)).is_none());
+        }
         assert_eq!(playback.start, Start::Frame(1800));
 
         let first = Frame(Arc::new(RgbaImage::new(SIZE, SIZE)));
         sender.send((1800, first.clone(), false)).unwrap();
-        assert!(playback.frame(path, 62_000.0) == Some(first.clone()));
-        assert_eq!(playback.start, Start::Frame(1860));
-        assert!(playback.frame(path, 63_000.0) == Some(first));
+        assert!(playback.frame(path, 61_500.0) == Some(first.clone()));
+        assert!(playback.frame(path, 61_520.0) == Some(first));
+        assert_eq!(playback.start, Start::Frame(1800));
+
+        let caught_up = Frame(Arc::new(RgbaImage::new(SIZE, SIZE)));
+        sender.send((1846, caught_up.clone(), false)).unwrap();
+        assert!(playback.frame(path, 61_540.0) == Some(caught_up));
+        let next = Frame(Arc::new(RgbaImage::new(SIZE, SIZE)));
+        sender.send((1847, next.clone(), false)).unwrap();
+        assert!(playback.frame(path, 61_570.0) == Some(next));
+        assert_eq!(playback.start, Start::Frame(1800));
+    }
+
+    #[test]
+    fn playback_seeks_when_the_first_frame_arrives_after_a_polling_gap() {
+        let (sender, frames) = sync_channel(1);
+        let mut playback = super::super::Playback {
+            video: Some(video_with_frames(frames)),
+            ..Default::default()
+        };
+        let path = Path::new("video.mp4");
+        assert!(playback.frame(path, 0.0).is_none());
+        assert!(playback.frame(path, 1500.0).is_none());
+
+        let first = Frame(Arc::new(RgbaImage::new(SIZE, SIZE)));
+        sender.send((0, first.clone(), false)).unwrap();
+        assert!(playback.frame(path, 1516.0) == Some(first));
+        assert_eq!(playback.start, Start::Frame(45));
     }
 
     fn video_with_frames(frames: Receiver<DecodedFrame>) -> Video {

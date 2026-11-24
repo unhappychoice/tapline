@@ -34,6 +34,7 @@ struct Playback {
     video: Option<video::Video>,
     worker: Option<video_worker::Worker>,
     start: video::Start,
+    last_target: Option<u64>,
     displayed: Option<video::Frame>,
 }
 
@@ -244,12 +245,21 @@ impl Playback {
     fn request(&mut self, path: Option<&Path>, start: video::Start) {
         self.start = start;
         self.video = None;
+        self.last_target = None;
         if let Some(worker) = &self.worker {
             worker.request(path.map(Path::to_path_buf), start);
         }
     }
 
     fn frame(&mut self, path: &Path, elapsed: f64) -> Option<video::Frame> {
+        let target = video::frame_index(elapsed);
+        let skipped_ahead = self
+            .last_target
+            .is_some_and(|previous| target.saturating_sub(previous) > video::SEEK_THRESHOLD);
+        // Keep a gap pending until the decoder has a frame to compare against the target.
+        if !skipped_ahead {
+            self.last_target = Some(target);
+        }
         if self.video.is_none() {
             self.video = self
                 .worker
@@ -259,9 +269,9 @@ impl Playback {
         if let Some(video) = &mut self.video {
             if let Some(frame) = video.frame(elapsed) {
                 self.displayed = Some(frame);
+                self.last_target = Some(target);
             }
-            let target = video::frame_index(elapsed);
-            if video.is_behind(target) {
+            if video.needs_seek(target, self.start, skipped_ahead) {
                 self.request(Some(path), video::Start::Frame(target));
             } else if matches!(self.start, video::Start::Frame(_)) && video.is_empty() {
                 self.request(Some(path), video::Start::End);
