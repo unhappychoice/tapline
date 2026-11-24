@@ -3367,7 +3367,10 @@ mod tests {
             chart.bgm.iter().map(|e| e.keysound).collect::<Vec<_>>(),
             (1..=8).collect::<Vec<_>>()
         );
-        assert!(chart.p2_notes.is_empty(), "P2 pool is drained into the main pool");
+        assert!(
+            chart.p2_notes.is_empty(),
+            "P2 pool is drained into the main pool"
+        );
         assert!(chart.p2_mines.is_empty());
         assert!(chart.p2_invisible_notes.is_empty());
         let plain_p2 = chart
