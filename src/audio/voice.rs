@@ -20,11 +20,11 @@ impl VoiceHandle {
     }
 }
 
-/// Per-thread count of `is_live` calls, reset and inspected by tests that
-/// verify cleanup cost stays bounded instead of rescanning every live
-/// handle. Thread-local so it stays accurate when tests run in parallel.
 #[cfg(test)]
 thread_local! {
+    // Per-thread count of `is_live` calls, reset and inspected by tests that
+    // verify cleanup cost stays bounded instead of rescanning every live
+    // handle. Thread-local so it stays accurate when tests run in parallel.
     pub(crate) static LIVENESS_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
