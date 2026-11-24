@@ -127,6 +127,12 @@ impl<'a> ChartAudio<'a> {
         self.chart
     }
 
+    /// The mute setting the audio bank was actually loaded with, as the
+    /// single source of truth for both playback and the countdown badge.
+    pub(crate) fn muted(&self) -> bool {
+        self.muted
+    }
+
     pub(crate) fn start_attempt(&self) -> SampleBank {
         self.start_attempt_with(
             || silence_stderr(open_master_bus).map(|(stream, bus)| (Some(stream), bus)),
