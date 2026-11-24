@@ -3,9 +3,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    fs::{self, File, OpenOptions},
+    fs::{self, File, OpenOptions, TryLockError},
+    io,
     path::{Path, PathBuf},
+    thread,
+    time::{Duration, Instant},
 };
+
+const LOCK_WAIT_LIMIT: Duration = Duration::from_millis(500);
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Debug)]
 pub struct Identity {
@@ -101,7 +107,7 @@ pub fn update(
     Ok(previous)
 }
 
-fn lock_results(path: &Path) -> std::io::Result<File> {
+fn lock_results(path: &Path) -> io::Result<File> {
     fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
     // Keep the lock file in place so replacing the results cannot split the lock.
     let file = OpenOptions::new()
@@ -110,8 +116,18 @@ fn lock_results(path: &Path) -> std::io::Result<File> {
         .create(true)
         .truncate(false)
         .open(path.with_added_extension("lock"))?;
-    file.lock()?;
-    Ok(file)
+    let deadline = Instant::now() + LOCK_WAIT_LIMIT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::Error(error)) => return Err(error),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        thread::sleep(LOCK_RETRY_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
+        if Instant::now() >= deadline {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+    }
 }
 
 impl Store {
