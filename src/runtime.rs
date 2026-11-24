@@ -160,7 +160,7 @@ fn play_with_assets(
 ) -> Result<ResultAction> {
     let opts = PlayOptions::from_args_and_audio(args, audio);
     let chart = audio.chart();
-    let bank = audio.start_attempt();
+    let bank = audio.start_attempt(opts.synth_mode);
     let duration_ms =
         bank.chart_duration_ms(chart, opts.auto_ks, opts.synth_mode, opts.audio_lead_ms);
     let mut chart = chart.clone();

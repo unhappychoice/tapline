@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 pub(crate) use volume::PlaybackVolume;
 
@@ -108,9 +108,13 @@ struct SampleData {
 }
 
 /// Lazily decoded samples and settings shared by all attempts of a loaded chart.
+///
+/// An attempt made with the explicit synth setting enabled only needs BGM
+/// assets decoded, so the cache records whether it still lacks the
+/// keysound-only assets a later, non-synth attempt would need.
 pub struct ChartAudio<'a> {
     chart: &'a Chart,
-    data: OnceLock<Arc<SampleData>>,
+    data: Mutex<Option<(bool, Arc<SampleData>)>>,
     muted: bool,
 }
 
@@ -118,7 +122,7 @@ impl<'a> ChartAudio<'a> {
     pub fn load(chart: &'a Chart, no_audio: bool) -> Self {
         Self {
             chart,
-            data: OnceLock::new(),
+            data: Mutex::new(None),
             muted: no_audio,
         }
     }
@@ -133,8 +137,9 @@ impl<'a> ChartAudio<'a> {
         self.muted
     }
 
-    pub(crate) fn start_attempt(&self) -> SampleBank {
+    pub(crate) fn start_attempt(&self, synth_mode: bool) -> SampleBank {
         self.start_attempt_with(
+            synth_mode,
             || silence_stderr(open_master_bus).map(|(stream, bus)| (Some(stream), bus)),
             decode,
         )
@@ -142,6 +147,7 @@ impl<'a> ChartAudio<'a> {
 
     fn start_attempt_with(
         &self,
+        synth_mode: bool,
         open: impl FnOnce() -> Option<(Option<MixerDeviceSink>, MasterBus)>,
         decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
     ) -> SampleBank {
@@ -151,17 +157,36 @@ impl<'a> ChartAudio<'a> {
         let Some((stream, bus)) = open() else {
             return SampleBank::silent();
         };
-        let data = self.data.get_or_init(|| self.decode_samples(decode_sample));
-        SampleBank::with_output(Arc::clone(data), stream, Some(bus))
+        let data = self.data_for(synth_mode, decode_sample);
+        SampleBank::with_output(data, stream, Some(bus))
+    }
+
+    /// Returns cached samples, decoding (or re-decoding to add the
+    /// keysound-only assets a non-synth attempt needs) only when necessary.
+    fn data_for(
+        &self,
+        synth_mode: bool,
+        decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
+    ) -> Arc<SampleData> {
+        let mut cached = self.data.lock().unwrap();
+        if let Some((cached_synth_only, data)) = cached.as_ref() {
+            if !*cached_synth_only || synth_mode {
+                return Arc::clone(data);
+            }
+        }
+        let data = self.decode_samples(synth_mode, decode_sample);
+        *cached = Some((synth_mode, Arc::clone(&data)));
+        data
     }
 
     fn decode_samples(
         &self,
+        synth_mode: bool,
         decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
     ) -> Arc<SampleData> {
         let chart = self.chart;
         let (mut samples, decode_failures) =
-            decode_candidates(gameplay_paths(chart), decode_sample);
+            decode_candidates(gameplay_paths(chart, synth_mode), decode_sample);
         apply_sample_settings(&mut samples, &chart.sample_settings);
         Arc::new(SampleData {
             samples,
@@ -464,13 +489,26 @@ fn apply_sample_settings(
     });
 }
 
-fn gameplay_paths(chart: &Chart) -> impl Iterator<Item = (u32, &Path, &[PathBuf])> {
-    let required: HashSet<_> = chart
-        .bgm
-        .iter()
-        .map(|event| &event.keysound)
-        .chain(chart.notes.iter().filter_map(|note| note.keysound.as_ref()))
-        .chain(chart.invisible_notes.iter().map(|note| &note.keysound))
+/// Assets an attempt needs decoded. In explicit synth mode, keysounds hit by
+/// notes and invisible notes are synthesized rather than sampled, so only
+/// BGM assets (and any sample IDs notes happen to share with BGM) are kept.
+fn gameplay_paths(
+    chart: &Chart,
+    synth_mode: bool,
+) -> impl Iterator<Item = (u32, &Path, &[PathBuf])> {
+    let bgm = chart.bgm.iter().map(|event| &event.keysound);
+    let keysounds = (!synth_mode)
+        .then(|| {
+            chart
+                .notes
+                .iter()
+                .filter_map(|note| note.keysound.as_ref())
+                .chain(chart.invisible_notes.iter().map(|note| &note.keysound))
+        })
+        .into_iter()
+        .flatten();
+    let required: HashSet<_> = bgm
+        .chain(keysounds)
         .flat_map(|id| sound_ids(&chart.sound_layers, id))
         .collect();
     required.into_iter().filter_map(|id| {
