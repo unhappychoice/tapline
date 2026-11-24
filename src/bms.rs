@@ -625,13 +625,15 @@ fn merge_note_lines<'a>(
     pass: &HeaderPass,
 ) -> Vec<(u32, String, String)> {
     let mut seen = HashSet::new();
+    #[cfg(test)]
     let mut merged: Vec<_> = raw
         .map(|row| {
-            #[cfg(test)]
             MERGED_PAYLOAD_BYTES.with(|bytes| bytes.set(bytes.get() + row.2.len()));
             row.clone()
         })
         .collect();
+    #[cfg(not(test))]
+    let mut merged: Vec<_> = raw.cloned().collect();
     for (measure, ch, data) in merged.iter_mut().rev() {
         let slots = if (lanes.mine)(ch).is_some() {
             parse_slots(data, 36)
