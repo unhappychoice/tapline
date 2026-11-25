@@ -366,4 +366,78 @@ mod tests {
     fn video_with_frames(frames: Receiver<DecodedFrame>) -> Video {
         Video::from_frames(frames, Arc::new(AtomicU64::new(0)))
     }
+
+    #[test]
+    fn is_behind_once_the_target_outpaces_the_current_frame_by_the_seek_threshold() {
+        let (sender, frames) = sync_channel(1);
+        let mut video = video_with_frames(frames);
+        let frame = Frame(Arc::new(RgbaImage::new(SIZE, SIZE)));
+        sender.send((0, frame, false)).unwrap();
+        assert!(video.frame(0.0).is_some());
+        assert!(video.is_behind(SEEK_THRESHOLD + 1));
+    }
+
+    #[test]
+    fn is_empty_once_the_decoder_thread_exits_without_producing_a_frame() {
+        let (sender, frames) = sync_channel::<DecodedFrame>(1);
+        drop(sender);
+        let mut video = video_with_frames(frames);
+        assert!(video.frame(0.0).is_none());
+        assert!(video.is_empty());
+    }
+
+    #[test]
+    fn open_decodes_real_frames_through_the_worker_thread_until_eof() {
+        use std::time::{Duration, Instant};
+
+        let decoder = Path::new("ffmpeg");
+        if Command::new(decoder).arg("-version").output().is_err() {
+            eprintln!("Skipping video integration test: ffmpeg is not installed");
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("tapline-open-{}.mp4", std::process::id()));
+        assert!(Command::new(decoder)
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=red:s=64x64:r=30:d=1",
+                "-c:v",
+                "mpeg4",
+            ])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+
+        let (_child, mut video) = Video::open(&path, Start::Beginning).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if video.frame(0.0).is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Timed out waiting for the first frame"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!video.is_empty());
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            video.frame(100_000.0);
+            if video.reached_eof() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "Timed out waiting for EOF");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        std::fs::remove_file(&path).unwrap();
+    }
 }
