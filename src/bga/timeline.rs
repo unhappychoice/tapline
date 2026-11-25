@@ -113,7 +113,7 @@ mod tests {
             bmp_id: index as u32 + 1,
         })
         .collect::<Vec<_>>();
-        let timeline = Timeline::new(&events);
+        let timeline = Timeline::<Event>::new(&events);
         let latest = |layer, time| timeline.latest(layer, time).map(|event| event.bmp_id);
         for (layer, first, last) in [
             (BgaLayer::Base, 3, 4),
@@ -144,7 +144,7 @@ mod tests {
                     bmp_id: 1,
                 })
                 .collect();
-            let timeline = Timeline::new(&events);
+            let timeline = Timeline::<Event>::new(&events);
             for layer in [BgaLayer::Overlay, BgaLayer::Poor, BgaLayer::Overlay2] {
                 assert_eq!(timeline.latest(layer, 0.0), None);
                 assert_eq!(timeline.comparisons.get(), 0);
