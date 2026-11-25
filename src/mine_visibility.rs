@@ -1,31 +1,30 @@
 use crate::chart::Mine;
+use crate::interval_index::{SegmentTree, SegmentValue};
 use crate::scroll::{ScrollFrame, ScrollMap};
 
-/// Immutable bounds over mines in their original drawing order.
+impl SegmentValue for (f64, f64, f64) {
+    const EMPTY: Self = (f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    fn merge(a: Self, b: Self) -> Self {
+        (a.0.min(b.0), a.1.max(b.1), a.2.max(b.2))
+    }
+}
+
+/// Immutable bounds over mines in their original drawing order. Each leaf
+/// carries the mine's scroll coordinate (repeated as min/max, since a mine
+/// is a point) and its time, so stale mines can be pruned without a scroll
+/// frame.
 pub struct MineIndex {
-    bounds: Vec<(f64, f64, f64)>,
-    leaves: usize,
-    #[cfg(test)]
-    visits: std::cell::Cell<usize>,
+    tree: SegmentTree<(f64, f64, f64)>,
 }
 
 impl MineIndex {
     pub fn new(mines: &[Mine], scroll: &ScrollMap) -> Self {
-        let leaves = mines.len().next_power_of_two();
-        let mut bounds = vec![(f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY); leaves * 2];
-        mines.iter().enumerate().for_each(|(i, mine)| {
+        let bounds = mines.iter().map(|mine| {
             let coordinate = scroll.coordinate(mine.time_ms);
-            bounds[leaves + i] = (coordinate, coordinate, mine.time_ms);
+            (coordinate, coordinate, mine.time_ms)
         });
-        for i in (1..leaves).rev() {
-            let (a, b) = (bounds[i * 2], bounds[i * 2 + 1]);
-            bounds[i] = (a.0.min(b.0), a.1.max(b.1), a.2.max(b.2));
-        }
         Self {
-            bounds,
-            leaves,
-            #[cfg(test)]
-            visits: std::cell::Cell::new(0),
+            tree: SegmentTree::new(bounds),
         }
     }
 
@@ -36,29 +35,23 @@ impl MineIndex {
         now: f64,
         approach: f64,
     ) -> Vec<&'a Mine> {
-        let mut pending = vec![1];
-        let mut visible = Vec::new();
-        while let Some(node) = pending.pop() {
-            #[cfg(test)]
-            self.visits.set(self.visits.get() + 1);
-            let (min, max, latest) = self.bounds[node];
-            if latest < now - 60.0 || latest == f64::NEG_INFINITY {
-                continue;
-            }
-            let (a, b) = (frame.transform(min), frame.transform(max));
-            if a.min(b) > approach || a.max(b) < -60.0 {
-                continue;
-            }
-            if node < self.leaves {
-                pending.extend([node * 2 + 1, node * 2]);
-            } else {
-                let mine = &mines[node - self.leaves];
-                if !mine.exploded && (-60.0..=approach).contains(&a) {
-                    visible.push(mine);
+        self.tree
+            .traverse(|(min, max, latest)| {
+                if latest < now - 60.0 || latest == f64::NEG_INFINITY {
+                    return true;
                 }
-            }
-        }
-        visible
+                let (a, b) = (frame.transform(min), frame.transform(max));
+                a.min(b) > approach || a.max(b) < -60.0
+            })
+            .into_iter()
+            .map(|i| &mines[i])
+            .filter(|mine| !mine.exploded)
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn visits(&self) -> usize {
+        self.tree.visits.get()
     }
 }
 
@@ -138,7 +131,7 @@ mod tests {
             let index = MineIndex::new(&mines, &scroll);
             let frame = scroll.frame(&chart, 10000.0);
             assert_eq!(index.visible(&mines, &frame, 10000.0, 1000.0).len(), 1);
-            assert!(index.visits.get() <= 4 * (count.ilog2() as usize + 2));
+            assert!(index.visits() <= 4 * (count.ilog2() as usize + 2));
         }
     }
 
@@ -154,7 +147,7 @@ mod tests {
             let mines = vec![mine(0.0); count];
             let index = MineIndex::new(&mines, &scroll);
             assert!(index.visible(&mines, &frame, 100000.0, 1000.0).is_empty());
-            assert_eq!(index.visits.get(), 1);
+            assert_eq!(index.visits(), 1);
         }
     }
 }
