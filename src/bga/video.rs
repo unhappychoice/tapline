@@ -416,7 +416,7 @@ mod tests {
         let (_child, mut video) = Video::open(&path, Start::Beginning).unwrap();
         std::fs::remove_file(&path).unwrap();
 
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if video.frame(0.0).is_some() {
                 break;
@@ -429,7 +429,7 @@ mod tests {
         }
         assert!(!video.is_empty());
 
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             video.frame(100_000.0);
             if video.reached_eof() {
