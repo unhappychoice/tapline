@@ -414,7 +414,6 @@ mod tests {
             .success());
 
         let (_child, mut video) = Video::open(&path, Start::Beginning).unwrap();
-        std::fs::remove_file(&path).unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
@@ -438,5 +437,7 @@ mod tests {
             assert!(Instant::now() < deadline, "Timed out waiting for EOF");
             std::thread::sleep(Duration::from_millis(10));
         }
+
+        std::fs::remove_file(&path).unwrap();
     }
 }
