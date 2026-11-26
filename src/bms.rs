@@ -253,6 +253,10 @@ fn build_chart(
         });
     let scroll = collect_scroll_events(&raw, &timeline, "SC", &pass.scroll_defs, pass.base);
     let speed = collect_scroll_events(&raw, &timeline, "SP", &pass.speed_defs, pass.base);
+    ensure!(
+        crate::scroll::coordinates_are_finite(&scroll),
+        "BMS scroll rate change overflows to a non-finite position"
+    );
     let mut notes = acc.notes;
     let mut invisible_notes = acc.invisible_notes;
     let mut mines = acc.mines;
@@ -2288,6 +2292,13 @@ mod tests {
         let mut game = crate::game::Game::new(chart);
         game.hit(0, time);
         assert_eq!(game.perfect, 1);
+    }
+
+    #[test]
+    fn load_rejects_a_finite_scroll_rate_that_overflows_the_accumulated_coordinate() {
+        let source = "#BPM 120\n#SCROLL01 1e308\n#SCROLL02 1\n#000SC:01\n#001SC:02\n#00211:0101\n";
+        let result = load_bytes(Path::new("overflow.bms"), source.as_bytes(), 0.0, 0);
+        assert!(result.is_err());
     }
 
     #[test]

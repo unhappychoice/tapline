@@ -141,6 +141,13 @@ fn integrate<'a>(
     })
 }
 
+/// True if integrating `events` the same way `ScrollMap` does never produces a non-finite
+/// coordinate. An extreme but finite multiplier held over a long enough segment can overflow
+/// the accumulator to infinity, after which resetting the rate cannot recover a usable position.
+pub(crate) fn coordinates_are_finite(events: &[ScrollEvent]) -> bool {
+    integrate(events.iter()).all(|segment| segment.coordinate.is_finite())
+}
+
 fn speed_at(chart: &Chart, now: f64) -> f64 {
     let index = chart.speed.partition_point(|event| event.time_ms <= now);
     chart.speed[..index]
@@ -258,6 +265,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn coordinates_are_finite_detects_overflow_from_a_finite_multiplier() {
+        let events = vec![
+            ScrollEvent {
+                time_ms: 0.0,
+                multiplier: 1e308,
+            },
+            ScrollEvent {
+                time_ms: 2000.0,
+                multiplier: 1.0,
+            },
+        ];
+        assert!(!coordinates_are_finite(&events));
+    }
+
+    #[test]
+    fn coordinates_are_finite_accepts_ordinary_rates() {
+        let events = vec![
+            ScrollEvent {
+                time_ms: 0.0,
+                multiplier: 2.0,
+            },
+            ScrollEvent {
+                time_ms: 1000.0,
+                multiplier: -1.0,
+            },
+        ];
+        assert!(coordinates_are_finite(&events));
     }
 
     #[test]
