@@ -82,14 +82,15 @@ impl SwitchPlayback {
     }
 
     pub fn press(&mut self, chart: &crate::chart::Chart, lane: usize, now: f64) {
-        let end = self.events.partition_point(|(time, _)| {
+        let events = &self.events;
+        #[cfg(test)]
+        let comparisons = &mut self.comparisons;
+        let Some(index) = crate::search::latest_at_or_before(events, now, |&(time, _)| time, || {
             #[cfg(test)]
             {
-                self.comparisons += 1;
+                *comparisons += 1;
             }
-            *time <= now
-        });
-        let Some(index) = end.checked_sub(1) else {
+        }) else {
             return;
         };
         let id = self.events[index].1;

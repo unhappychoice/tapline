@@ -25,3 +25,4 @@ mod keymap;
 mod mine_visibility;
 mod preview;
 mod scroll;
+mod search;

@@ -36,12 +36,11 @@ impl PlaybackVolume {
         };
         #[cfg(test)]
         self.visits.set(0);
-        let end = events.partition_point(|event| {
+        let index = crate::search::latest_at_or_before(events, time_ms, |event| event.time_ms, || {
             #[cfg(test)]
             self.visits.set(self.visits.get() + 1);
-            event.time_ms <= time_ms
         });
-        let volume = end.checked_sub(1).map_or(255, |i| events[i].volume);
+        let volume = index.map_or(255, |i| events[i].volume);
         let gain = self.master * volume as f32 / 255.0;
         #[cfg(test)]
         self.last_query.set(Some((target, time_ms, gain)));
