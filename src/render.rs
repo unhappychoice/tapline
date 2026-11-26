@@ -427,13 +427,16 @@ fn format_difficulty_badge(game: &Game) -> String {
 fn song_text_at(events: &[TextEvent], now_ms: f64) -> Option<String> {
     #[cfg(test)]
     tests::SONG_TEXT_COMPARISONS.set(0);
-    let end = events.partition_point(|event| {
-        #[cfg(test)]
-        tests::SONG_TEXT_COMPARISONS.set(tests::SONG_TEXT_COMPARISONS.get() + 1);
-        event.time_ms <= now_ms
-    });
-    end.checked_sub(1)
-        .map(|index| crate::terminal_text::sanitize(&events[index].text))
+    let index = crate::search::latest_at_or_before(
+        events,
+        now_ms,
+        |event| event.time_ms,
+        || {
+            #[cfg(test)]
+            tests::SONG_TEXT_COMPARISONS.set(tests::SONG_TEXT_COMPARISONS.get() + 1);
+        },
+    )?;
+    Some(crate::terminal_text::sanitize(&events[index].text))
 }
 
 fn draw_song_text(

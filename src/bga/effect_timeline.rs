@@ -1,6 +1,8 @@
 use super::{timeline::slot, Effect, Extensions};
 use crate::chart::BgaLayer;
 
+pub(super) type Timeline = super::timeline::Timeline<State>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct State {
     pub alpha: u8,
@@ -14,13 +16,6 @@ impl Default for State {
             key: None,
         }
     }
-}
-
-#[derive(Default)]
-pub(super) struct Timeline {
-    layers: [Vec<(f64, State)>; 4],
-    #[cfg(test)]
-    comparisons: std::cell::Cell<usize>,
 }
 
 impl Timeline {
@@ -38,19 +33,13 @@ impl Timeline {
             };
             let state = State { alpha, key };
             states[slot(layer)] = state;
-            timeline.layers[slot(layer)].push((event.time_ms, state));
+            timeline.push(layer, event.time_ms, state);
         });
         timeline
     }
 
     pub(super) fn state(&self, layer: BgaLayer, now_ms: f64) -> State {
-        let events = &self.layers[slot(layer)];
-        let end = events.partition_point(|(time, _)| {
-            #[cfg(test)]
-            self.comparisons.set(self.comparisons.get() + 1);
-            *time <= now_ms
-        });
-        end.checked_sub(1).map(|i| events[i].1).unwrap_or_default()
+        self.latest(layer, now_ms).copied().unwrap_or_default()
     }
 }
 
