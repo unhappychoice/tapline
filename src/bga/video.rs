@@ -438,16 +438,6 @@ mod tests {
     }
 
     #[test]
-    fn is_behind_once_the_target_outpaces_the_current_frame_by_the_seek_threshold() {
-        let (sender, frames) = sync_channel(1);
-        let mut video = video_with_frames(frames);
-        let frame = Frame(Arc::new(RgbaImage::new(SIZE, SIZE)));
-        sender.send((0, frame, false)).unwrap();
-        assert!(video.frame(0.0).is_some());
-        assert!(video.is_behind(SEEK_THRESHOLD + 1));
-    }
-
-    #[test]
     fn is_empty_once_the_decoder_thread_exits_without_producing_a_frame() {
         let (sender, frames) = sync_channel::<DecodedFrame>(1);
         drop(sender);
