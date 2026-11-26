@@ -103,7 +103,9 @@ impl ScrollFrame<'_> {
 /// so a single extreme rate with no later reset must be checked at that bound too.
 pub(crate) fn coordinates_are_finite(events: &[ScrollEvent], end_time_ms: f64) -> bool {
     let segments: Vec<_> = integrate(events.iter()).collect();
-    segments.iter().all(|segment| segment.coordinate.is_finite())
+    segments
+        .iter()
+        .all(|segment| segment.coordinate.is_finite())
         && segments
             .last()
             .is_none_or(|segment| segment.coordinate_at(end_time_ms).is_finite())
