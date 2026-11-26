@@ -224,11 +224,11 @@ fn load_image(path: &Path) -> Option<DynamicImage> {
     #[cfg(test)]
     LOAD_COUNT.with(|count| count.set(count.get() + 1));
     let file = fs_guard::open(path).ok()?;
-    ImageReader::new(BufReader::new(file))
+    let mut reader = ImageReader::new(BufReader::new(file))
         .with_guessed_format()
-        .ok()?
-        .decode()
-        .ok()
+        .ok()?;
+    reader.limits(crate::image_limits::decode_limits());
+    reader.decode().ok()
 }
 
 pub(crate) fn draw_pixels(
@@ -598,6 +598,19 @@ mod tests {
         draw(&mut out, Path::new("."), "missing.png", (0, 0, 10, 10)).unwrap();
         draw(&mut out, Path::new("."), "Cargo.toml", (0, 0, 0, 0)).unwrap();
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn rejects_images_whose_declared_dimensions_exceed_the_decode_limit() {
+        reset_cache();
+        let dir = std::env::temp_dir().join(format!("tapline-artwork-bomb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cover.png");
+        std::fs::write(&path, crate::image_limits::oversized_png_bytes()).unwrap();
+        let mut out = Vec::new();
+        draw(&mut out, &dir, "cover.png", (0, 0, 2, 1)).unwrap();
+        assert!(out.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
