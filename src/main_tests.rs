@@ -44,7 +44,7 @@ fn selected_chart_retries_the_same_random_pattern_before_returning_to_selector()
             selections += 1;
             Ok(choices.next().expect("unexpected selector restart"))
         },
-        |_, _, chart, _, identity, destination| {
+        |_, _, chart, _, identity, destination, _| {
             assert_eq!(destination, ResultDestination::Selector);
             let identity = identity.unwrap();
             assert_eq!(identity.random_seed, Some(seed));
@@ -96,7 +96,7 @@ fn replaced_chart_requires_a_new_selection_before_playback() {
             };
             Ok(ChartChoice::Selected(Box::new(entry)))
         },
-        |_, _, chart, _, _, destination| {
+        |_, _, chart, _, _, destination, _| {
             assert_eq!(destination, ResultDestination::Selector);
             played.push(chart.title.clone());
             Ok(runtime::ResultAction::Dismiss)
@@ -121,7 +121,7 @@ fn assert_retry_then_exit(args: &Args) {
             assert_eq!(selections, 1, "chart selection ran again");
             cli::choose_chart_with_selector(out, args, state)
         },
-        |_, _, _, _, _, destination| {
+        |_, _, _, _, _, destination, _| {
             assert_eq!(destination, ResultDestination::Exit);
             plays += 1;
             Ok(match plays {
@@ -161,7 +161,7 @@ fn failed_selection_returns_to_selector_then_plays_and_cancels() {
             selections += 1;
             Ok(choices.next().expect("unexpected selector restart"))
         },
-        |_, _, chart, _, _, destination| {
+        |_, _, chart, _, _, destination, _| {
             assert_eq!(destination, ResultDestination::Selector);
             assert_eq!(chart.title, "Playable");
             plays += 1;
@@ -189,7 +189,7 @@ fn explicit_invalid_file_returns_error_without_playback_or_recovery() {
         &args,
         &cli::Keymap::default(),
         cli::choose_chart_with_selector,
-        |_, _, _, _, _, _| panic!("invalid chart must not play"),
+        |_, _, _, _, _, _, _| panic!("invalid chart must not play"),
         |_, _| panic!("explicit file must not recover"),
     )
     .unwrap_err();

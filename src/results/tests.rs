@@ -123,6 +123,43 @@ fn persistence_round_trip_replaces_file_and_rejects_corrupt_storage() {
 }
 
 #[test]
+fn update_cached_merges_into_the_given_store_without_rereading_the_file() {
+    let dir = directory();
+    let path = dir.join("results.json");
+    let id = Identity::built_in(120.0);
+    // Corrupt the on-disk file to prove update_cached never reads it back.
+    std::fs::write(&path, "broken").unwrap();
+    let mut store = Store::default();
+    assert!(update_cached(&mut store, &path, &id, &game(100, 2, 2, 1), false)
+        .unwrap()
+        .is_none());
+    let first = store.get(&id).unwrap().clone();
+    let second = game(200, 3, 3, 1);
+    assert_eq!(
+        update_cached(&mut store, &path, &id, &second, true).unwrap(),
+        Some(first)
+    );
+    assert_eq!(store.get(&id).unwrap().best.score, 200);
+    assert_eq!(Store::load(&path).unwrap().get(&id).unwrap().best.score, 200);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn update_cached_skips_locking_and_saving_an_interrupted_attempt() {
+    let dir = directory();
+    let path = dir.join("results.json");
+    let id = Identity::built_in(120.0);
+    let mut store = Store::default();
+    let mut interrupted = game(100, 2, 2, 1);
+    interrupted.completed = false;
+    assert!(update_cached(&mut store, &path, &id, &interrupted, false)
+        .unwrap()
+        .is_none());
+    assert!(!path.exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn concurrent_processes_preserve_distinct_charts_and_shared_bests() {
     use std::process::{Command, Stdio};
 

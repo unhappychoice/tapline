@@ -71,6 +71,7 @@ impl<'a> ChartPlayback<'a> {
         args: &Args,
         identity: Option<&crate::results::Identity>,
         destination: ResultDestination,
+        records: Option<&mut crate::results::Store>,
     ) -> Result<ResultAction> {
         play_with_assets(
             out,
@@ -79,6 +80,7 @@ impl<'a> ChartPlayback<'a> {
             &mut self.images,
             identity,
             destination,
+            records,
         )
     }
 }
@@ -100,8 +102,9 @@ pub fn play_chart_with_destination(
     destination: ResultDestination,
 ) -> Result<()> {
     let mut playback = ChartPlayback::new(&chart, args.no_audio);
-    while playback.play_attempt(out, args, identity.as_ref(), destination)? == ResultAction::Retry {
-    }
+    while playback.play_attempt(out, args, identity.as_ref(), destination, None)?
+        == ResultAction::Retry
+    {}
     Ok(())
 }
 
@@ -147,6 +150,7 @@ pub fn play_loaded_attempt(
         &mut ChartImages::new(audio.chart()),
         identity,
         destination,
+        None,
     )
 }
 
@@ -157,6 +161,7 @@ fn play_with_assets(
     images: &mut ChartImages<'_>,
     identity: Option<&crate::results::Identity>,
     destination: ResultDestination,
+    records: Option<&mut crate::results::Store>,
 ) -> Result<ResultAction> {
     let opts = PlayOptions::from_args_and_audio(args, audio);
     let chart = audio.chart();
@@ -169,7 +174,7 @@ fn play_with_assets(
     execute!(out, terminal::Clear(terminal::ClearType::All))?;
     run_game(out, &mut game, &bank, &opts, images)?;
     after_playback(bank, || {
-        let progress = save_result(identity, &game, args.auto_ks);
+        let progress = save_result(identity, &game, args.auto_ks, records);
         show_result(out, &game, &progress, destination)
     })
 }
@@ -178,6 +183,7 @@ fn save_result(
     identity: Option<&crate::results::Identity>,
     game: &game::Game,
     auto_ks: bool,
+    records: Option<&mut crate::results::Store>,
 ) -> String {
     let Some(identity) = identity else {
         return "No chart ID for saving".into();
@@ -185,7 +191,7 @@ fn save_result(
     let Some(path) = crate::results::data_path() else {
         return "No results directory".into();
     };
-    persist_result(&path, identity, game, auto_ks)
+    persist_result(&path, identity, game, auto_ks, records)
 }
 
 fn persist_result(
@@ -193,10 +199,15 @@ fn persist_result(
     identity: &crate::results::Identity,
     game: &game::Game,
     auto_ks: bool,
+    records: Option<&mut crate::results::Store>,
 ) -> String {
     use crate::results::{self, UpdateError};
 
-    match results::update(path, identity, game, auto_ks) {
+    let result = match records {
+        Some(store) => results::update_cached(store, path, identity, game, auto_ks),
+        None => results::update(path, identity, game, auto_ks),
+    };
+    match result {
         Ok(previous) => render::format_progress(game, previous.as_ref()),
         Err(UpdateError::Read) => "Cannot read saved results".into(),
         Err(UpdateError::Lock) => "Storage error: result unsaved".into(),
@@ -2285,7 +2296,7 @@ mod result_tests {
             let mut game = game::Game::new(chart::built_in(120.0, 0.0));
             game.completed = true;
             let id = crate::results::Identity::built_in(120.0);
-            let status = persist_result(&worker_path, &id, &game, false);
+            let status = persist_result(&worker_path, &id, &game, false, None);
             let mut frame = Vec::new();
             let action = wait_for_result_action(
                 (80, 24),
@@ -2322,14 +2333,14 @@ mod result_tests {
         let path = dir.join("results.json");
         let id = crate::results::Identity::built_in(120.0);
         let mut game = game::Game::new(chart::built_in(120.0, 0.0));
-        assert!(persist_result(&path, &id, &game, false).contains("Interrupted"));
+        assert!(persist_result(&path, &id, &game, false, None).contains("Interrupted"));
         assert!(!path.exists());
         game.completed = true;
         std::fs::write(&path, "corrupt").unwrap();
-        assert!(persist_result(&path, &id, &game, false).contains("Cannot read"));
+        assert!(persist_result(&path, &id, &game, false, None).contains("Cannot read"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "corrupt");
         let blocked = path.join("results.json");
-        let status = persist_result(&blocked, &id, &game, false);
+        let status = persist_result(&blocked, &id, &game, false, None);
         assert!(
             status == "Cannot read saved results" || status.starts_with("Storage error:"),
             "unexpected result status: {status}"
@@ -2337,9 +2348,9 @@ mod result_tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "corrupt");
         std::fs::remove_file(&path).unwrap();
         game.score = 100;
-        assert!(persist_result(&path, &id, &game, false).contains("First completed"));
+        assert!(persist_result(&path, &id, &game, false, None).contains("First completed"));
         game.score = 200;
-        assert!(persist_result(&path, &id, &game, false).contains("score +100"));
+        assert!(persist_result(&path, &id, &game, false, None).contains("score +100"));
         assert!(crate::results::Store::load(&path)
             .unwrap()
             .get(&id)

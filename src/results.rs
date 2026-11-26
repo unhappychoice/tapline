@@ -107,6 +107,28 @@ pub fn update(
     Ok(previous)
 }
 
+/// Like [`update`], but merges into a `Store` the caller already has loaded
+/// (e.g. the one the selector read to show progress) instead of rereading
+/// and reparsing the whole file just to change one entry.
+pub fn update_cached(
+    store: &mut Store,
+    path: &Path,
+    identity: &Identity,
+    game: &Game,
+    auto_keysound: bool,
+) -> Result<Option<Record>, UpdateError> {
+    if !game.completed {
+        return Ok(store.get(identity).cloned());
+    }
+    let _lock = lock_results(path).map_err(|_| UpdateError::Lock)?;
+    let previous = store.get(identity).cloned();
+    store.record(identity, game, auto_keysound);
+    if store.save(path).is_err() {
+        return Err(UpdateError::Write(previous));
+    }
+    Ok(previous)
+}
+
 fn lock_results(path: &Path) -> io::Result<File> {
     fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
     // Keep the lock file in place so replacing the results cannot split the lock.
