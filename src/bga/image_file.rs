@@ -14,12 +14,28 @@ pub(super) fn load(path: &Path) -> Option<DynamicImage> {
 }
 
 fn decode(file: std::fs::File) -> Option<DynamicImage> {
-    ImageReader::new(BufReader::new(file))
+    let mut reader = ImageReader::new(BufReader::new(file))
         .with_guessed_format()
-        .ok()?
-        .decode()
-        .ok()
+        .ok()?;
+    reader.limits(crate::image_limits::decode_limits());
+    reader.decode().ok()
 }
 
 #[cfg(all(test, unix))]
 mod tests;
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_images_whose_declared_dimensions_exceed_the_decode_limit() {
+        let path = std::env::temp_dir().join(format!(
+            "tapline-bga-image-bomb-{}.png",
+            std::process::id()
+        ));
+        std::fs::write(&path, crate::image_limits::oversized_png_bytes()).unwrap();
+        assert!(load(&path).is_none());
+        std::fs::remove_file(&path).unwrap();
+    }
+}
