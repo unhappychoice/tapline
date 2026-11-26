@@ -320,6 +320,45 @@ mod tests {
     }
 
     #[test]
+    fn worker_stays_usable_after_a_request_fails_to_open() {
+        use super::super::video_worker::Worker;
+        use std::{
+            path::PathBuf,
+            sync::mpsc::channel,
+            time::{Duration, Instant},
+        };
+
+        let (attempted, attempts) = channel();
+        let mut attempt = 0u32;
+        let worker = Worker::start(move |_, _| {
+            attempted.send(()).unwrap();
+            attempt += 1;
+            (attempt > 1).then(|| ((), Video::test_frame([9, 9, 9, 255])))
+        })
+        .unwrap();
+
+        worker.request(Some(PathBuf::from("broken.mp4")), Start::Beginning);
+        attempts.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            worker.take_video().is_none(),
+            "a failed open must not produce a video"
+        );
+
+        // The next request succeeds, proving the worker recovered rather than
+        // getting stuck after the earlier failed open.
+        worker.request(Some(PathBuf::from("video.mp4")), Start::Beginning);
+        attempts.recv_timeout(Duration::from_secs(5)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if worker.take_video().is_some() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "worker stuck after a failed open");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
     fn delayed_frames_hold_until_a_new_frame_arrives() {
         let (sender, frames) = sync_channel(2);
         let mut video = video_with_frames(frames);
