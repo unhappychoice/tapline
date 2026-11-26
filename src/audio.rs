@@ -6,10 +6,10 @@ use rayon::prelude::*;
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Source};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 pub(crate) use volume::PlaybackVolume;
 
@@ -108,9 +108,13 @@ struct SampleData {
 }
 
 /// Lazily decoded samples and settings shared by all attempts of a loaded chart.
+///
+/// An attempt made with the explicit synth setting enabled only needs BGM
+/// assets decoded, so the cache records whether it still lacks the
+/// keysound-only assets a later, non-synth attempt would need.
 pub struct ChartAudio<'a> {
     chart: &'a Chart,
-    data: OnceLock<Arc<SampleData>>,
+    data: Mutex<Option<(bool, Arc<SampleData>)>>,
     muted: bool,
 }
 
@@ -118,7 +122,7 @@ impl<'a> ChartAudio<'a> {
     pub fn load(chart: &'a Chart, no_audio: bool) -> Self {
         Self {
             chart,
-            data: OnceLock::new(),
+            data: Mutex::new(None),
             muted: no_audio,
         }
     }
@@ -133,8 +137,9 @@ impl<'a> ChartAudio<'a> {
         self.muted
     }
 
-    pub(crate) fn start_attempt(&self) -> SampleBank {
+    pub(crate) fn start_attempt(&self, synth_mode: bool) -> SampleBank {
         self.start_attempt_with(
+            synth_mode,
             || silence_stderr(open_master_bus).map(|(stream, bus)| (Some(stream), bus)),
             decode,
         )
@@ -142,6 +147,7 @@ impl<'a> ChartAudio<'a> {
 
     fn start_attempt_with(
         &self,
+        synth_mode: bool,
         open: impl FnOnce() -> Option<(Option<MixerDeviceSink>, MasterBus)>,
         decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
     ) -> SampleBank {
@@ -151,17 +157,36 @@ impl<'a> ChartAudio<'a> {
         let Some((stream, bus)) = open() else {
             return SampleBank::silent();
         };
-        let data = self.data.get_or_init(|| self.decode_samples(decode_sample));
-        SampleBank::with_output(Arc::clone(data), stream, Some(bus))
+        let data = self.data_for(synth_mode, decode_sample);
+        SampleBank::with_output(data, stream, Some(bus))
+    }
+
+    /// Returns cached samples, decoding (or re-decoding to add the
+    /// keysound-only assets a non-synth attempt needs) only when necessary.
+    fn data_for(
+        &self,
+        synth_mode: bool,
+        decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
+    ) -> Arc<SampleData> {
+        let mut cached = self.data.lock().unwrap();
+        if let Some((cached_synth_only, data)) = cached.as_ref() {
+            if !*cached_synth_only || synth_mode {
+                return Arc::clone(data);
+            }
+        }
+        let data = self.decode_samples(synth_mode, decode_sample);
+        *cached = Some((synth_mode, Arc::clone(&data)));
+        data
     }
 
     fn decode_samples(
         &self,
+        synth_mode: bool,
         decode_sample: impl Fn(&Path) -> anyhow::Result<DecodedSample> + Sync,
     ) -> Arc<SampleData> {
         let chart = self.chart;
         let (mut samples, decode_failures) =
-            decode_candidates(gameplay_paths(chart), decode_sample);
+            decode_candidates(gameplay_paths(chart, synth_mode), decode_sample);
         apply_sample_settings(&mut samples, &chart.sample_settings);
         Arc::new(SampleData {
             samples,
@@ -177,6 +202,14 @@ pub struct SampleBank {
     bus: Option<MasterBus>,
     data: Arc<SampleData>,
     playing: RefCell<HashMap<u32, voice::VoiceHandle>>,
+    /// IDs due for a liveness check, in the order they were last started.
+    /// Draining a bounded number per start amortizes reclamation instead of
+    /// rescanning every live handle on each `start_sound` call.
+    cleanup_queue: RefCell<VecDeque<u32>>,
+    /// IDs currently present in `cleanup_queue`, so retriggering the same ID
+    /// before its stale entry is drained updates that entry in place instead
+    /// of appending another one (see issue #491).
+    queued_ids: RefCell<HashSet<u32>>,
     pub enabled: bool,
     /// Number of `wav_paths` entries that failed to decode.
     pub decode_failures: usize,
@@ -235,6 +268,8 @@ impl SampleBank {
             bus,
             data,
             playing: RefCell::new(HashMap::new()),
+            cleanup_queue: RefCell::new(VecDeque::new()),
+            queued_ids: RefCell::new(HashSet::new()),
         }
     }
 
@@ -394,11 +429,36 @@ impl SampleBank {
             .map(|sample| sample_source(sample, self.data.slices.get(&id)).amplify(gain))
     }
 
+    /// Number of stale handles checked per start. Bounding this keeps starting
+    /// a batch of voices linear in the batch size instead of rescanning every
+    /// live handle for each voice started (see issue #468).
+    const CLEANUP_BATCH: usize = 4;
+
     fn replace_sample(&self, id: u32, handle: voice::VoiceHandle) {
         let mut playing = self.playing.borrow_mut();
-        playing.retain(|_, handle| handle.is_live());
         if let Some(previous) = playing.insert(id, handle) {
             previous.stop();
+        }
+        let mut cleanup_queue = self.cleanup_queue.borrow_mut();
+        let mut queued_ids = self.queued_ids.borrow_mut();
+        if queued_ids.insert(id) {
+            cleanup_queue.push_back(id);
+        }
+        for _ in 0..Self::CLEANUP_BATCH {
+            let Some(candidate) = cleanup_queue.pop_front() else {
+                break;
+            };
+            queued_ids.remove(&candidate);
+            match playing.get(&candidate).map(voice::VoiceHandle::is_live) {
+                Some(true) => {
+                    queued_ids.insert(candidate);
+                    cleanup_queue.push_back(candidate);
+                }
+                Some(false) => {
+                    playing.remove(&candidate);
+                }
+                None => {}
+            }
         }
     }
 
@@ -428,13 +488,26 @@ fn apply_sample_settings(
     });
 }
 
-fn gameplay_paths(chart: &Chart) -> impl Iterator<Item = (u32, &Path, &[PathBuf])> {
-    let required: HashSet<_> = chart
-        .bgm
-        .iter()
-        .map(|event| &event.keysound)
-        .chain(chart.notes.iter().filter_map(|note| note.keysound.as_ref()))
-        .chain(chart.invisible_notes.iter().map(|note| &note.keysound))
+/// Assets an attempt needs decoded. In explicit synth mode, keysounds hit by
+/// notes and invisible notes are synthesized rather than sampled, so only
+/// BGM assets (and any sample IDs notes happen to share with BGM) are kept.
+fn gameplay_paths(
+    chart: &Chart,
+    synth_mode: bool,
+) -> impl Iterator<Item = (u32, &Path, &[PathBuf])> {
+    let bgm = chart.bgm.iter().map(|event| &event.keysound);
+    let keysounds = (!synth_mode)
+        .then(|| {
+            chart
+                .notes
+                .iter()
+                .filter_map(|note| note.keysound.as_ref())
+                .chain(chart.invisible_notes.iter().map(|note| &note.keysound))
+        })
+        .into_iter()
+        .flatten();
+    let required: HashSet<_> = bgm
+        .chain(keysounds)
         .flat_map(|id| sound_ids(&chart.sound_layers, id))
         .collect();
     required.into_iter().filter_map(|id| {
@@ -578,7 +651,7 @@ fn synth_ping(freq: f32, duration_ms: u32, sample_rate: u32) -> Vec<f32> {
 /// chart-referenced file could decode into gigabytes of PCM before gameplay
 /// even starts; this is far beyond any real keysound or BGM track, so it never
 /// affects legitimate charts.
-const MAX_DECODED_SAMPLES: usize = 48_000 * 60 * 10 * 2;
+pub(crate) const MAX_DECODED_SAMPLES: usize = 48_000 * 60 * 10 * 2;
 
 fn decode(path: &std::path::Path) -> anyhow::Result<DecodedSample> {
     decode_capped(path, MAX_DECODED_SAMPLES)
@@ -1654,6 +1727,30 @@ mod tests {
     }
 
     #[test]
+    fn starting_a_live_batch_does_not_rescan_every_handle_per_voice() {
+        let mut bank = SampleBank::silent();
+        let sample = sustained_sample();
+        let voice_count = 512u32;
+        (0..voice_count).for_each(|id| {
+            Arc::make_mut(&mut bank.data)
+                .samples
+                .insert(id, sample.clone());
+        });
+        voice::LIVENESS_CHECKS.with(|count| count.set(0));
+        let voices: Vec<_> = (0..voice_count)
+            .map(|id| bank.start_voice(id, 1.0).unwrap())
+            .collect();
+        let checks = voice::LIVENESS_CHECKS.with(|count| count.get());
+        assert_eq!(bank.playing.borrow().len(), voice_count as usize);
+        assert!(
+            checks <= voice_count as usize * SampleBank::CLEANUP_BATCH,
+            "expected at most {} liveness checks for {voice_count} voices, got {checks}",
+            voice_count as usize * SampleBank::CLEANUP_BATCH
+        );
+        assert_eq!(voices.len(), voice_count as usize);
+    }
+
+    #[test]
     fn replaying_same_id_stops_previous_sink_and_restarts_sample() {
         let mut bank = SampleBank::silent();
         let sample = sustained_sample();
@@ -1666,6 +1763,45 @@ mod tests {
         assert_eq!(first.next(), None);
         assert_eq!(second.next(), Some(0.25));
         assert_eq!(bank.playing.borrow().len(), 1);
+    }
+
+    #[test]
+    fn retriggering_a_live_sample_keeps_one_cleanup_queue_entry() {
+        let mut bank = SampleBank::silent();
+        Arc::make_mut(&mut bank.data)
+            .samples
+            .insert(1, sustained_sample());
+
+        let mut previous = bank.start_voice(1, 1.0).unwrap();
+        for _ in 0..10_000 {
+            let current = bank.start_voice(1, 1.0).unwrap();
+            assert_eq!(
+                previous.next(),
+                None,
+                "retriggering should stop the previous voice for the id"
+            );
+            assert!(
+                bank.cleanup_queue.borrow().len() <= 1,
+                "cleanup queue should keep at most one entry for a retriggered id, got {:?}",
+                bank.cleanup_queue.borrow()
+            );
+            previous = current;
+        }
+        assert_eq!(bank.playing.borrow().len(), 1);
+
+        Arc::make_mut(&mut bank.data)
+            .samples
+            .insert(2, DecodedSample::new(1, 44_100, Arc::new(vec![0.5])));
+        drop(bank.start_voice(2, 1.0).unwrap());
+        assert!(bank.playing.borrow().contains_key(&2));
+
+        previous = bank.start_voice(1, 1.0).unwrap();
+        assert!(
+            !bank.playing.borrow().contains_key(&2),
+            "finished handles should still be reclaimed"
+        );
+        assert_eq!(bank.playing.borrow().len(), 1);
+        let _ = previous.next();
     }
 
     #[test]
