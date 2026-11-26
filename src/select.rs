@@ -50,6 +50,13 @@ pub struct SelectorState {
     pub(crate) reopening_selector: bool,
     query: String,
     lanes: Option<usize>,
+    /// `None` shows every clear status; `Some(true)`/`Some(false)` restrict
+    /// to cleared / not-yet-cleared (including unplayed) charts.
+    clear_filter: Option<bool>,
+    /// Per-chart clear status aligned by index with the `charts` slice, as
+    /// loaded from the records store. Empty when records are unavailable,
+    /// in which case the clear filter has no effect.
+    clears: Vec<Option<bool>>,
     editing: bool,
     cursor: usize,
     scroll: usize,
@@ -83,6 +90,10 @@ impl SelectorState {
         self.reopening_selector = true;
     }
 
+    fn set_clears(&mut self, clears: Vec<Option<bool>>) {
+        self.clears = clears;
+    }
+
     fn refresh(&mut self, charts: &[ChartEntry]) {
         if self.case_folded_cache.len() != charts.len() {
             self.case_folded_cache = charts
@@ -101,12 +112,17 @@ impl SelectorState {
             .iter()
             .enumerate()
             .filter(|(i, chart)| {
-                self.lanes.is_none_or(|lanes| chart.lane_count == lanes) && {
-                    let (title, subtitle, artist) = &self.case_folded_cache[*i];
-                    [title, subtitle, artist]
-                        .iter()
-                        .any(|text| text.contains(&query))
-                }
+                self.lanes.is_none_or(|lanes| chart.lane_count == lanes)
+                    && self.clear_filter.is_none_or(|wanted| {
+                        self.clears.len() != charts.len()
+                            || wanted == (self.clears[*i] == Some(true))
+                    })
+                    && {
+                        let (title, subtitle, artist) = &self.case_folded_cache[*i];
+                        [title, subtitle, artist]
+                            .iter()
+                            .any(|text| text.contains(&query))
+                    }
             })
             .map(|(i, _)| i)
             .collect();
@@ -122,7 +138,7 @@ impl SelectorState {
         match (key.kind, key.code, self.editing) {
             (KeyEventKind::Release, _, _) => return SelectorAction::None,
             (KeyEventKind::Repeat, KeyCode::Enter | KeyCode::Esc, true)
-            | (KeyEventKind::Repeat, KeyCode::Char('/' | 'l' | 'c'), false) => {
+            | (KeyEventKind::Repeat, KeyCode::Char('/' | 'l' | 'c' | 'v'), false) => {
                 return SelectorAction::None;
             }
             (KeyEventKind::Press, KeyCode::Esc | KeyCode::Char('q' | 'Q'), false) => {
@@ -148,12 +164,13 @@ impl SelectorState {
         before != self.visible_state()
     }
 
-    fn visible_state(&self) -> (usize, usize, Option<usize>, bool, usize) {
+    fn visible_state(&self) -> (usize, usize, Option<usize>, Option<bool>, bool, usize) {
         // Key edits only append, remove, or clear query characters.
         (
             self.cursor,
             self.scroll,
             self.lanes,
+            self.clear_filter,
             self.editing,
             self.query.len(),
         )
@@ -187,9 +204,19 @@ impl SelectorState {
                 self.cursor = 0;
                 self.scroll = 0;
             }
+            KeyCode::Char('v') => {
+                self.clear_filter = match self.clear_filter {
+                    None => Some(true),
+                    Some(true) => Some(false),
+                    Some(false) => None,
+                };
+                self.cursor = 0;
+                self.scroll = 0;
+            }
             KeyCode::Char('c') => {
                 self.query.clear();
                 self.lanes = None;
+                self.clear_filter = None;
             }
             KeyCode::Up | KeyCode::Char('k') => self.cursor = self.cursor.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => self.cursor = (self.cursor + 1).min(last),
@@ -199,7 +226,7 @@ impl SelectorState {
             KeyCode::PageDown => self.cursor = (self.cursor + 10).min(last),
             _ => return,
         }
-        if matches!(key, KeyCode::Char('l' | 'c')) {
+        if matches!(key, KeyCode::Char('l' | 'c' | 'v')) {
             self.refresh(charts);
         }
     }
@@ -220,7 +247,9 @@ pub fn run_with_state(
         return Ok(None);
     }
     let records_path = crate::results::data_path();
-    let progress = load_progress(charts, records_path.as_deref());
+    let store = records_path.and_then(|path| crate::results::Store::load(&path).ok());
+    let progress = load_progress(charts, store.as_ref());
+    state.set_clears(load_clears(charts, store.as_ref()));
     state.editing = false;
     state.refresh(charts);
     let audio = crate::audio::preview_output(!no_audio);
@@ -280,13 +309,23 @@ fn run_loop(
     }
 }
 
-fn load_progress(charts: &[ChartEntry], records_path: Option<&Path>) -> Vec<String> {
-    let Some(store) = records_path.and_then(|path| crate::results::Store::load(path).ok()) else {
+fn load_progress(charts: &[ChartEntry], store: Option<&crate::results::Store>) -> Vec<String> {
+    let Some(store) = store else {
         return vec!["[RECORDS UNAVAILABLE]".into(); charts.len()];
     };
     charts
         .iter()
         .map(|chart| format_progress(store.get(&chart.identity)))
+        .collect()
+}
+
+fn load_clears(charts: &[ChartEntry], store: Option<&crate::results::Store>) -> Vec<Option<bool>> {
+    let Some(store) = store else {
+        return Vec::new();
+    };
+    charts
+        .iter()
+        .map(|chart| store.get(&chart.identity).map(|record| record.best.clear))
         .collect()
 }
 
@@ -369,13 +408,18 @@ fn draw_frame(
     )?;
 
     let status = format!(
-        "{} / {} matches | Lanes: {} | {}Query: {}",
+        "{} / {} matches | Lanes: {} | Clear: {} | {}Query: {}",
         state.indices.len(),
         charts.len(),
         state
             .lanes
             .map(|n| format!("{n}K"))
             .unwrap_or_else(|| "all".into()),
+        match state.clear_filter {
+            None => "all",
+            Some(true) => "cleared",
+            Some(false) => "uncleared",
+        },
         if state.editing { "/ editing | " } else { "" },
         crate::terminal_text::sanitize(&state.query),
     );
@@ -438,7 +482,7 @@ fn draw_frame(
         queue!(
             out,
             cursor::MoveTo(2, list_top),
-            Print("No matching charts. Edit / search or press c to clear.")
+            Print("No matching charts. Edit / search or press c to clear filters.")
         )?;
     } else if detail_rows > 0 {
         draw_details(
@@ -453,7 +497,7 @@ fn draw_frame(
     let hint = if state.editing {
         "Type to search  Backspace delete  Enter / Esc finish editing"
     } else {
-        "↑↓ move  / search  l lanes  c clear  Enter play  Esc quit"
+        "↑↓ move  / search  l lanes  v clear status  c clear  Enter play  Esc quit"
     };
     queue!(
         out,
@@ -714,7 +758,7 @@ mod tests {
 
     #[test]
     fn status_and_comment_clip_wide_text_at_the_terminal_edge() {
-        let status_prefix = "1 / 1 matches | Lanes: all | Query: ";
+        let status_prefix = "1 / 1 matches | Lanes: all | Clear: all | Query: ";
         let query_cells = 78 - status_prefix.len();
         let fitting_query = format!(
             "{}{}",
@@ -865,7 +909,7 @@ mod tests {
             )
             .unwrap();
         let output = String::from_utf8(out).unwrap();
-        assert!(output.contains("0 / 1 matches | Lanes: 7K | Query: missing"));
+        assert!(output.contains("0 / 1 matches | Lanes: 7K | Clear: all | Query: missing"));
         assert!(output.contains("No matching charts"));
         assert!(!output.contains("Selected chart comment"));
         assert!(!output.contains("Alpha"));
@@ -1103,6 +1147,82 @@ mod tests {
     }
 
     #[test]
+    fn clear_filter_cycles_through_all_cleared_and_uncleared() {
+        let charts = vec![meta("Alpha"), meta("Beta"), meta("Gamma")];
+        let mut state = SelectorState::default();
+        state.set_clears(vec![Some(true), Some(false), None]);
+        state.refresh(&charts);
+        assert_eq!(state.indices, vec![0, 1, 2]);
+
+        state.key(KeyCode::Char('v'), &charts);
+        assert_eq!(state.clear_filter, Some(true));
+        assert_eq!(state.indices, vec![0]);
+
+        state.key(KeyCode::Char('v'), &charts);
+        assert_eq!(state.clear_filter, Some(false));
+        assert_eq!(state.indices, vec![1, 2]);
+
+        state.key(KeyCode::Char('v'), &charts);
+        assert_eq!(state.clear_filter, None);
+        assert_eq!(state.indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn clear_filter_shows_everything_when_records_are_unavailable() {
+        let charts = vec![meta("Alpha"), meta("Beta")];
+        let mut state = SelectorState::default();
+        state.refresh(&charts);
+        state.key(KeyCode::Char('v'), &charts);
+        assert_eq!(state.clear_filter, Some(true));
+        assert_eq!(state.indices, vec![0, 1]);
+    }
+
+    #[test]
+    fn c_resets_clear_filter_along_with_lanes_and_query() {
+        let mut charts = vec![meta("Alpha"), meta("Beta")];
+        charts[1].meta.lane_count = 7;
+        let mut state = SelectorState::default();
+        state.set_clears(vec![Some(true), None]);
+        state.refresh(&charts);
+        state.key(KeyCode::Char('v'), &charts);
+        state.key(KeyCode::Char('l'), &charts);
+        state.key(KeyCode::Char('/'), &charts);
+        state.key(KeyCode::Char('Z'), &charts);
+        state.key(KeyCode::Esc, &charts);
+        assert_eq!(state.clear_filter, Some(true));
+        assert_eq!(state.lanes, Some(5));
+        assert_eq!(state.query, "Z");
+        assert!(state.indices.is_empty());
+
+        state.key(KeyCode::Char('c'), &charts);
+        assert_eq!(state.clear_filter, None);
+        assert_eq!(state.lanes, None);
+        assert_eq!(state.query, "");
+        assert_eq!(state.indices, vec![0, 1]);
+    }
+
+    #[test]
+    fn status_line_reports_the_active_clear_filter() {
+        let charts = vec![meta("Alpha")];
+        let mut state = SelectorState::default();
+        state.set_clears(vec![Some(true)]);
+        state.refresh(&charts);
+        state.key(KeyCode::Char('v'), &charts);
+        let mut out = Vec::new();
+        SelectorFrame::default()
+            .draw_if_changed(
+                &mut out,
+                &charts,
+                &mut state,
+                &["[BEST 100.0% CLEAR]".into()],
+                (100, 24),
+            )
+            .unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("Clear: cleared"));
+    }
+
+    #[test]
     fn selected_details_render_banner_and_sanitized_comment() {
         crossterm::style::force_color_output(true);
         let dir = tempdir();
@@ -1309,6 +1429,23 @@ mod tests {
         let mut m = meta("A");
         m.meta.bpm = 173.6;
         assert_eq!(format_badge(&m), "[5K NORMAL Lv3 BPM174]");
+    }
+
+    #[test]
+    fn load_clears_reports_best_clear_status_per_chart_or_none_when_unavailable() {
+        let charts = [meta("Alpha"), meta("Beta")];
+        assert_eq!(load_clears(&charts, None), Vec::<Option<bool>>::new());
+
+        let mut store = crate::results::Store::default();
+        let mut game = crate::game::Game::new(crate::chart::built_in(120.0, 0.0));
+        game.completed = true;
+        game.perfect = 3;
+        game.miss = 1;
+        store.record(&charts[0].identity, &game, false);
+        assert_eq!(load_clears(&charts, Some(&store)), vec![Some(false), None]);
+        (0..1000).for_each(|_| game.gauge.apply(crate::game::Judgment::Perfect));
+        store.record(&charts[0].identity, &game, false);
+        assert_eq!(load_clears(&charts, Some(&store)), vec![Some(true), None]);
     }
 
     pub(super) fn tempdir() -> PathBuf {
