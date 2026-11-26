@@ -689,7 +689,7 @@ mod tests {
         let dir = tempdir();
         let path = dir.join("results.json");
         let chart = meta("Alpha");
-        let (progress, store) = load_progress(&[chart.clone()], Some(&path));
+        let (progress, store) = load_progress(std::slice::from_ref(&chart), Some(&path));
         assert_eq!(progress, ["[UNPLAYED]"]);
         let mut state = SelectorState {
             records: store,
