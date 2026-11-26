@@ -60,6 +60,11 @@ pub struct Args {
     /// earlier than the note time. Must be finite. Compensates for audio buffer latency.
     #[arg(long, default_value_t = 0.0, value_parser = parse_audio_lead)]
     pub audio_lead_ms: f64,
+
+    /// Key-lane play modifier: shuffle (`random`) or reverse (`mirror`) each
+    /// player's key lanes, or leave the chart's original layout (`off`).
+    #[arg(long, default_value_t = crate::chart::Modifier::Off, value_parser = parse_modifier)]
+    pub modifier: crate::chart::Modifier,
 }
 
 impl Args {
@@ -137,21 +142,17 @@ pub fn load_session(choice: &ChartChoice, args: &Args) -> Result<Option<LoadedSe
             Some(&entry.identity),
         ),
         ChartChoice::BuiltIn => {
-            return Ok(Some((
-                crate::chart::built_in(args.bpm, args.countdown_ms),
-                Some(Identity::built_in(args.bpm)),
-            )))
+            let mut chart = crate::chart::built_in(args.bpm, args.countdown_ms);
+            chart.apply_modifier(args.modifier, modifier_seed());
+            return Ok(Some((chart, Some(Identity::built_in(args.bpm)))));
         }
         ChartChoice::Cancelled => return Ok(None),
     };
     let bytes = crate::chart_file::read(path)?;
-    Ok(Some(session_from_bytes(
-        path,
-        &bytes,
-        seed,
-        args.countdown_ms,
-        expected,
-    )?))
+    let (mut chart, identity) =
+        session_from_bytes(path, &bytes, seed, args.countdown_ms, expected)?;
+    chart.apply_modifier(args.modifier, modifier_seed());
+    Ok(Some((chart, identity)))
 }
 
 fn session_from_bytes(
@@ -217,6 +218,20 @@ fn parse_audio_lead(value: &str) -> Result<f64, String> {
     }
 }
 
+fn parse_modifier(value: &str) -> Result<crate::chart::Modifier, String> {
+    use crate::chart::Modifier;
+    match value.to_ascii_lowercase().as_str() {
+        "off" => Ok(Modifier::Off),
+        "random" => Ok(Modifier::Random),
+        "mirror" => Ok(Modifier::Mirror),
+        _ => Err("modifier must be one of: off, random, mirror".into()),
+    }
+}
+
+fn modifier_seed() -> u64 {
+    crate::random_seed::from_env_or_random("TAPLINE_MODIFIER_SEED")
+}
+
 fn default_songs_dir() -> Option<PathBuf> {
     if let Some(v) = std::env::var_os("TAPLINE_SONGS_DIR") {
         let p = PathBuf::from(v);
@@ -260,6 +275,7 @@ mod tests {
         assert!(!a.synth);
         assert!(!a.auto_ks);
         assert_eq!(a.audio_lead_ms, 0.0);
+        assert_eq!(a.modifier, crate::chart::Modifier::Off);
     }
 
     #[test]
@@ -293,6 +309,8 @@ mod tests {
             "--auto-ks",
             "--audio-lead-ms",
             "80",
+            "--modifier",
+            "random",
         ]);
         assert_eq!(a.file.as_deref(), Some(Path::new("song.bms")));
         assert_eq!(a.dir.as_deref(), Some(Path::new("/tmp/songs")));
@@ -304,6 +322,30 @@ mod tests {
         assert!(a.synth);
         assert!(a.auto_ks);
         assert_eq!(a.audio_lead_ms, 80.0);
+        assert_eq!(a.modifier, crate::chart::Modifier::Random);
+    }
+
+    #[test]
+    fn args_parse_modifier_variants_case_insensitively() {
+        for (value, expected) in [
+            ("off", crate::chart::Modifier::Off),
+            ("RANDOM", crate::chart::Modifier::Random),
+            ("Mirror", crate::chart::Modifier::Mirror),
+        ] {
+            let a = Args::try_parse_from(["tapline", "--modifier", value]).unwrap();
+            assert_eq!(a.modifier, expected);
+        }
+        assert!(Args::try_parse_from(["tapline", "--modifier", "reverse"]).is_err());
+    }
+
+    #[test]
+    fn load_chart_applies_the_requested_modifier() {
+        let unmodified = crate::chart::built_in(120.0, 2000.0);
+        let mut args = base_args();
+        args.modifier = crate::chart::Modifier::Mirror;
+        let chart = load_chart(&ChartChoice::BuiltIn, &args).unwrap().unwrap();
+        assert_eq!(chart.modifier, crate::chart::Modifier::Mirror);
+        assert_eq!(chart.notes[0].lane, 3 - unmodified.notes[0].lane);
     }
 
     #[test]

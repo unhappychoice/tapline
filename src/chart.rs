@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod layout;
-pub use layout::{Lane, LaneRole, Player};
+pub use layout::{Lane, LaneRole, Modifier, Player};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Note {
@@ -151,6 +151,8 @@ pub struct Chart {
     pub lane_count: usize,
     pub keys: Vec<Vec<char>>,
     pub lanes: Vec<Lane>,
+    /// The play modifier applied to this chart's key-lane layout, if any.
+    pub modifier: Modifier,
     pub sample_settings: std::collections::HashMap<u32, crate::sample_settings::SampleSettings>,
     pub sound_layers: std::collections::HashMap<u32, Vec<u32>>,
     pub sample_slices: std::collections::HashMap<u32, SampleSlice>,
@@ -238,6 +240,7 @@ impl Default for Chart {
             lane_count: 4,
             keys: keys_for(4),
             lanes: Lane::ordinary(4),
+            modifier: Modifier::Off,
             sample_settings: Default::default(),
             sound_layers: std::collections::HashMap::new(),
             sample_slices: std::collections::HashMap::new(),
@@ -251,6 +254,21 @@ impl Chart {
     /// Display distance in normal-speed milliseconds; judgment stays time-based.
     pub fn scroll_distance(&self, time_ms: f64, now_ms: f64) -> f64 {
         crate::scroll::distance(self, time_ms, now_ms)
+    }
+
+    /// Applies a RANDOM/MIRROR key-lane permutation, remapping every note,
+    /// invisible note, and mine to its new lane. Lane roles, bindings, and
+    /// keysounds are unaffected; only which lane each note lands in changes.
+    pub fn apply_modifier(&mut self, modifier: Modifier, seed: u64) {
+        self.modifier = modifier;
+        if modifier == Modifier::Off {
+            return;
+        }
+        let perm = Lane::permutation(&self.lanes, modifier, seed);
+        let remap = |lane: &mut usize| *lane = perm.get(*lane).copied().unwrap_or(*lane);
+        self.notes.iter_mut().for_each(|note| remap(&mut note.lane));
+        self.invisible_notes.iter_mut().for_each(|note| remap(&mut note.lane));
+        self.mines.iter_mut().for_each(|mine| remap(&mut mine.lane));
     }
 }
 
@@ -598,6 +616,39 @@ mod tests {
             slow_last,
             fast_last
         );
+    }
+
+    #[test]
+    fn apply_modifier_off_leaves_notes_lanes_and_tag_unchanged() {
+        let mut chart = built_in(120.0, 0.0);
+        let original: Vec<usize> = chart.notes.iter().map(|n| n.lane).collect();
+        chart.apply_modifier(Modifier::Off, 1);
+        assert_eq!(chart.modifier, Modifier::Off);
+        assert_eq!(
+            chart.notes.iter().map(|n| n.lane).collect::<Vec<_>>(),
+            original
+        );
+    }
+
+    #[test]
+    fn apply_modifier_mirror_remaps_notes_invisible_notes_and_mines() {
+        let mut chart = built_in(120.0, 0.0);
+        chart.mines.push(Mine {
+            time_ms: 0.0,
+            lane: 0,
+            damage: 1,
+            exploded: false,
+        });
+        chart.invisible_notes.push(InvisibleNote {
+            time_ms: 0.0,
+            lane: 1,
+            keysound: 1,
+        });
+        chart.apply_modifier(Modifier::Mirror, 0);
+        assert_eq!(chart.modifier, Modifier::Mirror);
+        assert!(chart.notes.iter().all(|n| n.lane < 4));
+        assert_eq!(chart.mines[0].lane, 3);
+        assert_eq!(chart.invisible_notes[0].lane, 2);
     }
 
     #[test]

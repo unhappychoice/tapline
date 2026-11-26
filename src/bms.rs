@@ -1,8 +1,8 @@
 mod bga_extensions;
 use crate::assets::AssetIndex;
 use crate::chart::{
-    BgaEvent, BgaLayer, BgmEvent, Chart, ExRankEvent, InvisibleNote, Lane, LnMode, Mine, Note,
-    ScrollEvent, TextEvent, VolumeEvent, VolumeTarget,
+    BgaEvent, BgaLayer, BgmEvent, Chart, ExRankEvent, InvisibleNote, Lane, LnMode, Mine, Modifier,
+    Note, ScrollEvent, TextEvent, VolumeEvent, VolumeTarget,
 };
 use anyhow::{ensure, Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -366,6 +366,7 @@ fn build_chart(
         lane_count,
         keys: Lane::bindings(&lanes),
         lanes,
+        modifier: Modifier::Off,
         wav_paths,
         wav_fallbacks: HashMap::new(),
         sample_settings: pass.sample_settings,
@@ -1690,15 +1691,7 @@ impl LaneSet {
 }
 
 pub(crate) fn random_seed() -> u64 {
-    std::env::var("TAPLINE_RANDOM_SEED")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or_else(|| {
-            use std::hash::{BuildHasher, Hasher};
-            std::collections::hash_map::RandomState::new()
-                .build_hasher()
-                .finish()
-        })
+    crate::random_seed::from_env_or_random("TAPLINE_RANDOM_SEED")
 }
 
 const RNG_OFFSET: u64 = 0x9E3779B97F4A7C15;

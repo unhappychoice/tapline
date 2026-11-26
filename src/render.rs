@@ -1,4 +1,4 @@
-use crate::chart::{difficulty_label, BgaLayer, TextEvent};
+use crate::chart::{difficulty_label, BgaLayer, Modifier, TextEvent};
 use crate::game::{Game, Judgment};
 use crossterm::{
     cursor, queue,
@@ -418,6 +418,11 @@ fn format_difficulty_badge(game: &Game) -> String {
     }
     parts.push(bpm);
     parts.push(format!("{}K", game.chart().lane_count));
+    match game.chart().modifier {
+        Modifier::Off => {}
+        Modifier::Random => parts.push("RANDOM".into()),
+        Modifier::Mirror => parts.push("MIRROR".into()),
+    }
     if !game.chart().genre.is_empty() {
         parts.push(crate::terminal_text::sanitize(&game.chart().genre));
     }
@@ -2339,6 +2344,29 @@ mod tests {
         chart.bpm = 200.0;
         let g = Game::new(chart);
         assert_eq!(format_difficulty_badge(&g), "BPM 200  ·  7K");
+    }
+
+    #[test]
+    fn format_difficulty_badge_surfaces_the_active_modifier() {
+        let mut chart = base_chart(4);
+        chart.difficulty = None;
+        chart.playlevel = None;
+        chart.apply_modifier(Modifier::Random, 0);
+        let g = Game::new(chart);
+        assert_eq!(format_difficulty_badge(&g), "BPM 140  ·  4K  ·  RANDOM");
+
+        let mut chart = base_chart(4);
+        chart.difficulty = None;
+        chart.playlevel = None;
+        chart.apply_modifier(Modifier::Mirror, 0);
+        let g = Game::new(chart);
+        assert_eq!(format_difficulty_badge(&g), "BPM 140  ·  4K  ·  MIRROR");
+    }
+
+    #[test]
+    fn format_difficulty_badge_omits_the_modifier_when_off() {
+        let chart = base_chart(4);
+        assert!(!format_difficulty_badge(&Game::new(chart)).contains("RANDOM"));
     }
 
     #[test]
