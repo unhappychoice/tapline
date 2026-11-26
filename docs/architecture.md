@@ -8,11 +8,13 @@ rendering modules. Start with [the entry point](https://github.com/unhappychoice
 ## From startup to results
 
 1. `main.rs` parses and validates `cli::Args` before entering terminal raw mode.
-   `--test-tone` takes a separate audio diagnostic path.
+   `--test-tone` takes a separate audio diagnostic path. It also loads the
+   optional `--keymap` file with `keymap::Keymap::load`.
 2. `cli::choose_chart_with_selector` chooses the built-in chart, a file, or a
    chart from `select.rs`. The session retains `SelectorState` between plays.
 3. `cli::load_session` reads the chart bytes, creates a results identity, and
    calls the BMS or bmson loader. Both produce the shared `chart::Chart` model.
+   `Keymap::apply` then overrides the chart's key bindings for its lane layout.
 4. The session uses `runtime::ChartPlayback` to keep audio and artwork for the
    loaded chart across attempts. The public `runtime::play_loaded_attempt` API
    takes a `ChartAudio` and uses its chart for gameplay and playback duration.
@@ -31,6 +33,7 @@ cleanup.
 | Area | Files | Responsibility |
 | ---- | ----- | -------------- |
 | Options and loading | [cli.rs](https://github.com/unhappychoice/tapline/blob/main/src/cli.rs) | CLI validation, song-directory defaults, chart choice, and session loading |
+| Gameplay keys | [keymap.rs](https://github.com/unhappychoice/tapline/blob/main/src/keymap.rs) | Parses `--keymap` JSON overrides and applies them to a loaded chart's lane bindings |
 | Selection | [select.rs](https://github.com/unhappychoice/tapline/blob/main/src/select.rs), [preview.rs](https://github.com/unhappychoice/tapline/blob/main/src/preview.rs) | Recursive discovery, search and lane filters, progress display, and preview audio |
 | Chart formats | [bms.rs](https://github.com/unhappychoice/tapline/blob/main/src/bms.rs), [bmson/](https://github.com/unhappychoice/tapline/blob/main/src/bmson/mod.rs) | Format-specific metadata, timing, lanes, and events |
 | Shared chart model | [chart.rs](https://github.com/unhappychoice/tapline/blob/main/src/chart.rs) | Notes, background events, sample references, key layouts, and the built-in chart |
@@ -62,6 +65,8 @@ terminal half blocks; video decoding uses an external `ffmpeg` process.
 - For a CLI option, start in `cli.rs`, then follow its use in `main.rs` or
   `runtime.rs`. CLI integration checks are in [cli_smoke.rs](https://github.com/unhappychoice/tapline/blob/main/tests/cli_smoke.rs)
   and [stderr_errors.rs](https://github.com/unhappychoice/tapline/blob/main/tests/stderr_errors.rs).
+- For custom key bindings, start in `keymap.rs`; `Keymap::apply` runs after a
+  chart loads and before gameplay begins.
 - For chart support, start in the relevant parser and `chart.rs`. Parser tests
   live alongside the modules and in [tests/](https://github.com/unhappychoice/tapline/tree/main/tests); reusable chart inputs are
   in [tests/fixtures/](https://github.com/unhappychoice/tapline/tree/main/tests/fixtures).

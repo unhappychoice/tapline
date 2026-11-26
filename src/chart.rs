@@ -315,6 +315,24 @@ pub fn keys_for(lane_count: usize) -> Vec<Vec<char>> {
     raw.iter().map(|ks| ks.to_vec()).collect()
 }
 
+/// Beat length of each section in the built-in practice chart, in order.
+/// Chart generation and CLI startup validation both derive their section
+/// timing from this definition, so adding or resizing a section updates the
+/// validated duration along with the notes it places.
+pub const PRACTICE_SECTION_BEATS: &[f64] = &[16.0, 16.0, 16.0, 16.0];
+
+/// Silence appended after the final chord, in milliseconds.
+pub const PRACTICE_ENDING_MS: f64 = 2000.0;
+
+/// Total built-in chart duration, including the ending silence.
+pub fn built_in_duration(bpm: f64, lead_in_ms: f64) -> f64 {
+    let beat = 60_000.0 / bpm;
+    PRACTICE_SECTION_BEATS
+        .iter()
+        .fold(lead_in_ms, |time, beats| time + beats * beat)
+        + PRACTICE_ENDING_MS
+}
+
 pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
     let beat = 60_000.0 / bpm;
     let mut notes: Vec<Note> = Vec::new();
@@ -333,7 +351,13 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
     };
 
     let mut t = lead_in_ms;
-    let sec = 16.0 * beat;
+    let mut section_beats = PRACTICE_SECTION_BEATS.iter();
+    let mut advance = |t: &mut f64| {
+        let beats = section_beats
+            .next()
+            .expect("built-in chart needs a section length per section");
+        *t += beats * beat;
+    };
 
     let easy: Vec<(f64, usize)> = (0..16)
         .map(|i| {
@@ -349,7 +373,7 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
         })
         .collect();
     section(t, &easy, &mut notes);
-    t += sec;
+    advance(&mut t);
 
     let mid: Vec<(f64, usize)> = (0..32)
         .map(|i| {
@@ -365,7 +389,7 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
         })
         .collect();
     section(t, &mid, &mut notes);
-    t += sec;
+    advance(&mut t);
 
     let syncopated: Vec<(f64, usize)> = (0..16)
         .flat_map(|i| {
@@ -384,7 +408,7 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
         })
         .collect();
     section(t, &syncopated, &mut notes);
-    t += sec;
+    advance(&mut t);
 
     let finale: Vec<(f64, usize)> = (0..32)
         .flat_map(|i| {
@@ -393,7 +417,7 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
         })
         .collect();
     section(t, &finale, &mut notes);
-    t += sec;
+    advance(&mut t);
 
     for lane in 0..4 {
         notes.push(Note {
@@ -407,7 +431,7 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
     }
 
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
-    let duration_ms = t + 2000.0;
+    let duration_ms = t + PRACTICE_ENDING_MS;
     Chart {
         title: "Built-in Practice".into(),
         artist: "tapline".into(),
@@ -423,6 +447,16 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn built_in_duration_matches_the_generated_chart_duration() {
+        for bpm in [60.0, 120.0, 180.0, 333.0] {
+            for lead_in_ms in [0.0, 500.0, 2000.0] {
+                let chart = built_in(bpm, lead_in_ms);
+                assert_eq!(built_in_duration(bpm, lead_in_ms), chart.duration_ms);
+            }
+        }
+    }
 
     #[test]
     fn scroll_integrates_changes_and_speed_scales_current_spacing() {

@@ -48,7 +48,7 @@ fn game_with_chart(configure: impl FnOnce(&mut Chart)) -> (Game, ImageBank) {
         .into(),
         HashMap::new(),
         RefCell::default(),
-        timeline::Timeline::new(&game.chart().bga),
+        timeline::Timeline::<timeline::Event>::new(&game.chart().bga),
         effect_timeline::Timeline::new(&game.chart().bga_extensions),
         RefCell::default(),
     );

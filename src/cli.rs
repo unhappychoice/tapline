@@ -65,7 +65,7 @@ pub struct Args {
 impl Args {
     /// Reject combined timing values that would overflow the built-in chart duration.
     pub fn validate(&self) -> Result<(), clap::Error> {
-        if built_in_duration(self.bpm, self.countdown_ms).is_finite() {
+        if crate::chart::built_in_duration(self.bpm, self.countdown_ms).is_finite() {
             Ok(())
         } else {
             Err(clap::Error::raw(
@@ -179,7 +179,7 @@ pub fn load_chart(choice: &ChartChoice, args: &Args) -> Result<Option<crate::cha
 /// Parse a positive, finite BPM that keeps the built-in chart duration finite.
 fn parse_bpm(value: &str) -> Result<f64, String> {
     let bpm = value.parse::<f64>().map_err(|err| err.to_string())?;
-    if bpm.is_finite() && bpm > 0.0 && built_in_duration(bpm, 0.0).is_finite() {
+    if bpm.is_finite() && bpm > 0.0 && crate::chart::built_in_duration(bpm, 0.0).is_finite() {
         Ok(bpm)
     } else {
         Err(
@@ -187,11 +187,6 @@ fn parse_bpm(value: &str) -> Result<f64, String> {
                 .into(),
         )
     }
-}
-
-fn built_in_duration(bpm: f64, countdown_ms: f64) -> f64 {
-    let section = 16.0 * (60_000.0 / bpm);
-    (0..4).fold(countdown_ms, |time, _| time + section) + 2000.0
 }
 
 /// Parse a finite countdown, allowing zero to start without a delay.
@@ -223,7 +218,7 @@ fn parse_audio_lead(value: &str) -> Result<f64, String> {
 }
 
 fn default_songs_dir() -> Option<PathBuf> {
-    if let Ok(v) = std::env::var("TAPLINE_SONGS_DIR") {
+    if let Some(v) = std::env::var_os("TAPLINE_SONGS_DIR") {
         let p = PathBuf::from(v);
         if p.is_dir() {
             return Some(p);
@@ -317,6 +312,33 @@ mod tests {
         assert_eq!(a.bpm, 180.0);
         assert_eq!(a.file.as_deref(), Some(Path::new("song.bms")));
         assert_eq!(a.dir.as_deref(), Some(Path::new("/x")));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    // macOS filesystems (APFS/HFS+) reject invalid UTF-8 byte sequences in
+    // filenames, unlike Linux, which allows arbitrary bytes.
+    fn dir_flag_scans_a_non_utf8_directory_name() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let parent = tempdir();
+        let mut name = b"songs-".to_vec();
+        name.push(0xFF);
+        let dir = parent.join(std::ffi::OsString::from_vec(name));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(
+            dir.join("song.bms"),
+            "#TITLE Non-UTF-8 Song\n#BPM 120\n#00111:01\n",
+        )
+        .unwrap();
+
+        let args = Args::parse_from([
+            std::ffi::OsString::from("tapline"),
+            std::ffi::OsString::from("--dir"),
+            dir.clone().into_os_string(),
+        ]);
+        assert_eq!(args.dir.as_deref(), Some(dir.as_path()));
+        assert_eq!(select::SelectorState::default().scan(&dir).len(), 1);
     }
 
     /// Check fractional BPM and countdown boundaries, including signed zero.
@@ -471,6 +493,51 @@ mod tests {
         std::env::set_current_dir(&isolated).unwrap();
         let out = default_songs_dir();
         assert_eq!(out.as_deref(), Some(dir.as_path()));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    // macOS filesystems (APFS/HFS+) reject invalid UTF-8 byte sequences in
+    // filenames, unlike Linux, which allows arbitrary bytes.
+    fn default_songs_dir_env_var_accepts_non_utf8_directory_names() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _snapshot = EnvSnapshot::capture();
+        let parent = tempdir();
+        let mut name = b"songs-".to_vec();
+        name.push(0xFF);
+        let dir = parent.join(std::ffi::OsString::from_vec(name));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(
+            dir.join("song.bms"),
+            "#TITLE Non-UTF-8 Song\n#BPM 120\n#00111:01\n",
+        )
+        .unwrap();
+
+        std::env::set_var("TAPLINE_SONGS_DIR", &dir);
+        let isolated = tempdir();
+        std::env::set_current_dir(&isolated).unwrap();
+
+        assert_eq!(default_songs_dir().as_deref(), Some(dir.as_path()));
+        assert_eq!(select::SelectorState::default().scan(&dir).len(), 1);
+    }
+
+    #[test]
+    fn default_songs_dir_env_var_is_ignored_when_pointing_at_a_regular_file() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _snapshot = EnvSnapshot::capture();
+        let file = tempdir().join("not-a-directory");
+        std::fs::write(&file, "placeholder").unwrap();
+        std::env::set_var("TAPLINE_SONGS_DIR", &file);
+        let isolated = tempdir();
+        std::env::set_current_dir(&isolated).unwrap();
+        std::env::remove_var("HOME");
+        std::env::remove_var("USERPROFILE");
+        assert!(
+            default_songs_dir().is_none(),
+            "env var pointing at a regular file should not survive"
+        );
     }
 
     #[test]

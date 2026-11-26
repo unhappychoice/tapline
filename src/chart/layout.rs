@@ -100,3 +100,6 @@ impl Lane {
 fn single_keys(keys: &str) -> Vec<Vec<char>> {
     keys.chars().map(|key| vec![key]).collect()
 }
+
+#[cfg(test)]
+mod tests;
