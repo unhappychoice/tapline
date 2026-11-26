@@ -353,7 +353,10 @@ mod tests {
             if worker.take_video().is_some() {
                 break;
             }
-            assert!(Instant::now() < deadline, "worker stuck after a failed open");
+            assert!(
+                Instant::now() < deadline,
+                "worker stuck after a failed open"
+            );
             std::thread::sleep(Duration::from_millis(1));
         }
     }
