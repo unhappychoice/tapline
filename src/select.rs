@@ -701,9 +701,11 @@ mod tests {
         let mut game = crate::game::Game::new(crate::chart::built_in(120.0, 0.0));
         game.completed = true;
         game.score = 100;
-        assert!(crate::results::update_cached(store, &path, &chart.identity, &game, false)
-            .unwrap()
-            .is_none());
+        assert!(
+            crate::results::update_cached(store, &path, &chart.identity, &game, false)
+                .unwrap()
+                .is_none()
+        );
         let best_score = state
             .records_mut()
             .unwrap()

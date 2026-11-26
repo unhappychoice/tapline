@@ -130,9 +130,11 @@ fn update_cached_merges_into_the_given_store_without_rereading_the_file() {
     // Corrupt the on-disk file to prove update_cached never reads it back.
     std::fs::write(&path, "broken").unwrap();
     let mut store = Store::default();
-    assert!(update_cached(&mut store, &path, &id, &game(100, 2, 2, 1), false)
-        .unwrap()
-        .is_none());
+    assert!(
+        update_cached(&mut store, &path, &id, &game(100, 2, 2, 1), false)
+            .unwrap()
+            .is_none()
+    );
     let first = store.get(&id).unwrap().clone();
     let second = game(200, 3, 3, 1);
     assert_eq!(
@@ -140,7 +142,10 @@ fn update_cached_merges_into_the_given_store_without_rereading_the_file() {
         Some(first)
     );
     assert_eq!(store.get(&id).unwrap().best.score, 200);
-    assert_eq!(Store::load(&path).unwrap().get(&id).unwrap().best.score, 200);
+    assert_eq!(
+        Store::load(&path).unwrap().get(&id).unwrap().best.score,
+        200
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }
 
