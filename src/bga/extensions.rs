@@ -85,12 +85,17 @@ impl SwitchPlayback {
         let events = &self.events;
         #[cfg(test)]
         let comparisons = &mut self.comparisons;
-        let Some(index) = crate::search::latest_at_or_before(events, now, |&(time, _)| time, || {
-            #[cfg(test)]
-            {
-                *comparisons += 1;
-            }
-        }) else {
+        let Some(index) = crate::search::latest_at_or_before(
+            events,
+            now,
+            |&(time, _)| time,
+            || {
+                #[cfg(test)]
+                {
+                    *comparisons += 1;
+                }
+            },
+        ) else {
             return;
         };
         let id = self.events[index].1;

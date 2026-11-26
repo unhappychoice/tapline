@@ -36,10 +36,15 @@ impl PlaybackVolume {
         };
         #[cfg(test)]
         self.visits.set(0);
-        let index = crate::search::latest_at_or_before(events, time_ms, |event| event.time_ms, || {
-            #[cfg(test)]
-            self.visits.set(self.visits.get() + 1);
-        });
+        let index = crate::search::latest_at_or_before(
+            events,
+            time_ms,
+            |event| event.time_ms,
+            || {
+                #[cfg(test)]
+                self.visits.set(self.visits.get() + 1);
+            },
+        );
         let volume = index.map_or(255, |i| events[i].volume);
         let gain = self.master * volume as f32 / 255.0;
         #[cfg(test)]
