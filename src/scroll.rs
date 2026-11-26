@@ -96,6 +96,13 @@ impl ScrollFrame<'_> {
     }
 }
 
+/// Chart loaders call this before accepting scroll events: integrating a finite
+/// multiplier against an already-huge coordinate can still overflow to infinity,
+/// after which no later reset can recover a usable position.
+pub(crate) fn coordinates_are_finite(events: &[ScrollEvent]) -> bool {
+    integrate(events.iter()).all(|segment| segment.coordinate.is_finite())
+}
+
 pub(crate) fn distance(chart: &Chart, time: f64, now: f64) -> f64 {
     let coordinate = |time| {
         integrate(
@@ -258,6 +265,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn coordinates_are_finite_detects_overflow_from_a_finite_multiplier() {
+        let events = vec![
+            ScrollEvent {
+                time_ms: 0.0,
+                multiplier: 1e308,
+            },
+            ScrollEvent {
+                time_ms: 2000.0,
+                multiplier: 1.0,
+            },
+        ];
+        assert!(!coordinates_are_finite(&events));
+    }
+
+    #[test]
+    fn coordinates_are_finite_accepts_ordinary_rates() {
+        let events = vec![
+            ScrollEvent {
+                time_ms: 0.0,
+                multiplier: 2.0,
+            },
+            ScrollEvent {
+                time_ms: 1000.0,
+                multiplier: -1.0,
+            },
+        ];
+        assert!(coordinates_are_finite(&events));
     }
 
     #[test]
