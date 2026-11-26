@@ -305,9 +305,10 @@ impl SampleBank {
                     HitSound::Sample(id) => Some(id),
                     _ => None,
                 };
-                let fallback_end = chart
-                    .duration_ms
-                    .max(time + f64::from(HIT_SYNTH_DURATION_MS) + 32.0);
+                // A sound that cannot actually start (missing BGM sample, silent
+                // automatic keysound) must not extend playback by its shifted
+                // schedule time; fall back to the chart's own duration estimate.
+                let fallback_end = chart.duration_ms;
                 id.and_then(|id| {
                     self.sound_ids(&id)
                         .iter()
@@ -1373,6 +1374,56 @@ mod tests {
         assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 30000.0);
         Arc::make_mut(&mut bank.data).samples.clear();
         assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 30000.0);
+    }
+
+    #[test]
+    fn missing_bgm_and_silent_auto_keysound_do_not_extend_past_ordinary_deadline() {
+        let large_negative_lead = -60000.0;
+        let chart = crate::chart::Chart {
+            duration_ms: 2500.0,
+            notes: vec![crate::chart::Note {
+                time_ms: 1000.0,
+                ..Default::default()
+            }],
+            bgm: vec![crate::chart::BgmEvent {
+                time_ms: 2000.0,
+                keysound: 2,
+            }],
+            ..Default::default()
+        };
+        let bank = duration_bank_with_length(1000);
+        assert!(!bank.data.samples.contains_key(&2));
+        // Without the fix this would be 2000 - (-60000) + 1032 == 63032.
+        assert_eq!(
+            bank.chart_duration_ms(&chart, false, false, large_negative_lead),
+            2500.0
+        );
+        // A silent automatic keysound (no decoded sample, synth fallback
+        // disabled) must not extend playback either.
+        let mut auto_chart = chart.clone();
+        auto_chart.notes[0].keysound = Some(2);
+        auto_chart.bgm.clear();
+        assert_eq!(
+            bank.chart_duration_ms(&auto_chart, true, false, large_negative_lead),
+            2500.0
+        );
+        // Delayed sounds that can actually start still extend playback.
+        let mut playable_chart = crate::chart::Chart {
+            duration_ms: 2500.0,
+            bgm: vec![crate::chart::BgmEvent {
+                time_ms: 2000.0,
+                keysound: 1,
+            }],
+            ..Default::default()
+        };
+        let lead = -5000.0;
+        let start = (2000.0_f64 - lead).max(0.0);
+        let expected = start + 1032.0;
+        playable_chart.duration_ms = bank.chart_duration_ms(&playable_chart, false, false, lead);
+        assert_eq!(playable_chart.duration_ms, expected);
+        let mut game = crate::game::Game::new(playable_chart);
+        assert!(!game.advance_completion(expected - 1.0));
+        assert!(game.advance_completion(expected));
     }
 
     #[test]

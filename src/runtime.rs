@@ -2268,6 +2268,53 @@ mod result_tests {
     }
 
     #[test]
+    fn contended_save_displays_unsaved_result_and_accepts_dismissal() {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+        use std::{sync::mpsc, thread, time::Duration};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("results.json");
+        let original = br#"{"records":{}}"#;
+        std::fs::write(&path, original).unwrap();
+        let lock = std::fs::File::create(path.with_added_extension("lock")).unwrap();
+        lock.lock().unwrap();
+
+        let (sender, receiver) = mpsc::channel();
+        let worker_path = path.clone();
+        let worker = thread::spawn(move || {
+            let mut game = game::Game::new(chart::built_in(120.0, 0.0));
+            game.completed = true;
+            let id = crate::results::Identity::built_in(120.0);
+            let status = persist_result(&worker_path, &id, &game, false);
+            let mut frame = Vec::new();
+            let action = wait_for_result_action(
+                (80, 24),
+                || Ok(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))),
+                |cols, rows| {
+                    render::draw_result_content(
+                        &mut frame,
+                        &game,
+                        cols,
+                        rows,
+                        &status,
+                        ResultDestination::Selector,
+                    )
+                },
+            )
+            .unwrap();
+            sender.send((action, frame)).unwrap();
+        });
+        let result = receiver.recv_timeout(Duration::from_secs(5));
+        drop(lock);
+        worker.join().unwrap();
+
+        let (action, frame) = result.expect("result screen should respond while the lock is held");
+        assert_eq!(action, ResultAction::Dismiss);
+        assert!(String::from_utf8(frame).unwrap().contains("result unsaved"));
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
     fn storage_failures_are_non_fatal_and_corrupt_records_are_preserved() {
         let dir =
             std::env::temp_dir().join(format!("tapline-runtime-results-{}", std::process::id()));
