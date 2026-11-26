@@ -603,8 +603,7 @@ mod tests {
     #[test]
     fn rejects_images_whose_declared_dimensions_exceed_the_decode_limit() {
         reset_cache();
-        let dir =
-            std::env::temp_dir().join(format!("tapline-artwork-bomb-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tapline-artwork-bomb-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("cover.png");
         std::fs::write(&path, crate::image_limits::oversized_png_bytes()).unwrap();

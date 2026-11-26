@@ -30,10 +30,8 @@ mod limit_tests {
 
     #[test]
     fn rejects_images_whose_declared_dimensions_exceed_the_decode_limit() {
-        let path = std::env::temp_dir().join(format!(
-            "tapline-bga-image-bomb-{}.png",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("tapline-bga-image-bomb-{}.png", std::process::id()));
         std::fs::write(&path, crate::image_limits::oversized_png_bytes()).unwrap();
         assert!(load(&path).is_none());
         std::fs::remove_file(&path).unwrap();
