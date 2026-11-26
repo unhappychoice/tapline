@@ -267,7 +267,9 @@ impl Chart {
         let perm = Lane::permutation(&self.lanes, modifier, seed);
         let remap = |lane: &mut usize| *lane = perm.get(*lane).copied().unwrap_or(*lane);
         self.notes.iter_mut().for_each(|note| remap(&mut note.lane));
-        self.invisible_notes.iter_mut().for_each(|note| remap(&mut note.lane));
+        self.invisible_notes
+            .iter_mut()
+            .for_each(|note| remap(&mut note.lane));
         self.mines.iter_mut().for_each(|mine| remap(&mut mine.lane));
     }
 }

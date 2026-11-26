@@ -15,13 +15,7 @@ fn game(score: u32, combo: u32, perfect: u32, miss: u32) -> Game {
     game_with_modifier(score, combo, perfect, miss, Modifier::Off)
 }
 
-fn game_with_modifier(
-    score: u32,
-    combo: u32,
-    perfect: u32,
-    miss: u32,
-    modifier: Modifier,
-) -> Game {
+fn game_with_modifier(score: u32, combo: u32, perfect: u32, miss: u32, modifier: Modifier) -> Game {
     let mut chart = crate::chart::built_in(120.0, 0.0);
     chart.apply_modifier(modifier, 0);
     let mut game = Game::new(chart);
