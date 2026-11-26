@@ -79,7 +79,7 @@ impl ImageBank {
                 .map(|(id, path)| (*id, path.clone()))
                 .collect(),
             RefCell::default(),
-            timeline::Timeline::new(events),
+            timeline::Timeline::<timeline::Event>::new(events),
             effect_timeline::Timeline::new(extensions),
             RefCell::default(),
         )
