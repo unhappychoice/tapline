@@ -7,7 +7,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 const LOCK_WAIT_LIMIT: Duration = Duration::from_millis(500);
@@ -76,6 +76,13 @@ pub struct Record {
 #[derive(Default, Serialize, Deserialize)]
 pub struct Store {
     records: BTreeMap<String, Record>,
+    /// The results file's mtime as of the last [`Store::load`], or the mtime
+    /// this `Store` itself wrote via [`update_cached`]. `None` means the file
+    /// was missing (or this `Store` was never backed by disk at all, as with
+    /// `Store::default()`). Lets `update_cached` detect a concurrent writer
+    /// without reparsing the whole file on every completed attempt.
+    #[serde(skip)]
+    loaded_mtime: Option<SystemTime>,
 }
 
 #[derive(Debug)]
@@ -109,7 +116,10 @@ pub fn update(
 
 /// Like [`update`], but merges into a `Store` the caller already has loaded
 /// (e.g. the one the selector read to show progress) instead of rereading
-/// and reparsing the whole file just to change one entry.
+/// and reparsing the whole file just to change one entry, as long as nothing
+/// else has written to the file since. Falls back to a fresh [`Store::load`]
+/// under the lock when the file's mtime has moved on, so a concurrent writer
+/// (another tapline process) cannot be silently overwritten.
 pub fn update_cached(
     store: &mut Store,
     path: &Path,
@@ -121,12 +131,21 @@ pub fn update_cached(
         return Ok(store.get(identity).cloned());
     }
     let _lock = lock_results(path).map_err(|_| UpdateError::Lock)?;
+    if mtime(path) != store.loaded_mtime {
+        *store = Store::load(path).map_err(|_| UpdateError::Read)?;
+    }
     let previous = store.get(identity).cloned();
     store.record(identity, game, auto_keysound);
     if store.save(path).is_err() {
+        store.restore(identity, previous.clone());
         return Err(UpdateError::Write(previous));
     }
+    store.loaded_mtime = mtime(path);
     Ok(previous)
+}
+
+fn mtime(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).ok()?.modified().ok()
 }
 
 fn lock_results(path: &Path) -> io::Result<File> {
@@ -162,13 +181,30 @@ impl Store {
             }
             Err(error) => return Err(error.into()),
         };
+        let loaded_mtime = file.metadata().ok().and_then(|meta| meta.modified().ok());
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
-        Ok(serde_json::from_slice(&bytes)?)
+        let mut store: Self = serde_json::from_slice(&bytes)?;
+        store.loaded_mtime = loaded_mtime;
+        Ok(store)
     }
 
     pub fn get(&self, identity: &Identity) -> Option<&Record> {
         self.records.get(&identity.key)
+    }
+
+    /// Reverts a merged-in record after a failed save, so a `Store` that is
+    /// retained across attempts (see [`update_cached`]) does not drift away
+    /// from what is actually on disk.
+    fn restore(&mut self, identity: &Identity, previous: Option<Record>) {
+        match previous {
+            Some(record) => {
+                self.records.insert(identity.key.clone(), record);
+            }
+            None => {
+                self.records.remove(&identity.key);
+            }
+        }
     }
 
     pub fn record(&mut self, identity: &Identity, game: &Game, auto_keysound: bool) {

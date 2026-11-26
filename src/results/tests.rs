@@ -123,12 +123,10 @@ fn persistence_round_trip_replaces_file_and_rejects_corrupt_storage() {
 }
 
 #[test]
-fn update_cached_merges_into_the_given_store_without_rereading_the_file() {
+fn update_cached_merges_into_the_given_store_when_nothing_else_touched_the_file() {
     let dir = directory();
     let path = dir.join("results.json");
     let id = Identity::built_in(120.0);
-    // Corrupt the on-disk file to prove update_cached never reads it back.
-    std::fs::write(&path, "broken").unwrap();
     let mut store = Store::default();
     assert!(
         update_cached(&mut store, &path, &id, &game(100, 2, 2, 1), false)
@@ -146,6 +144,77 @@ fn update_cached_merges_into_the_given_store_without_rereading_the_file() {
         Store::load(&path).unwrap().get(&id).unwrap().best.score,
         200
     );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn update_cached_reloads_instead_of_clobbering_a_concurrent_writers_changes() {
+    let dir = directory();
+    let path = dir.join("results.json");
+    let id = Identity::built_in(120.0);
+    let other_id = Identity::built_in(99.0);
+
+    let mut store = Store::default();
+    assert!(
+        update_cached(&mut store, &path, &id, &game(100, 2, 2, 1), false)
+            .unwrap()
+            .is_none()
+    );
+
+    // Another tapline process records a different chart's result in the meantime,
+    // without our cached `store` knowing about it.
+    let mut other_process = Store::load(&path).unwrap();
+    other_process.record(&other_id, &game(500, 5, 5, 0), false);
+    other_process.save(&path).unwrap();
+
+    assert_eq!(
+        update_cached(&mut store, &path, &id, &game(200, 3, 3, 1), true)
+            .unwrap()
+            .map(|record| record.best.score),
+        Some(100)
+    );
+
+    let on_disk = Store::load(&path).unwrap();
+    assert_eq!(on_disk.get(&id).unwrap().best.score, 200);
+    assert_eq!(
+        on_disk.get(&other_id).unwrap().best.score,
+        500,
+        "the concurrent writer's record must survive our save"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn update_cached_restores_the_previous_record_when_the_save_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Root ignores directory write permissions, which would make this guard a no-op.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+
+    let dir = directory();
+    let path = dir.join("results.json");
+    let id = Identity::built_in(120.0);
+    let mut store = Store::default();
+    assert!(
+        update_cached(&mut store, &path, &id, &game(100, 2, 2, 1), false)
+            .unwrap()
+            .is_none()
+    );
+
+    // The results file itself is untouched (same mtime), but the directory can no
+    // longer hold a new temp file, so `Store::save` fails without a reload.
+    let original = std::fs::metadata(&dir).unwrap().permissions();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let result = update_cached(&mut store, &path, &id, &game(200, 3, 3, 1), true);
+    std::fs::set_permissions(&dir, original).unwrap();
+
+    assert!(matches!(result, Err(UpdateError::Write(Some(_)))));
+    // The cached store must still reflect the last persisted result, not the
+    // failed attempt, so a same-session retry is judged against reality.
+    assert_eq!(store.get(&id).unwrap().best.score, 100);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
