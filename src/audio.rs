@@ -206,6 +206,10 @@ pub struct SampleBank {
     /// Draining a bounded number per start amortizes reclamation instead of
     /// rescanning every live handle on each `start_sound` call.
     cleanup_queue: RefCell<VecDeque<u32>>,
+    /// IDs currently present in `cleanup_queue`, so retriggering the same ID
+    /// before its stale entry is drained updates that entry in place instead
+    /// of appending another one (see issue #491).
+    queued_ids: RefCell<HashSet<u32>>,
     pub enabled: bool,
     /// Number of `wav_paths` entries that failed to decode.
     pub decode_failures: usize,
@@ -265,6 +269,7 @@ impl SampleBank {
             data,
             playing: RefCell::new(HashMap::new()),
             cleanup_queue: RefCell::new(VecDeque::new()),
+            queued_ids: RefCell::new(HashSet::new()),
         }
     }
 
@@ -448,13 +453,20 @@ impl SampleBank {
             previous.stop();
         }
         let mut cleanup_queue = self.cleanup_queue.borrow_mut();
-        cleanup_queue.push_back(id);
+        let mut queued_ids = self.queued_ids.borrow_mut();
+        if queued_ids.insert(id) {
+            cleanup_queue.push_back(id);
+        }
         for _ in 0..Self::CLEANUP_BATCH {
             let Some(candidate) = cleanup_queue.pop_front() else {
                 break;
             };
+            queued_ids.remove(&candidate);
             match playing.get(&candidate).map(voice::VoiceHandle::is_live) {
-                Some(true) => cleanup_queue.push_back(candidate),
+                Some(true) => {
+                    queued_ids.insert(candidate);
+                    cleanup_queue.push_back(candidate);
+                }
                 Some(false) => {
                     playing.remove(&candidate);
                 }
@@ -1732,6 +1744,45 @@ mod tests {
         assert_eq!(first.next(), None);
         assert_eq!(second.next(), Some(0.25));
         assert_eq!(bank.playing.borrow().len(), 1);
+    }
+
+    #[test]
+    fn retriggering_a_live_sample_keeps_one_cleanup_queue_entry() {
+        let mut bank = SampleBank::silent();
+        Arc::make_mut(&mut bank.data)
+            .samples
+            .insert(1, sustained_sample());
+
+        let mut previous = bank.start_voice(1, 1.0).unwrap();
+        for _ in 0..10_000 {
+            let current = bank.start_voice(1, 1.0).unwrap();
+            assert_eq!(
+                previous.next(),
+                None,
+                "retriggering should stop the previous voice for the id"
+            );
+            assert!(
+                bank.cleanup_queue.borrow().len() <= 1,
+                "cleanup queue should keep at most one entry for a retriggered id, got {:?}",
+                bank.cleanup_queue.borrow()
+            );
+            previous = current;
+        }
+        assert_eq!(bank.playing.borrow().len(), 1);
+
+        Arc::make_mut(&mut bank.data)
+            .samples
+            .insert(2, DecodedSample::new(1, 44_100, Arc::new(vec![0.5])));
+        drop(bank.start_voice(2, 1.0).unwrap());
+        assert!(bank.playing.borrow().contains_key(&2));
+
+        previous = bank.start_voice(1, 1.0).unwrap();
+        assert!(
+            !bank.playing.borrow().contains_key(&2),
+            "finished handles should still be reclaimed"
+        );
+        assert_eq!(bank.playing.borrow().len(), 1);
+        let _ = previous.next();
     }
 
     #[test]

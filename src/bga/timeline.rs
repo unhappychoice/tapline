@@ -41,12 +41,16 @@ impl<T> Timeline<T> {
 
     pub(super) fn latest(&self, layer: BgaLayer, now_ms: f64) -> Option<&T> {
         let events = &self.layers[slot(layer)];
-        let end = events.partition_point(|(time_ms, _)| {
-            #[cfg(test)]
-            self.comparisons.set(self.comparisons.get() + 1);
-            *time_ms <= now_ms
-        });
-        end.checked_sub(1).map(|index| &events[index].1)
+        let index = crate::search::latest_at_or_before(
+            events,
+            now_ms,
+            |(time_ms, _)| *time_ms,
+            || {
+                #[cfg(test)]
+                self.comparisons.set(self.comparisons.get() + 1);
+            },
+        )?;
+        Some(&events[index].1)
     }
 
     #[cfg(test)]

@@ -98,9 +98,17 @@ impl ScrollFrame<'_> {
 
 /// Chart loaders call this before accepting scroll events: integrating a finite
 /// multiplier against an already-huge coordinate can still overflow to infinity,
-/// after which no later reset can recover a usable position.
-pub(crate) fn coordinates_are_finite(events: &[ScrollEvent]) -> bool {
-    integrate(events.iter()).all(|segment| segment.coordinate.is_finite())
+/// after which no later reset can recover a usable position. `end_time_ms` is the
+/// chart's full playable duration: the last scroll rate stays in effect until then,
+/// so a single extreme rate with no later reset must be checked at that bound too.
+pub(crate) fn coordinates_are_finite(events: &[ScrollEvent], end_time_ms: f64) -> bool {
+    let segments: Vec<_> = integrate(events.iter()).collect();
+    segments
+        .iter()
+        .all(|segment| segment.coordinate.is_finite())
+        && segments
+            .last()
+            .is_none_or(|segment| segment.coordinate_at(end_time_ms).is_finite())
 }
 
 pub(crate) fn distance(chart: &Chart, time: f64, now: f64) -> f64 {
@@ -279,7 +287,16 @@ mod tests {
                 multiplier: 1.0,
             },
         ];
-        assert!(!coordinates_are_finite(&events));
+        assert!(!coordinates_are_finite(&events, 5000.0));
+    }
+
+    #[test]
+    fn coordinates_are_finite_detects_an_unreset_extreme_rate_at_a_later_time() {
+        let events = vec![ScrollEvent {
+            time_ms: 0.0,
+            multiplier: 1e308,
+        }];
+        assert!(!coordinates_are_finite(&events, 2000.0));
     }
 
     #[test]
@@ -294,7 +311,7 @@ mod tests {
                 multiplier: -1.0,
             },
         ];
-        assert!(coordinates_are_finite(&events));
+        assert!(coordinates_are_finite(&events, 5000.0));
     }
 
     #[test]

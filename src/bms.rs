@@ -253,10 +253,6 @@ fn build_chart(
         });
     let scroll = collect_scroll_events(&raw, &timeline, "SC", &pass.scroll_defs, pass.base);
     let speed = collect_scroll_events(&raw, &timeline, "SP", &pass.speed_defs, pass.base);
-    ensure!(
-        crate::scroll::coordinates_are_finite(&scroll),
-        "BMS scroll rate change overflows to a non-finite position"
-    );
     let mut notes = acc.notes;
     let mut invisible_notes = acc.invisible_notes;
     let mut mines = acc.mines;
@@ -311,6 +307,10 @@ fn build_chart(
         .unwrap_or(0);
     let duration_ms = timeline.end_time(max_measure) + 2500.0;
     ensure!(duration_ms.is_finite(), "BMS duration must be finite");
+    ensure!(
+        crate::scroll::coordinates_are_finite(&scroll, duration_ms),
+        "BMS scroll rate change overflows to a non-finite position"
+    );
     let last_event_ms = notes
         .iter()
         .map(|note| note.end_ms.unwrap_or(note.time_ms))
@@ -2359,6 +2359,13 @@ mod tests {
     fn load_rejects_a_finite_scroll_rate_that_overflows_the_accumulated_coordinate() {
         let path = std::path::Path::new("overflow.bms");
         let source = "#BPM 120\n#SCROLL01 1e308\n#SCROLL02 1\n#000SC:01\n#001SC:02\n#00211:0101\n";
+        assert!(load_bytes(path, source.as_bytes(), 0.0, 0).is_err());
+    }
+
+    #[test]
+    fn load_rejects_an_extreme_scroll_rate_left_active_with_no_later_reset() {
+        let path = std::path::Path::new("unreset_overflow.bms");
+        let source = "#BPM 120\n#SCROLL01 1e308\n#000SC:01\n#00111:0101\n";
         assert!(load_bytes(path, source.as_bytes(), 0.0, 0).is_err());
     }
 
