@@ -168,11 +168,7 @@ fn missing_and_invalid_sources_are_attempted_once_and_preserve_existing_images()
         .into();
     let calls = std::sync::Mutex::new(HashMap::new());
     assert!(prepare(&chart, |path| {
-        *calls
-            .lock()
-            .unwrap()
-            .entry(path.to_path_buf())
-            .or_insert(0) += 1;
+        *calls.lock().unwrap().entry(path.to_path_buf()).or_insert(0) += 1;
         image::open(path).ok().map(|image| image.to_rgba8())
     })
     .is_empty());

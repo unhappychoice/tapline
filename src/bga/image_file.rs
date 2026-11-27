@@ -1,16 +1,19 @@
 use crate::fs_guard;
 use image::{DynamicImage, ImageReader};
-use std::{io::BufReader, path::Path};
 #[cfg(test)]
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Mutex, MutexGuard, PoisonError,
 };
+use std::{io::BufReader, path::Path};
 
 #[cfg(test)]
 pub(super) static LOAD_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-// Decoding now runs on rayon's shared worker threads, so tests asserting on LOAD_CALLS must not run concurrently with each other.
+// Decoding now runs on rayon's shared worker threads, so LOAD_CALLS is shared across all
+// concurrently running tests. Every test that triggers a real decode (directly or through
+// Presentation/ChartImages) must hold this lock, not just the ones asserting on LOAD_CALLS,
+// or an unrelated test's decode can skew the count.
 #[cfg(test)]
 pub(super) fn load_calls_test_lock() -> MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
@@ -40,6 +43,7 @@ mod limit_tests {
 
     #[test]
     fn rejects_images_whose_declared_dimensions_exceed_the_decode_limit() {
+        let _lock = load_calls_test_lock();
         let path =
             std::env::temp_dir().join(format!("tapline-bga-image-bomb-{}.png", std::process::id()));
         std::fs::write(&path, crate::image_limits::oversized_png_bytes()).unwrap();
