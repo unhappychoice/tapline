@@ -1,15 +1,25 @@
 use crate::fs_guard;
 use image::{DynamicImage, ImageReader};
 use std::{io::BufReader, path::Path};
+#[cfg(test)]
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Mutex, MutexGuard, PoisonError,
+};
 
 #[cfg(test)]
-thread_local! {
-    pub(super) static LOAD_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+pub(super) static LOAD_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+// Decoding now runs on rayon's shared worker threads, so tests asserting on LOAD_CALLS must not run concurrently with each other.
+#[cfg(test)]
+pub(super) fn load_calls_test_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 pub(super) fn load(path: &Path) -> Option<DynamicImage> {
     #[cfg(test)]
-    LOAD_CALLS.set(LOAD_CALLS.get() + 1);
+    LOAD_CALLS.fetch_add(1, Ordering::SeqCst);
     decode(fs_guard::open(path).ok()?)
 }
 

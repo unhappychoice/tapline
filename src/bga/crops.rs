@@ -1,6 +1,7 @@
 use super::{Crop, SIZE};
 use crate::chart::Chart;
 use image::{imageops, RgbaImage};
+use rayon::prelude::*;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -8,9 +9,8 @@ use std::{
 
 pub(super) fn prepare(
     chart: &Chart,
-    mut load: impl FnMut(&Path) -> Option<RgbaImage>,
+    load: impl Fn(&Path) -> Option<RgbaImage> + Sync,
 ) -> HashMap<u32, RgbaImage> {
-    let mut images = HashMap::new();
     group(
         &chart.bmp_paths,
         chart
@@ -19,17 +19,20 @@ pub(super) fn prepare(
             .iter()
             .map(|(&id, crop)| (id, crop)),
     )
+    .into_par_iter()
+    .filter_map(|(path, crops)| {
+        let source = load(path)?;
+        Some(
+            crops
+                .into_iter()
+                .map(|(id, crop)| (id, render(&source, crop)))
+                .collect::<Vec<_>>(),
+        )
+    })
+    .collect::<Vec<_>>()
     .into_iter()
-    .for_each(|(path, crops)| {
-        if let Some(source) = load(path) {
-            images.extend(
-                crops
-                    .into_iter()
-                    .map(|(id, crop)| (id, render(&source, crop))),
-            );
-        }
-    });
-    images
+    .flatten()
+    .collect()
 }
 
 pub(super) fn group<'a>(

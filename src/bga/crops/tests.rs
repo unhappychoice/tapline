@@ -42,6 +42,7 @@ fn prepares_only_crops_with_two_digit_bms_ids() {
 
 #[test]
 fn presentation_decodes_only_reachable_sources_and_preserves_bitmap_and_crop_pixels() {
+    let _lock = crate::bga::image_file::load_calls_test_lock();
     let dir = std::env::temp_dir().join(format!("tapline-crops-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("sheet.png");
@@ -106,11 +107,11 @@ fn presentation_decodes_only_reachable_sources_and_preserves_bitmap_and_crop_pix
             effect: Effect::Switch(id),
         })
         .into();
-    LOAD_CALLS.set(0);
+    LOAD_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
     let presentation = Presentation::with_cached_images(&mut ChartImages::new(&chart), true);
     std::fs::remove_dir_all(dir).unwrap();
 
-    assert_eq!(LOAD_CALLS.get(), 2);
+    assert_eq!(LOAD_CALLS.load(std::sync::atomic::Ordering::SeqCst), 2);
     let images = &presentation.bank.0;
     assert_eq!(images.len(), 8);
     assert!(!images.contains_key(&4));
@@ -165,13 +166,20 @@ fn missing_and_invalid_sources_are_attempted_once_and_preserve_existing_images()
             )
         })
         .into();
-    let mut calls = HashMap::new();
+    let calls = std::sync::Mutex::new(HashMap::new());
     assert!(prepare(&chart, |path| {
-        *calls.entry(path.to_path_buf()).or_insert(0) += 1;
+        *calls
+            .lock()
+            .unwrap()
+            .entry(path.to_path_buf())
+            .or_insert(0) += 1;
         image::open(path).ok().map(|image| image.to_rgba8())
     })
     .is_empty());
-    assert_eq!(calls, [(path.clone(), 1), (missing, 1)].into());
+    assert_eq!(
+        calls.into_inner().unwrap(),
+        [(path.clone(), 1), (missing, 1)].into()
+    );
     let mut bank = super::super::ImageBank::default();
     let original = RgbaImage::from_pixel(SIZE, SIZE, Rgba([12, 34, 56, 255]));
     Arc::make_mut(&mut bank.0).insert(10, original.clone().into());
