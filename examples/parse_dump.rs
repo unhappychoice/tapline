@@ -12,12 +12,11 @@ fn main() {
             Ok(c) => {
                 ok += 1;
                 println!(
-                    "OK  title={:?} bpm={:.0} lanes={} notes={} p2={} mines={} bgm={} bga={} wavs={}/{} dur={:.0}ms",
+                    "OK  title={:?} bpm={:.0} lanes={} notes={} mines={} bgm={} bga={} wavs={}/{} dur={:.0}ms",
                     c.title,
                     c.bpm,
                     c.lane_count,
                     c.notes.len(),
-                    c.p2_notes.len(),
                     c.mines.len(),
                     c.bgm.len(),
                     c.bga.len(),
