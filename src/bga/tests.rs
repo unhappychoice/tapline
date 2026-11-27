@@ -198,6 +198,7 @@ fn trailing_layer_effects_render_before_completion_with_and_without_audio() {
 
 #[test]
 fn preloaded_images_survive_deleted_files_and_bad_files_are_skipped() {
+    let _lock = image_file::load_calls_test_lock();
     let path = std::env::temp_dir().join(format!("tapline-bga-{}.png", std::process::id()));
     RgbaImage::from_pixel(2, 1, Rgba([255, 0, 0, 255]))
         .save(&path)
@@ -238,6 +239,7 @@ fn preloaded_images_survive_deleted_files_and_bad_files_are_skipped() {
 
 #[test]
 fn bmson_images_are_loaded_and_rendered_through_presentation() {
+    let _lock = image_file::load_calls_test_lock();
     let dir = std::env::temp_dir().join(format!("tapline-bga-bmson-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     RgbaImage::from_pixel(2, 2, Rgba([12, 34, 56, 255]))
@@ -292,6 +294,7 @@ fn bmson_images_are_loaded_and_rendered_through_presentation() {
 
 #[test]
 fn overlay_transparency_follows_chart_format() {
+    let _lock = image_file::load_calls_test_lock();
     let dir = std::env::temp_dir().join(format!("tapline-bga-alpha-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let white = [255, 255, 255, 255];
@@ -367,6 +370,7 @@ fn extended_layers_opacity_and_poor_modes() {
 
 #[test]
 fn trailing_switch_keeps_gameplay_open_and_renders_after_a_key_press() {
+    let _lock = image_file::load_calls_test_lock();
     let dir = std::env::temp_dir().join(format!("tapline-bga-trailing-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let color = [20, 40, 60, 255];
@@ -424,6 +428,7 @@ fn undefined_and_unbound_trailing_switches_do_not_extend_gameplay() {
 
 #[test]
 fn ten_key_double_play_renders_p2_key_bound_animations() {
+    let _lock = image_file::load_calls_test_lock();
     let dir = std::env::temp_dir().join(format!("tapline-bga-dp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let color = [20, 40, 60, 255];
@@ -453,6 +458,7 @@ fn ten_key_double_play_renders_p2_key_bound_animations() {
 
 #[test]
 fn parses_extensions_and_renders_key_bound_animation() {
+    let _lock = image_file::load_calls_test_lock();
     let dir = std::env::temp_dir().join(format!("tapline-bga-ext-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     RgbaImage::from_pixel(256, 256, Rgba([20, 40, 60, 255]))
@@ -575,6 +581,7 @@ fn bms_videos_decode_at_event_time_and_restart_for_repeated_ids() {
         eprintln!("Skipping video integration test: ffmpeg is not installed");
         return;
     }
+    let _lock = image_file::load_calls_test_lock();
     let dir = std::env::temp_dir().join(format!("tapline-video-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let raw = dir.join("frames.rgb");
@@ -883,7 +890,8 @@ pub(super) fn load_bank(chart: &Chart) -> ImageBank {
 
 #[test]
 fn headless_judgments_and_hidden_presentation_never_load_images() {
-    image_file::LOAD_CALLS.set(0);
+    let _lock = image_file::load_calls_test_lock();
+    image_file::LOAD_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
     let mut chart = Chart {
         bmp_paths: [(1, PathBuf::from("missing.png"))].into(),
         bga: [1, 2]
@@ -918,7 +926,10 @@ fn headless_judgments_and_hidden_presentation_never_load_images() {
     game.check_misses(400.0);
     assert!(game.advance_completion(1000.0));
     assert_eq!((game.perfect, game.miss), (1, 1));
-    assert_eq!(image_file::LOAD_CALLS.get(), 0);
+    assert_eq!(
+        image_file::LOAD_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
 
     let mut images = ChartImages::new(game.chart());
     let mut presentation = Presentation::with_cached_images(&mut images, false);
@@ -927,13 +938,16 @@ fn headless_judgments_and_hidden_presentation_never_load_images() {
         assert!(!visible);
         assert_no_deferred_load(&mut presentation, &mut images, visible);
     }
-    assert_eq!(image_file::LOAD_CALLS.get(), 0);
+    assert_eq!(
+        image_file::LOAD_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
 
     let visible = crate::render::bga_panel_visible(65, 24, game.chart().lane_count);
     assert!(visible);
     let mut presentation = Presentation::with_cached_images(&mut images, visible);
     assert_eq!(
-        image_file::LOAD_CALLS.get(),
+        image_file::LOAD_CALLS.load(std::sync::atomic::Ordering::SeqCst),
         1,
         "ordinary image and crop share a load attempt before playback"
     );
@@ -957,6 +971,7 @@ fn assert_no_deferred_load(
 
 #[test]
 fn retries_share_decoded_bitmaps_and_prepared_crops() {
+    let _lock = image_file::load_calls_test_lock();
     let path = std::env::temp_dir().join(format!("tapline-bga-retry-{}.png", std::process::id()));
     let color = [12, 34, 56, 255];
     RgbaImage::from_pixel(256, 256, Rgba(color))
@@ -987,12 +1002,15 @@ fn retries_share_decoded_bitmaps_and_prepared_crops() {
     );
     let game = Game::new(chart);
     let mut images = ChartImages::new(game.chart());
-    image_file::LOAD_CALLS.set(0);
+    image_file::LOAD_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
     let first = Presentation::with_cached_images(&mut images, true);
     std::fs::remove_file(path).unwrap();
     let retry = Presentation::with_cached_images(&mut images, true);
 
-    assert_eq!(image_file::LOAD_CALLS.get(), 1);
+    assert_eq!(
+        image_file::LOAD_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
     assert!(Arc::ptr_eq(&first.bank.0, &retry.bank.0));
     assert_eq!(retry.bank.frame(&game, 0.0).get_pixel(63, 63).0, color);
     let cropped = retry.bank.frame(&game, 100.0);
@@ -1007,6 +1025,7 @@ fn retry_starts_video_and_compositing_fresh() {
         time::{Duration, Instant},
     };
 
+    let _lock = image_file::load_calls_test_lock();
     let game = Game::new(Chart {
         bmp_paths: [(1, PathBuf::from("video.mp4"))].into(),
         bga: vec![BgaEvent {
