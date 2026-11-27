@@ -22,6 +22,7 @@ fn scans_each_referenced_playable_switch_pattern_once() {
 
 #[test]
 fn loads_direct_bitmaps_and_switch_frames_with_crop_sources() {
+    let _lock = image_file::load_calls_test_lock();
     let dir =
         std::env::temp_dir().join(format!("tapline-bga-switch-bitmaps-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
