@@ -286,11 +286,8 @@ fn build_chart(
         }));
     }
     invisible_notes.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
-    p2_invisible_notes.sort_by(|a, b| a.time_ms.total_cmp(&b.time_ms));
     notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     mines.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
-    p2_notes.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
-    p2_mines.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bgm.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bga.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     let max_measure = raw
@@ -349,10 +346,7 @@ fn build_chart(
         volume_events: collect_volume_events(&raw, &timeline),
         notes,
         mines,
-        p2_notes,
-        p2_mines,
         invisible_notes,
-        p2_invisible_notes,
         bgm,
         object_id_base: pass.base,
         bga,
@@ -2502,7 +2496,6 @@ mod tests {
             .notes
             .iter()
             .any(|n| n.keysound == Some(36) && n.end_ms.is_some()));
-        assert!(chart.p2_notes.iter().all(|n| n.keysound == Some(36)));
         assert_eq!(chart.mines[0].damage, 10);
         assert_eq!(read_meta(&path).unwrap().lane_count, chart.lane_count);
     }
@@ -2595,8 +2588,6 @@ mod tests {
                 assert_eq!(chart.lane_count, 9);
                 assert_eq!(read_meta(&path).unwrap().lane_count, 9);
                 assert_eq!(chart.keys, crate::chart::keys_for(9));
-                assert!(chart.p2_notes.is_empty());
-                assert!(chart.p2_mines.is_empty());
                 assert_eq!(chart.bgm.len(), 1);
                 let mut lanes = if channels.starts_with('D') {
                     assert!(chart.notes.is_empty());
@@ -2635,18 +2626,18 @@ mod tests {
     fn sparse_pms_and_bme_reserve_their_declared_lanes() {
         let dir = tempdir();
         let cases = [
-            ("#00111:01", 4, 1, 0),
-            ("#00115:01", 5, 1, 0),
-            ("#00119:01", 7, 1, 0),
-            ("#00119:01\n#00129:01", 14, 2, 0),
-            ("#00115:01\n#00125:01", 10, 2, 0),
-            ("#00116:01", 6, 1, 0),
-            ("#00119:01\n#00116:01", 8, 2, 0),
-            ("#00116:01\n#00126:01", 12, 2, 0),
-            ("#00119:01\n#00129:01\n#00116:01\n#00126:01", 16, 4, 0),
+            ("#00111:01", 4, 1),
+            ("#00115:01", 5, 1),
+            ("#00119:01", 7, 1),
+            ("#00119:01\n#00129:01", 14, 2),
+            ("#00115:01\n#00125:01", 10, 2),
+            ("#00116:01", 6, 1),
+            ("#00119:01\n#00116:01", 8, 2),
+            ("#00116:01\n#00126:01", 12, 2),
+            ("#00119:01\n#00129:01\n#00116:01\n#00126:01", 16, 4),
         ];
         for extension in ["bms", "bme"] {
-            for (channels, count, notes, p2) in cases {
+            for (channels, count, notes) in cases {
                 let path = dir.join(format!("song.{extension}"));
                 std::fs::write(&path, format!("#BPM 120\n{channels}\n")).unwrap();
                 let chart = load(&path, 0.0).unwrap();
@@ -2660,7 +2651,6 @@ mod tests {
                 assert_eq!(chart.lane_count, expected);
                 assert_eq!(read_meta(&path).unwrap().lane_count, expected);
                 assert_eq!(chart.notes.len(), notes);
-                assert_eq!(chart.p2_notes.len(), p2);
             }
         }
         let path = dir.join("sparse.pms");
@@ -2696,7 +2686,6 @@ mod tests {
         assert_eq!(chart.invisible_notes.len(), 2);
         assert!(chart.invisible_notes.iter().all(|note| note.lane == 8));
         assert!(chart.invisible_notes.iter().all(|note| note.keysound == 10));
-        assert!(chart.p2_invisible_notes.is_empty());
         let text = "#BASE 62\n#EXBPM0A 120\n#exbpm0a 240";
         let mut pass = HeaderPass::for_text(text);
         header_lines(text).for_each(|line| pass.absorb(line).unwrap());
@@ -3038,8 +3027,7 @@ mod tests {
             .notes
             .iter()
             .any(|n| n.lane == 4 && n.end_ms.is_some()));
-        assert!(chart.p2_notes.is_empty());
-        assert!(chart.p2_mines.is_empty());
+        assert_eq!(chart.mines.len(), 1);
         assert_eq!(chart.mines[0].lane, 4);
         assert_eq!(chart.mines[0].damage, 220);
     }
@@ -3071,8 +3059,9 @@ mod tests {
         let chart = load(&path, 0.0).unwrap();
         assert_eq!(read_meta(&path).unwrap().lane_count, chart.lane_count);
         assert_eq!(chart.lane_count, 14, "P1 7K + P2 7K → single 14K chart");
-        assert!(
-            chart.p2_notes.is_empty(),
+        assert_eq!(
+            chart.notes.len(),
+            9,
             "P2 pool is drained into the main pool"
         );
         // The lane-0 P2 note should be relocated to lane 7 (P1 lane_count offset).
@@ -3085,8 +3074,8 @@ mod tests {
             .notes
             .iter()
             .any(|n| n.lane == 7 && n.end_ms.is_some()));
+        assert_eq!(chart.mines.len(), 1);
         assert_eq!(chart.mines[0].lane, 13);
-        assert!(chart.p2_mines.is_empty());
     }
 
     #[test]
@@ -3175,8 +3164,6 @@ mod tests {
             assert_eq!(chart.lane_count, left + right);
             assert_eq!(read_meta(&path).unwrap().lane_count, chart.lane_count);
             assert_eq!(chart.keys.len(), chart.lane_count);
-            assert!(chart.p2_notes.is_empty());
-            assert!(chart.p2_mines.is_empty());
             if !p2.is_empty() {
                 assert!(chart.notes.iter().any(|n| n.lane == left + right - 1));
             }
@@ -3296,7 +3283,6 @@ mod tests {
             MERGED_PAYLOAD_BYTES.with(|bytes| assert_eq!(bytes.get(), 2));
             assert_eq!(chart.bgm.len(), count);
             assert_eq!(chart.notes.len(), 1);
-            assert!(chart.p2_notes.is_empty());
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -3387,12 +3373,11 @@ mod tests {
             chart.bgm.iter().map(|e| e.keysound).collect::<Vec<_>>(),
             (1..=8).collect::<Vec<_>>()
         );
-        assert!(
-            chart.p2_notes.is_empty(),
+        assert_eq!(
+            chart.notes.len(),
+            3,
             "P2 pool is drained into the main pool"
         );
-        assert!(chart.p2_mines.is_empty());
-        assert!(chart.p2_invisible_notes.is_empty());
         let plain_p2 = chart
             .notes
             .iter()
@@ -3473,8 +3458,9 @@ mod tests {
         )
         .unwrap();
         let chart = load(&path, 0.0).unwrap();
-        assert!(chart.p2_notes.is_empty());
-        assert!(chart.p2_mines.is_empty());
+        assert_eq!(chart.lane_count, 4, "single play keeps a single lane width");
+        assert_eq!(chart.notes.len(), 1);
+        assert!(chart.mines.is_empty());
     }
 
     #[test]
@@ -4216,7 +4202,6 @@ Always
         .unwrap();
         let chart = load(&path, 250.0).unwrap();
         assert_eq!(chart.lane_count, 9);
-        assert!(chart.p2_notes.is_empty());
         let notes: Vec<_> = chart
             .notes
             .iter()
@@ -4572,15 +4557,16 @@ Always
     #[test]
     fn declared_modes_preserve_scratch_layouts_and_millisecond_stops() {
         let dir = tempdir();
-        for (name, player, channels, count, scratch_lanes) in [
-            ("single.bme", 1, "#00116:01", 8, vec![7]),
-            ("double.bme", 3, "#00116:01\n#00126:02", 16, vec![7, 15]),
-            ("double.bms", 2, "#00116:01\n#00126:02", 12, vec![5, 11]),
+        for (name, player, channels, count, notes_len, scratch_lanes) in [
+            ("single.bme", 1, "#00116:01", 8, 1, vec![7]),
+            ("double.bme", 3, "#00116:01\n#00126:02", 16, 2, vec![7, 15]),
+            ("double.bms", 2, "#00116:01\n#00126:02", 12, 2, vec![5, 11]),
             (
                 "extended.bms",
                 3,
                 "#00116:01\n#00129:02\n#00126:03",
                 14,
+                3,
                 vec![5, 13],
             ),
         ] {
@@ -4593,7 +4579,11 @@ Always
             let chart = load(&path, 0.0).unwrap();
             assert_eq!(chart.lane_count, count, "{name}");
             assert_eq!(read_meta(&path).unwrap().lane_count, count, "{name}");
-            assert!(chart.p2_notes.is_empty(), "{name}");
+            assert_eq!(
+                chart.notes.len(),
+                notes_len,
+                "{name}: P2 pool is drained into the main pool"
+            );
             scratch_lanes.iter().for_each(|lane| {
                 assert!(
                     chart
@@ -4623,7 +4613,6 @@ Always
         assert_eq!(chart.invisible_notes[0].keysound, 36);
         assert_eq!(chart.invisible_notes[1].lane, 13);
         assert_eq!(chart.invisible_notes[1].keysound, 10);
-        assert!(chart.p2_invisible_notes.is_empty());
     }
 
     #[test]
