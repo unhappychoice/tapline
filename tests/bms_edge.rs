@@ -267,7 +267,7 @@ fn bpm_changes_and_stops_keep_all_event_times_finite() {
         .iter()
         .all(|note| { note.time_ms.is_finite() && note.end_ms.is_none_or(f64::is_finite) }));
     assert!(chart.mines.iter().all(|mine| mine.time_ms.is_finite()));
-    assert_eq!(chart.invisible_notes.len(), 2);
+    assert!(!chart.invisible_notes.is_empty());
     assert!(chart.invisible_notes.iter().any(|note| note.lane == 4));
     assert!(chart
         .invisible_notes

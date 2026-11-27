@@ -3059,7 +3059,11 @@ mod tests {
         let chart = load(&path, 0.0).unwrap();
         assert_eq!(read_meta(&path).unwrap().lane_count, chart.lane_count);
         assert_eq!(chart.lane_count, 14, "P1 7K + P2 7K → single 14K chart");
-        assert_eq!(chart.notes.len(), 9, "P2 pool is drained into the main pool");
+        assert_eq!(
+            chart.notes.len(),
+            9,
+            "P2 pool is drained into the main pool"
+        );
         // The lane-0 P2 note should be relocated to lane 7 (P1 lane_count offset).
         assert!(
             chart.notes.iter().any(|n| n.lane == 7),
@@ -3369,7 +3373,11 @@ mod tests {
             chart.bgm.iter().map(|e| e.keysound).collect::<Vec<_>>(),
             (1..=8).collect::<Vec<_>>()
         );
-        assert_eq!(chart.notes.len(), 3, "P2 pool is drained into the main pool");
+        assert_eq!(
+            chart.notes.len(),
+            3,
+            "P2 pool is drained into the main pool"
+        );
         let plain_p2 = chart
             .notes
             .iter()
