@@ -147,6 +147,7 @@ fn presentation_decodes_only_reachable_sources_and_preserves_bitmap_and_crop_pix
 
 #[test]
 fn missing_and_invalid_sources_are_attempted_once_and_preserve_existing_images() {
+    let _lock = crate::bga::image_file::load_calls_test_lock();
     let path =
         std::env::temp_dir().join(format!("tapline-invalid-crop-{}.png", std::process::id()));
     std::fs::write(&path, b"invalid image").unwrap();
