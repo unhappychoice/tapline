@@ -1331,7 +1331,7 @@ mod tests {
             },
             TextEvent {
                 time_ms: 300.0,
-                text: String::new(),
+                text: "".into(),
             },
         ];
         assert_eq!(song_text_at(&[], 0.0), None);
