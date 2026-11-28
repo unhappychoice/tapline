@@ -28,6 +28,7 @@ pub(crate) fn load_bytes(path: &Path, bytes: &[u8], lead_in_ms: f64) -> Result<C
     let timeline = Timeline::new(&data, lead_in_ms)?;
     let meta = metadata::convert(path, &data.info)?;
     let mode = data.info.mode_hint.as_deref().unwrap_or("beat-7k");
+    layers::validate(&data.sound_channels, meta.lane_count, mode)?;
     let lanes = if meta.lane_count == 14 {
         Lane::sides(7, Some(7), false, false)
     } else {
@@ -113,6 +114,8 @@ pub(crate) fn parse_meta(path: &Path, bytes: &[u8]) -> Result<(ChartMeta, Option
     let data = parse(path, bytes)?;
     Timeline::new(&data, 0.0)?;
     let meta = metadata::convert(path, &data.info)?;
+    let mode = data.info.mode_hint.as_deref().unwrap_or("beat-7k");
+    layers::validate(&data.sound_channels, meta.lane_count, mode)?;
     Ok((meta, data.info.preview_music))
 }
 

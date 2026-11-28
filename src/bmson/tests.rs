@@ -236,18 +236,24 @@ fn event_timing_overflow_is_rejected_before_building_channels_or_resolving_asset
 }
 
 #[test]
-fn gameplay_layer_validation_is_deferred_until_selection() {
+fn metadata_and_gameplay_reject_mismatched_layers_before_building_channels() {
     let mut data = base();
     data["sound_channels"] = json!([{"name":"missing.wav","notes":[
         {"x":1,"y":0}, {"x":1,"y":0,"l":240}
     ]}]);
     with_chart(&data, |path| {
-        assert!(read_meta(path).is_ok());
-        assert!(load(path, 0.0)
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("unequal lengths"));
+        CHANNEL_BUILDS.set(0);
+        ASSET_RESOLUTIONS.set(0);
+        assert_eq!(
+            read_meta(path).unwrap_err().to_string(),
+            "Layered notes have unequal lengths"
+        );
+        assert_eq!(
+            load(path, 0.0).err().unwrap().to_string(),
+            "Layered notes have unequal lengths"
+        );
+        assert_eq!(CHANNEL_BUILDS.get(), 0);
+        assert_eq!(ASSET_RESOLUTIONS.get(), 0);
     });
 }
 

@@ -52,11 +52,11 @@ pub(crate) fn parse_meta(
     #[cfg(test)]
     crate::select::count_metadata_parse();
     let ParsedSource {
-        headers: pass,
+        headers: mut pass,
         channels: raw,
         draws_random,
     } = parse_source(bytes, seed)?;
-    build_timeline(&raw, &pass, 0.0)?;
+    let timeline = build_timeline(&raw, &pass, 0.0)?;
     let acc = collect_lane_occupancy(&raw, &pass, if is_pms(path) { PMS_LANES } else { P1_LANES });
     let p2_acc = if is_pms(path) {
         SideOccupancy::default()
@@ -64,6 +64,10 @@ pub(crate) fn parse_meta(
         collect_lane_occupancy(&raw, &pass, P2_LANES)
     };
     let mode = detect_mode(path, pass.player, &raw, &acc, &p2_acc);
+    let p1_lane_count = mode.side_lane_count(&acc);
+    let p2_lane_count = mode.double_play.then(|| mode.side_lane_count(&p2_acc));
+    resolve_switch_lanes(&mut pass, p1_lane_count, p2_lane_count, is_pms(path));
+    validated_scroll(&raw, &pass, &timeline)?;
     let meta = ChartMeta {
         preview: None,
         path: path.to_path_buf(),
@@ -240,18 +244,13 @@ fn build_chart(
         mode.keys_per_side != 9 && acc.occupancy.lanes.0.contains(&7),
         mode.keys_per_side != 9 && p2_acc.occupancy.lanes.0.contains(&7),
     );
-    pass.bga_extensions
-        .switches
-        .values_mut()
-        .for_each(|switch| {
-            switch.lane = bga_switch_lane(
-                &switch.channel,
-                p1_lane_count,
-                mode.double_play.then_some(p2_lane_count),
-                is_pms(path),
-            );
-        });
-    let scroll = collect_scroll_events(&raw, &timeline, "SC", &pass.scroll_defs, pass.base);
+    resolve_switch_lanes(
+        &mut pass,
+        p1_lane_count,
+        mode.double_play.then_some(p2_lane_count),
+        is_pms(path),
+    );
+    let (scroll, duration_ms) = validated_scroll(&raw, &pass, &timeline)?;
     let speed = collect_scroll_events(&raw, &timeline, "SP", &pass.speed_defs, pass.base);
     let mut notes = acc.notes;
     let mut invisible_notes = acc.invisible_notes;
@@ -290,24 +289,6 @@ fn build_chart(
     mines.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bgm.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
     bga.sort_by(|a, b| a.time_ms.partial_cmp(&b.time_ms).unwrap());
-    let max_measure = raw
-        .iter()
-        .filter(|(_, channel, data)| {
-            channel != "A5"
-                || parse_slots(data, pass.base)
-                    .into_iter()
-                    .any(|id| id != 0 && pass.bga_extensions.has_playable_switch(id))
-        })
-        .map(|(measure, _, _)| *measure)
-        .chain(pass.stp_events.iter().map(|event| event.measure))
-        .max()
-        .unwrap_or(0);
-    let duration_ms = timeline.end_time(max_measure) + 2500.0;
-    ensure!(duration_ms.is_finite(), "BMS duration must be finite");
-    ensure!(
-        crate::scroll::coordinates_are_finite(&scroll, duration_ms),
-        "BMS scroll rate change overflows to a non-finite position"
-    );
     let last_event_ms = notes
         .iter()
         .map(|note| note.end_ms.unwrap_or(note.time_ms))
@@ -366,6 +347,47 @@ fn build_chart(
         sample_slices: HashMap::new(),
         sound_layers: HashMap::new(),
     })
+}
+
+fn resolve_switch_lanes(
+    pass: &mut HeaderPass,
+    p1_lane_count: usize,
+    p2_lane_count: Option<usize>,
+    pms: bool,
+) {
+    pass.bga_extensions
+        .switches
+        .values_mut()
+        .for_each(|switch| {
+            switch.lane = bga_switch_lane(&switch.channel, p1_lane_count, p2_lane_count, pms);
+        });
+}
+
+fn validated_scroll(
+    raw: &[(u32, String, String)],
+    pass: &HeaderPass,
+    timeline: &Timeline,
+) -> Result<(Vec<ScrollEvent>, f64)> {
+    let scroll = collect_scroll_events(raw, timeline, "SC", &pass.scroll_defs, pass.base);
+    let max_measure = raw
+        .iter()
+        .filter(|(_, channel, data)| {
+            channel != "A5"
+                || parse_slots(data, pass.base)
+                    .into_iter()
+                    .any(|id| id != 0 && pass.bga_extensions.has_playable_switch(id))
+        })
+        .map(|(measure, _, _)| *measure)
+        .chain(pass.stp_events.iter().map(|event| event.measure))
+        .max()
+        .unwrap_or(0);
+    let duration_ms = timeline.end_time(max_measure) + 2500.0;
+    ensure!(duration_ms.is_finite(), "BMS duration must be finite");
+    ensure!(
+        crate::scroll::coordinates_are_finite(&scroll, duration_ms),
+        "BMS scroll rate change overflows to a non-finite position"
+    );
+    Ok((scroll, duration_ms))
 }
 
 fn collect_chart_sides(
@@ -2361,6 +2383,19 @@ mod tests {
         let path = std::path::Path::new("unreset_overflow.bms");
         let source = "#BPM 120\n#SCROLL01 1e308\n#000SC:01\n#00111:0101\n";
         assert!(load_bytes(path, source.as_bytes(), 0.0, 0).is_err());
+    }
+
+    #[test]
+    fn metadata_scroll_validation_accounts_for_playable_bga_switches() {
+        let path = Path::new("switch-scroll.bms");
+        for (channel, valid) in [("11", false), ("17", true)] {
+            let source = format!(
+                "#BPM 120\n#SCROLL01 1e304\n#000SC:01\n#00011:01\n\
+                 #SWBGA01 100:0:{channel}:1:255,0,0,0 01\n#010A5:01\n"
+            );
+            assert_eq!(parse_meta(path, source.as_bytes(), 0).is_ok(), valid);
+            assert_eq!(load_bytes(path, source.as_bytes(), 0.0, 0).is_ok(), valid);
+        }
     }
 
     #[test]

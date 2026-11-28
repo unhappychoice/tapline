@@ -1,13 +1,27 @@
-use super::timing::Timeline;
+use super::{lane, model::SoundChannel, timing::Timeline};
 use crate::chart::{Chart, Note};
 use anyhow::{ensure, Context, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub(super) struct PlayableLayer {
     pub pulse: u32,
     pub length: u32,
     pub lane: usize,
     pub keysound: u32,
+}
+
+pub(super) fn validate(channels: &[SoundChannel], lane_count: usize, mode: &str) -> Result<()> {
+    let mut lengths = HashMap::new();
+    let notes = channels.iter().flat_map(|channel| &channel.notes);
+    for (lane, note) in notes
+        .filter_map(|note| lane(note.x.unwrap_or(0), lane_count, mode).map(|lane| (lane, note)))
+    {
+        ensure!(
+            *lengths.entry((lane, note.y)).or_insert(note.l) == note.l,
+            "Layered notes have unequal lengths"
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn merge(
@@ -24,10 +38,6 @@ pub(super) fn merge(
     layers.sort_by_key(|layer| (layer.pulse, layer.lane));
     for group in layers.chunk_by(|a, b| a.pulse == b.pulse && a.lane == b.lane) {
         let first = &group[0];
-        ensure!(
-            group.iter().all(|layer| layer.length == first.length),
-            "Layered notes have unequal lengths"
-        );
         let mut seen = HashSet::new();
         let sounds: Vec<_> = group
             .iter()
