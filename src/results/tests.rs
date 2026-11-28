@@ -123,6 +123,121 @@ fn persistence_round_trip_replaces_file_and_rejects_corrupt_storage() {
 }
 
 #[test]
+fn update_cached_merges_into_the_given_store_when_nothing_else_touched_the_file() {
+    let dir = directory();
+    let path = dir.join("results.json");
+    let id = Identity::built_in(120.0);
+    let mut store = Store::default();
+    assert!(
+        update_cached(&mut store, &path, &id, &game(100, 2, 2, 1), false)
+            .unwrap()
+            .is_none()
+    );
+    let first = store.get(&id).unwrap().clone();
+    let second = game(200, 3, 3, 1);
+    assert_eq!(
+        update_cached(&mut store, &path, &id, &second, true).unwrap(),
+        Some(first)
+    );
+    assert_eq!(store.get(&id).unwrap().best.score, 200);
+    assert_eq!(
+        Store::load(&path).unwrap().get(&id).unwrap().best.score,
+        200
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn update_cached_preserves_a_concurrent_replacement_with_the_same_mtime() {
+    let dir = directory();
+    let path = dir.join("results.json");
+    let id = Identity::built_in(120.0);
+    let other_id = Identity::built_in(99.0);
+
+    update(&path, &id, &game(100, 2, 2, 1), false).unwrap();
+    update(&path, &other_id, &game(400, 5, 5, 0), false).unwrap();
+    let mut store = Store::load(&path).unwrap();
+    let original = fs::metadata(&path).unwrap();
+    let modified = original.modified().unwrap();
+
+    update(&path, &other_id, &game(500, 5, 5, 0), false).unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    let replacement = fs::metadata(&path).unwrap();
+    assert_eq!(replacement.modified().unwrap(), modified);
+    assert_eq!(replacement.len(), original.len());
+
+    assert_eq!(
+        update_cached(&mut store, &path, &id, &game(200, 3, 3, 1), true)
+            .unwrap()
+            .map(|record| record.best.score),
+        Some(100)
+    );
+
+    let on_disk = Store::load(&path).unwrap();
+    assert_eq!(on_disk.get(&id).unwrap().best.score, 200);
+    assert_eq!(
+        on_disk.get(&other_id).unwrap().best.score,
+        500,
+        "the concurrent writer's record must survive our save"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn update_cached_restores_the_previous_record_when_the_save_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Root ignores directory write permissions, which would make this guard a no-op.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+
+    let dir = directory();
+    let path = dir.join("results.json");
+    let id = Identity::built_in(120.0);
+    let mut store = Store::default();
+    assert!(
+        update_cached(&mut store, &path, &id, &game(100, 2, 2, 1), false)
+            .unwrap()
+            .is_none()
+    );
+
+    // The results file itself is untouched (same mtime), but the directory can no
+    // longer hold a new temp file, so `Store::save` fails without a reload.
+    let original = std::fs::metadata(&dir).unwrap().permissions();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let result = update_cached(&mut store, &path, &id, &game(200, 3, 3, 1), true);
+    std::fs::set_permissions(&dir, original).unwrap();
+
+    assert!(matches!(result, Err(UpdateError::Write(Some(_)))));
+    // The cached store must still reflect the last persisted result, not the
+    // failed attempt, so a same-session retry is judged against reality.
+    assert_eq!(store.get(&id).unwrap().best.score, 100);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn update_cached_skips_locking_and_saving_an_interrupted_attempt() {
+    let dir = directory();
+    let path = dir.join("results.json");
+    let id = Identity::built_in(120.0);
+    let mut store = Store::default();
+    let mut interrupted = game(100, 2, 2, 1);
+    interrupted.completed = false;
+    assert!(update_cached(&mut store, &path, &id, &interrupted, false)
+        .unwrap()
+        .is_none());
+    assert!(!path.exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn concurrent_processes_preserve_distinct_charts_and_shared_bests() {
     use std::process::{Command, Stdio};
 

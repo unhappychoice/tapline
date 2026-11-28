@@ -79,6 +79,8 @@ pub struct Record {
 #[derive(Default, Serialize, Deserialize)]
 pub struct Store {
     records: BTreeMap<String, Record>,
+    #[serde(skip)]
+    cached_file: Option<CachedFile>,
 }
 
 #[derive(Debug)]
@@ -110,6 +112,83 @@ pub fn update(
     Ok(previous)
 }
 
+/// Like [`update`], but merges into a `Store` the caller already has loaded
+/// (e.g. the one the selector read to show progress) instead of rereading
+/// and reparsing the whole file just to change one entry, as long as nothing
+/// else has written to the file since. Falls back to a fresh [`Store::load`]
+/// under the lock when the file no longer matches the cached snapshot.
+pub fn update_cached(
+    store: &mut Store,
+    path: &Path,
+    identity: &Identity,
+    game: &Game,
+    auto_keysound: bool,
+) -> Result<Option<Record>, UpdateError> {
+    if !game.completed {
+        return Ok(store.get(identity).cloned());
+    }
+    let _lock = lock_results(path).map_err(|_| UpdateError::Lock)?;
+    store.refresh(path).map_err(|_| UpdateError::Read)?;
+    let previous = store.get(identity).cloned();
+    store.record(identity, game, auto_keysound);
+    match store.save_snapshot(path) {
+        Ok(file) => store.cached_file = CachedFile::new(file.metadata(), file),
+        Err(_) => {
+            store.restore(identity, previous.clone());
+            return Err(UpdateError::Write(previous));
+        }
+    }
+    Ok(previous)
+}
+
+struct CachedFile {
+    #[cfg(unix)]
+    // Holding the original inode prevents its reuse while this snapshot is cached.
+    _file: File,
+    #[cfg(unix)]
+    metadata: fs::Metadata,
+}
+
+impl CachedFile {
+    fn new(metadata: io::Result<fs::Metadata>, file: File) -> Option<Self> {
+        #[cfg(unix)]
+        {
+            Some(Self {
+                _file: file,
+                metadata: metadata.ok()?,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            // A retained destination handle can prevent replacement on Windows.
+            drop((metadata, file));
+            None
+        }
+    }
+
+    fn matches(&self, file: &File) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let cached = &self.metadata;
+            file.metadata().is_ok_and(|current| {
+                current.dev() == cached.dev()
+                    && current.ino() == cached.ino()
+                    && current.len() == cached.len()
+                    && current.mtime() == cached.mtime()
+                    && current.mtime_nsec() == cached.mtime_nsec()
+                    && current.ctime() == cached.ctime()
+                    && current.ctime_nsec() == cached.ctime_nsec()
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = file;
+            false
+        }
+    }
+}
+
 fn lock_results(path: &Path) -> io::Result<File> {
     fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
     // Keep the lock file in place so replacing the results cannot split the lock.
@@ -135,21 +214,57 @@ fn lock_results(path: &Path) -> io::Result<File> {
 
 impl Store {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        use std::io::Read;
-        let mut file = match crate::fs_guard::open(path) {
+        let mut store = Self::default();
+        store.refresh(path)?;
+        Ok(store)
+    }
+
+    fn refresh(&mut self, path: &Path) -> anyhow::Result<()> {
+        let file = match crate::fs_guard::open(path) {
             Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default())
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                *self = Self::default();
+                return Ok(());
             }
             Err(error) => return Err(error.into()),
         };
+        if !self
+            .cached_file
+            .as_ref()
+            .is_some_and(|cached| cached.matches(&file))
+        {
+            *self = Self::read_snapshot(file)?;
+        }
+        Ok(())
+    }
+
+    fn read_snapshot(mut file: File) -> anyhow::Result<Self> {
+        use std::io::Read;
+
+        let metadata = file.metadata();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
-        Ok(serde_json::from_slice(&bytes)?)
+        let mut store: Self = serde_json::from_slice(&bytes)?;
+        store.cached_file = CachedFile::new(metadata, file);
+        Ok(store)
     }
 
     pub fn get(&self, identity: &Identity) -> Option<&Record> {
         self.records.get(&identity.key)
+    }
+
+    /// Reverts a merged-in record after a failed save, so a `Store` that is
+    /// retained across attempts (see [`update_cached`]) does not drift away
+    /// from what is actually on disk.
+    fn restore(&mut self, identity: &Identity, previous: Option<Record>) {
+        match previous {
+            Some(record) => {
+                self.records.insert(identity.key.clone(), record);
+            }
+            None => {
+                self.records.remove(&identity.key);
+            }
+        }
     }
 
     pub fn record(&mut self, identity: &Identity, game: &Game, auto_keysound: bool) {
@@ -186,6 +301,10 @@ impl Store {
 
     /// Replaces the file with this snapshot. Use [`update`] to merge a completed run.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        self.save_snapshot(path).map(drop)
+    }
+
+    fn save_snapshot(&self, path: &Path) -> anyhow::Result<File> {
         use std::io::Write;
         let directory = path
             .parent()
@@ -195,8 +314,7 @@ impl Store {
         let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
         temporary.write_all(&serde_json::to_vec_pretty(self)?)?;
         temporary.as_file().sync_all()?;
-        temporary.persist(path).map_err(|error| error.error)?;
-        Ok(())
+        Ok(temporary.persist(path).map_err(|error| error.error)?)
     }
 }
 
