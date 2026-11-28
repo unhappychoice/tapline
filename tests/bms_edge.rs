@@ -473,14 +473,16 @@ fn duplicate_normal_notes_use_the_last_keysound_on_both_sides() {
 
 #[test]
 fn duplicate_positions_merge_across_different_slot_counts() {
-    let path = write_text("#BPM 60\n#00111:010203\n#00111:000004000500\n#00112:06\n#00211:07\n");
+    let path =
+        write_text("#BPM 60\n#BASE 62\n#00111:0A0203\n#00111:00000a000500\n#00112:06\n#00211:07\n");
     let chart = bms::load(&path, 0.0).unwrap();
     let keysounds: Vec<_> = chart
         .notes
         .iter()
         .map(|note| note.keysound.unwrap())
         .collect();
-    assert_eq!(keysounds, vec![1, 6, 4, 5, 7]);
+    assert_eq!(keysounds, vec![10, 6, 36, 5, 7]);
+    assert!((chart.notes[2].time_ms - (4000.0 + 4000.0 / 3.0)).abs() < 1e-6);
 }
 
 #[test]
@@ -502,7 +504,9 @@ fn duplicate_long_note_endpoints_merge_before_pairing_on_both_sides() {
 #[test]
 fn duplicate_landmines_use_the_last_base36_damage_on_both_sides() {
     for channel in ["D1", "E1"] {
-        let path = write_text(&format!("#BPM 60\n#001{channel}:0A\n#001{channel}:ZZ00\n"));
+        let path = write_text(&format!(
+            "#BPM 60\n#BASE 62\n#001{channel}:0A\n#001{channel}:zz00\n"
+        ));
         let chart = bms::load(&path, 0.0).unwrap();
         let mines = &chart.mines;
         assert_eq!(mines[0].lane, if channel == "D1" { 0 } else { 5 });
