@@ -40,8 +40,8 @@ fn run(out: &mut Stdout, args: &Args, keymap: &cli::Keymap) -> Result<()> {
         args,
         keymap,
         cli::choose_chart_with_selector,
-        |out, args, _, playback, identity, destination| {
-            playback.play_attempt(out, args, identity, destination)
+        |out, args, _, playback, identity, destination, selector| {
+            playback.play_attempt(out, args, identity, destination, selector.records_mut())
         },
         terminal::show_load_error,
     )
@@ -63,6 +63,7 @@ fn run_session(
         &mut runtime::ChartPlayback<'_>,
         Option<&tapline::results::Identity>,
         ResultDestination,
+        &mut tapline::select::SelectorState,
     ) -> Result<runtime::ResultAction>,
     mut report_error: impl FnMut(&mut Stdout, &anyhow::Error) -> Result<()>,
 ) -> Result<()> {
@@ -96,6 +97,7 @@ fn run_session(
             &mut playback,
             identity.as_ref(),
             destination,
+            &mut selector,
         )? == runtime::ResultAction::Retry
         {}
 
