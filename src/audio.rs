@@ -323,20 +323,7 @@ impl SampleBank {
                 .unwrap_or(fallback_end)
             })
             .reduce(f64::max);
-        let judgment_end = chart
-            .notes
-            .iter()
-            .map(|note| {
-                let end = note.end_ms.unwrap_or(note.time_ms);
-                end + crate::game::JudgmentWindows::for_scale(chart.judgment_scale(end)).miss_after
-            })
-            .chain(
-                chart
-                    .mines
-                    .iter()
-                    .map(|mine| mine.time_ms + crate::game::MINE_WINDOW),
-            )
-            .reduce(f64::max);
+        let judgment_end = crate::game::judgment_deadline_ms(chart);
         // Leave one frame after the strict miss boundary for judgment processing.
         let invisible_end = chart
             .invisible_notes
@@ -1257,6 +1244,38 @@ mod tests {
                 assert_eq!(game.miss, 0);
             }
         }
+    }
+
+    #[test]
+    fn ln_mode_tail_deadline_skips_the_rank_scaled_wait() {
+        let bank = duration_bank_with_length(80);
+        let mut chart = Chart {
+            lane_count: 4,
+            def_exrank: Some(10000.0),
+            notes: vec![crate::chart::Note {
+                time_ms: 1000.0,
+                end_ms: Some(5000.0),
+                keysound: Some(1),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        chart.ln_mode = crate::chart::LnMode::Ln;
+        assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 5032.0);
+
+        for mode in [crate::chart::LnMode::Cn, crate::chart::LnMode::Hcn] {
+            chart.ln_mode = mode;
+            assert_eq!(bank.chart_duration_ms(&chart, false, false, 0.0), 21032.0);
+        }
+
+        chart.ln_mode = crate::chart::LnMode::Ln;
+        chart.duration_ms = bank.chart_duration_ms(&chart, false, false, 0.0);
+        let mut game = crate::game::Game::new(chart);
+        game.hit(0, 1000.0);
+        game.check_misses(5000.0);
+        assert!(game.chart().notes[0].hit);
+        assert_eq!(game.perfect, 2);
+        assert!(game.advance_completion(game.chart().duration_ms));
     }
 
     #[test]
