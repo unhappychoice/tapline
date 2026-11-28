@@ -13,6 +13,9 @@ pub struct Screen {
     rows: u16,
     front: Vec<Cell>,
     back: Vec<Cell>,
+    touched: Vec<usize>,
+    queued: Vec<bool>, // Membership in touched, indexed by cell.
+    redraw: bool,
     cursor: (u16, u16),
     style: Style,
     pending: Vec<u8>,
@@ -30,12 +33,6 @@ const BLANK: Cell = Cell {
     marks: String::new(),
     style: Style::DEFAULT,
 };
-/// Never matches drawn content, forcing a cell to be re-sent.
-const UNKNOWN: Cell = Cell {
-    ch: '\u{FFFF}',
-    marks: String::new(),
-    style: Style::DEFAULT,
-};
 /// Right half of a double-width character.
 const CONTINUATION: char = '\0';
 
@@ -46,6 +43,9 @@ impl Screen {
             rows: 0,
             front: Vec::new(),
             back: Vec::new(),
+            touched: Vec::new(),
+            queued: Vec::new(),
+            redraw: false,
             cursor: (0, 0),
             style: Style::DEFAULT,
             pending: Vec::new(),
@@ -59,36 +59,63 @@ impl Screen {
         }
         let len = cols as usize * rows as usize;
         (self.cols, self.rows) = (cols, rows);
-        self.front = vec![UNKNOWN; len];
+        self.front = vec![BLANK; len];
         self.back = vec![BLANK; len];
+        self.touched.clear();
+        self.queued = vec![false; len];
+        self.invalidate();
     }
 
     /// Forgets what the terminal shows, e.g. after it was cleared directly.
     pub fn invalidate(&mut self) {
-        self.front.fill(UNKNOWN);
+        self.redraw = true;
     }
 
     /// Writes the cells that differ from the last presented frame.
     pub fn present(&mut self, out: &mut impl Write) -> io::Result<()> {
-        let mut buf = String::from("\x1b[?2026h");
-        let mut pen = Pen::default();
-        (0..self.back.len()).for_each(|i| self.emit_cell(i, &mut pen, &mut buf));
-        buf.push_str("\x1b[0m\x1b[?2026l");
-        self.front.clone_from(&self.back);
-        out.write_all(buf.as_bytes())?;
-        out.flush()
+        let diff = self.build_diff();
+        if diff.is_empty() {
+            return Ok(());
+        }
+        let result = out.write_all(diff.as_bytes()).and_then(|()| out.flush());
+        if result.is_err() {
+            self.invalidate();
+        }
+        result
     }
 
-    fn emit_cell(&self, i: usize, pen: &mut Pen, buf: &mut String) {
-        let cell = &self.back[i];
-        if cell == &self.front[i] || cell.ch == CONTINUATION {
-            return;
+    fn build_diff(&mut self) -> String {
+        let mut buf = String::new();
+        let mut pen = Pen::default();
+        let redraw = std::mem::take(&mut self.redraw);
+        let full_len = if redraw { self.back.len() } else { 0 };
+        // Emit in terminal order so adjacent cells share cursor moves.
+        self.touched.sort_unstable();
+        for i in (0..full_len).chain(self.touched.iter().copied().filter(|_| !redraw)) {
+            let cell = &self.back[i];
+            let front = &mut self.front[i];
+            if redraw || cell != front {
+                if cell.ch != CONTINUATION {
+                    let cols = usize::from(self.cols);
+                    pen.draw(((i % cols) as u16, (i / cols) as u16), cell, &mut buf);
+                }
+                front.clone_from(cell);
+            }
         }
-        let pos = (
-            (i % self.cols as usize) as u16,
-            (i / self.cols as usize) as u16,
-        );
-        pen.draw(pos, cell, buf);
+        for i in self.touched.drain(..) {
+            self.queued[i] = false;
+        }
+        if !buf.is_empty() {
+            buf.push_str("\x1b[0m\x1b[?2026l");
+        }
+        buf
+    }
+
+    fn touch(&mut self, i: usize) {
+        if !self.redraw && !self.queued[i] {
+            self.queued[i] = true;
+            self.touched.push(i);
+        }
     }
 
     fn put(&mut self, ch: char) {
@@ -137,6 +164,7 @@ impl Screen {
         };
         let base = i - usize::from(self.back[i].ch == CONTINUATION);
         self.back[base].marks.push(mark);
+        self.touch(base);
     }
 
     /// Blanks the other half of a wide character about to be overwritten.
@@ -158,6 +186,7 @@ impl Screen {
     fn set(&mut self, x: u16, y: u16, cell: Cell) {
         if let Some(i) = self.index(x, y) {
             self.back[i] = cell;
+            self.touch(i);
         }
     }
 
@@ -167,11 +196,22 @@ impl Screen {
 
     fn clear_row(&mut self, y: u16, from: u16) {
         self.detach_wide(from, y);
-        (from..self.cols).for_each(|x| self.set(x, y, BLANK));
+        if let Some(start) = self.index(from, y) {
+            self.clear_cells(start..start + usize::from(self.cols - from));
+        }
     }
 
     fn clear_all(&mut self) {
-        self.back.fill(BLANK);
+        self.clear_cells(0..self.back.len());
+    }
+
+    fn clear_cells(&mut self, cells: std::ops::Range<usize>) {
+        for i in cells {
+            if self.back[i] != BLANK {
+                self.back[i] = BLANK;
+                self.touch(i);
+            }
+        }
     }
 }
 
@@ -203,6 +243,9 @@ struct Pen {
 
 impl Pen {
     fn draw(&mut self, (x, y): (u16, u16), cell: &Cell, buf: &mut String) {
+        if self.cursor.is_none() {
+            buf.push_str("\x1b[?2026h");
+        }
         if self.cursor != Some((x, y)) {
             buf.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
         }

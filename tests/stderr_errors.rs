@@ -24,6 +24,51 @@ fn quitting_the_chart_selector_exits_successfully() {
 }
 
 #[test]
+fn selector_search_by_artist_launches_the_matching_chart() {
+    let dir = tempfile::tempdir().unwrap();
+    for (file, title, artist) in [
+        ("first.bms", "First Chart", "Amber"),
+        ("second.bms", "Second Chart", "Violet"),
+    ] {
+        std::fs::write(
+            dir.path().join(file),
+            format!("#TITLE {title}\n#ARTIST {artist}\n#09911:01\n"),
+        )
+        .unwrap();
+    }
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tapline"));
+    command
+        .args(["--countdown-ms", "0", "--dir"])
+        .arg(dir.path())
+        .env("TAPLINE_DATA_DIR", dir.path());
+
+    let filtered_status = b"1 / 2 matches | Lanes: all | Clear: all | Query: violet";
+    let (status, output) = run_interactive(
+        command,
+        &[
+            ("select a chart  ·  2 loaded".as_bytes(), b"/violet"),
+            (
+                b"1 / 2 matches | Lanes: all | Clear: all | / editing | Query: violet",
+                b"\r",
+            ),
+            (filtered_status, b"\r"),
+            (b"quit Esc / Q", b"q"),
+            (b"R: retry / other: selector", b" "),
+            (filtered_status, b"q"),
+        ],
+    );
+    assert!(status.success(), "{output:?}");
+    let (before_result, _) = output.split_once("R: retry / other: selector").unwrap();
+    let (_, gameplay) = before_result.rsplit_once("Enter play  Esc quit").unwrap();
+    assert!(gameplay.contains("Second Chart"), "{output:?}");
+    assert!(!gameplay.contains("First Chart"), "{output:?}");
+    assert!(
+        before_result.contains("Interrupted: not saved"),
+        "{output:?}"
+    );
+}
+
+#[test]
 fn built_in_practice_retries_from_interrupted_results() {
     let data = std::env::temp_dir().join(format!("tapline-practice-{}", std::process::id()));
     std::fs::create_dir(&data).unwrap();

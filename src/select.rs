@@ -20,6 +20,7 @@ use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
 const ROW_LEFT: u16 = 2;
+const LIST_TOP: u16 = 5;
 const MIN_DETAIL_ROWS: u16 = 16;
 const BANNER_HEIGHT: u16 = 4;
 
@@ -292,16 +293,28 @@ fn run_loop(
             selected,
             selected.and_then(|i| charts[i].preview.as_deref()),
         );
-        frame.draw_if_changed(out, charts, state, progress, size()?)?;
+        let frame_size = size()?;
+        frame.draw_if_changed(out, charts, state, progress, frame_size)?;
         let Some(input) = input()? else {
             continue;
         };
         match input {
             Event::Resize(..) => frame.invalidate(),
+            Event::Key(key) if list_rows(frame_size.1).is_empty() => {
+                if key.kind == KeyEventKind::Press
+                    && matches!(key.code, KeyCode::Esc | KeyCode::Char('q' | 'Q'))
+                {
+                    return Ok(None);
+                }
+            }
             Event::Key(key) => match state.handle_key(key, charts) {
                 SelectorAction::None => {}
                 SelectorAction::Redraw => frame.invalidate(),
-                SelectorAction::Play(i) => return Ok(Some(charts[i].clone())),
+                SelectorAction::Play(i) => {
+                    if !list_rows(size()?.1).is_empty() {
+                        return Ok(Some(charts[i].clone()));
+                    }
+                }
                 SelectorAction::Quit => return Ok(None),
             },
             _ => {}
@@ -371,6 +384,15 @@ fn chart_banner(chart: &ChartMeta, width: u16) -> Option<Rc<RgbaImage>> {
     artwork::thumbnail(dir, &chart.banner, (width, BANNER_HEIGHT))
 }
 
+fn list_rows(rows: u16) -> std::ops::Range<u16> {
+    let detail_rows = if rows >= MIN_DETAIL_ROWS {
+        BANNER_HEIGHT + 2
+    } else {
+        0
+    };
+    LIST_TOP..rows.saturating_sub(2 + detail_rows)
+}
+
 fn draw_frame(
     out: &mut impl Write,
     charts: &[ChartEntry],
@@ -386,6 +408,19 @@ fn draw_frame(
         terminal::BeginSynchronizedUpdate,
         terminal::Clear(terminal::ClearType::All)
     )?;
+
+    let list = list_rows(rows);
+    if list.is_empty() {
+        let notice = "Resize terminal to show charts. Esc quit";
+        queue!(
+            out,
+            cursor::MoveTo(0, rows.saturating_sub(1) / 2),
+            Print(clip_to_width(notice, cols as usize)),
+            terminal::EndSynchronizedUpdate
+        )?;
+        out.flush()?;
+        return Ok(());
+    }
 
     let title = "T A P L I N E";
     queue!(
@@ -429,19 +464,8 @@ fn draw_frame(
         cursor::MoveTo(ROW_LEFT, 3),
         Print(clip_to_width(&status, row_width))
     )?;
-    let list_top = 5u16;
-    let detail_rows = if rows >= MIN_DETAIL_ROWS {
-        BANNER_HEIGHT + 2
-    } else {
-        0
-    };
-    let list_bottom = rows.saturating_sub(2 + detail_rows);
-    let view_rows = list_bottom.saturating_sub(list_top) as usize;
-    if view_rows == 0 {
-        queue!(out, terminal::EndSynchronizedUpdate)?;
-        out.flush()?;
-        return Ok(());
-    }
+    let list_bottom = list.end;
+    let view_rows = list.len();
 
     if cursor_i < *scroll {
         *scroll = cursor_i;
@@ -450,14 +474,13 @@ fn draw_frame(
         *scroll = cursor_i + 1 - view_rows;
     }
 
-    for row in 0..view_rows {
+    for (row, y) in list.enumerate() {
         let i = *scroll + row;
         if i >= state.indices.len() {
             break;
         }
         let m = &charts[state.indices[i]];
         let selected = i == cursor_i;
-        let y = list_top + row as u16;
         let arrow = if selected { "▸ " } else { "  " };
         let text = format!(
             "{} {}",
@@ -481,10 +504,10 @@ fn draw_frame(
     if state.indices.is_empty() {
         queue!(
             out,
-            cursor::MoveTo(2, list_top),
+            cursor::MoveTo(2, LIST_TOP),
             Print("No matching charts. Edit / search or press c to clear filters.")
         )?;
-    } else if detail_rows > 0 {
+    } else if rows >= MIN_DETAIL_ROWS {
         draw_details(
             out,
             &charts[state.indices[cursor_i]],
@@ -615,6 +638,72 @@ mod tests {
 
     fn key_event(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
         KeyEvent::new_with_kind(code, event::KeyModifiers::NONE, kind)
+    }
+
+    #[test]
+    fn hidden_list_blocks_selection_until_resize_redraws_it() {
+        use std::cell::Cell;
+
+        let charts = [meta("Alpha"), meta("Beta")];
+        let mut state = SelectorState::default();
+        state.refresh(&charts);
+        state.key(KeyCode::Down, &charts);
+        let mut out = Vec::new();
+        let rows = Cell::new(8);
+        let press = |code| Event::Key(key_event(code, KeyEventKind::Press));
+        let mut inputs = [
+            (7, press(KeyCode::Enter)),
+            (7, press(KeyCode::Up)),
+            (7, press(KeyCode::Enter)),
+            (8, Event::Resize(80, 8)),
+            (8, press(KeyCode::Enter)),
+        ]
+        .into_iter();
+        let selected = run_loop(
+            &mut out,
+            &charts,
+            &mut state,
+            &["[UNPLAYED]".into(), "[UNPLAYED]".into()],
+            || Ok((80, rows.get())),
+            || {
+                let (height, input) = inputs.next().unwrap();
+                rows.set(height);
+                Ok(Some(input))
+            },
+            |_, _| {},
+        )
+        .unwrap()
+        .unwrap();
+        assert!(inputs.next().is_none());
+        assert_eq!(selected.title, "Beta");
+        let output = String::from_utf8(out).unwrap();
+        let (_, after_notice) = output
+            .split_once("Resize terminal to show charts. Esc quit")
+            .unwrap();
+        let (hidden, resized) = after_notice.split_once("T A P L I N E").unwrap();
+        assert!(!hidden.contains('▸'));
+        assert!(resized.contains("▸ [5K NORMAL Lv3 BPM140]  Beta"));
+    }
+
+    #[test]
+    fn escape_quits_with_the_list_hidden_or_visible() {
+        let charts = [meta("Alpha"), meta("Beta")];
+        for rows in [7, 8] {
+            let mut state = SelectorState::default();
+            state.refresh(&charts);
+            let mut input = Some(Event::Key(key_event(KeyCode::Esc, KeyEventKind::Press)));
+            let selected = run_loop(
+                &mut Vec::new(),
+                &charts,
+                &mut state,
+                &["[UNPLAYED]".into(), "[UNPLAYED]".into()],
+                || Ok((80, rows)),
+                || Ok(Some(input.take().unwrap())),
+                |_, _| {},
+            )
+            .unwrap();
+            assert!(selected.is_none());
+        }
     }
 
     #[test]
@@ -910,7 +999,7 @@ mod tests {
             .unwrap();
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("0 / 1 matches | Lanes: 7K | Clear: all | Query: missing"));
-        assert!(output.contains("No matching charts"));
+        assert!(output.contains("No matching charts. Edit / search or press c to clear filters."));
         assert!(!output.contains("Selected chart comment"));
         assert!(!output.contains("Alpha"));
     }
