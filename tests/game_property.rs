@@ -18,10 +18,8 @@ fn note(time_ms: f64, lane: usize) -> Note {
     Note {
         time_ms,
         lane,
-        hit: false,
         keysound: Some(1),
         end_ms: None,
-        held_since: None,
     }
 }
 

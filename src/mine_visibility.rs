@@ -29,13 +29,7 @@ impl MineIndex {
         }
     }
 
-    pub fn visible<'a>(
-        &self,
-        mines: &'a [Mine],
-        frame: &ScrollFrame<'_>,
-        now: f64,
-        approach: f64,
-    ) -> Vec<&'a Mine> {
+    pub fn visible(&self, frame: &ScrollFrame<'_>, now: f64, approach: f64) -> Vec<usize> {
         let mut pending = vec![1];
         let mut visible = Vec::new();
         while let Some(node) = pending.pop() {
@@ -51,11 +45,8 @@ impl MineIndex {
             }
             if node < self.leaves {
                 pending.extend([node * 2 + 1, node * 2]);
-            } else {
-                let mine = &mines[node - self.leaves];
-                if !mine.exploded && (-60.0..=approach).contains(&a) {
-                    visible.push(mine);
-                }
+            } else if (-60.0..=approach).contains(&a) {
+                visible.push(node - self.leaves);
             }
         }
         visible
@@ -72,7 +63,6 @@ mod tests {
             time_ms,
             lane: 0,
             damage: 1,
-            exploded: false,
         }
     }
 
@@ -99,30 +89,25 @@ mod tests {
                 };
                 let scroll = ScrollMap::new(&chart.scroll);
                 // Include unsorted input, duplicate timestamps and exact clipping boundaries.
-                let mut mines: Vec<_> = [
+                let mines: Vec<_> = [
                     10000.0, -60.001, -60.0, 0.0, 0.0, 1000.0, 1000.001, 1800.0, 5000.0, 9000.0,
                 ]
                 .into_iter()
                 .map(mine)
                 .collect();
-                mines[3].exploded = true;
                 let index = MineIndex::new(&mines, &scroll);
                 for now in [0.0, 6000.0, 10000.0, 0.0] {
                     let frame = scroll.frame(&chart, now);
                     let expected: Vec<_> = mines
                         .iter()
-                        .filter(|mine| {
-                            !mine.exploded
-                                && mine.time_ms >= now - 60.0
+                        .enumerate()
+                        .filter(|(_, mine)| {
+                            mine.time_ms >= now - 60.0
                                 && (-60.0..=1000.0).contains(&frame.distance(mine.time_ms))
                         })
-                        .map(|mine| mine as *const Mine)
+                        .map(|(index, _)| index)
                         .collect();
-                    let actual: Vec<_> = index
-                        .visible(&mines, &frame, now, 1000.0)
-                        .into_iter()
-                        .map(|mine| mine as *const Mine)
-                        .collect();
+                    let actual = index.visible(&frame, now, 1000.0);
                     assert_eq!(actual, expected, "rate={rate}, speed={speed}, now={now}");
                 }
             }
@@ -137,7 +122,7 @@ mod tests {
             let scroll = ScrollMap::new(&[]);
             let index = MineIndex::new(&mines, &scroll);
             let frame = scroll.frame(&chart, 10000.0);
-            assert_eq!(index.visible(&mines, &frame, 10000.0, 1000.0).len(), 1);
+            assert_eq!(index.visible(&frame, 10000.0, 1000.0).len(), 1);
             assert!(index.visits.get() <= 4 * (count.ilog2() as usize + 2));
         }
     }
@@ -153,7 +138,7 @@ mod tests {
         for count in [0, 10000] {
             let mines = vec![mine(0.0); count];
             let index = MineIndex::new(&mines, &scroll);
-            assert!(index.visible(&mines, &frame, 100000.0, 1000.0).is_empty());
+            assert!(index.visible(&frame, 100000.0, 1000.0).is_empty());
             assert_eq!(index.visits.get(), 1);
         }
     }

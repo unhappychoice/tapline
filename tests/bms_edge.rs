@@ -701,5 +701,5 @@ fn simultaneous_mines_each_apply_damage_while_a_normal_note_still_scores() {
     assert_eq!(game.perfect, 2);
     assert_eq!(game.miss, 0);
     assert_eq!(game.combo, 1);
-    assert!(game.chart().mines.iter().all(|mine| mine.exploded));
+    assert!((0..game.chart().mines.len()).all(|i| game.mine_exploded(i)));
 }

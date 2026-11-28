@@ -8,13 +8,9 @@ pub use layout::{Lane, LaneRole, Player};
 pub struct Note {
     pub time_ms: f64,
     pub lane: usize,
-    pub hit: bool,
     pub keysound: Option<u32>,
     /// For long notes, the end time of the hold in ms. `None` for taps.
     pub end_ms: Option<f64>,
-    /// Timestamp of the frame that started holding this long note. `None` for
-    /// taps and for LNs that haven't been pressed yet.
-    pub held_since: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -36,8 +32,6 @@ pub struct Mine {
     pub lane: usize,
     /// Base-36 damage value from the BMS chart (1–1295), in half percentage points.
     pub damage: u32,
-    /// Set once the player triggers the mine so it isn't punished twice.
-    pub exploded: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -336,10 +330,8 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
             notes.push(Note {
                 time_ms: offset + frac * beat,
                 lane: *lane,
-                hit: false,
                 keysound: None,
                 end_ms: None,
-                held_since: None,
             });
         }
     };
@@ -417,10 +409,8 @@ pub fn built_in(bpm: f64, lead_in_ms: f64) -> Chart {
         notes.push(Note {
             time_ms: t,
             lane,
-            hit: false,
             keysound: None,
             end_ms: None,
-            held_since: None,
         });
     }
 

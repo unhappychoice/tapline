@@ -686,10 +686,8 @@ fn push_normal_slots(
         acc.notes.push(Note {
             time_ms: t,
             lane,
-            hit: false,
             keysound: Some(*slot),
             end_ms: None,
-            held_since: None,
         });
     }
 }
@@ -753,10 +751,8 @@ fn materialize_long_notes_with(
             acc.notes.push(Note {
                 time_ms: start_ms,
                 lane,
-                hit: false,
                 keysound: Some(ks),
                 end_ms: Some(end_ms),
-                held_since: None,
             });
         }
     }
@@ -810,10 +806,8 @@ fn materialize_continuous_long_notes(
             acc.notes.push(Note {
                 time_ms: timeline.time_at(start.measure, start.fraction),
                 lane,
-                hit: false,
                 keysound: Some(keysound),
                 end_ms: Some(timeline.time_at(end.measure, end.fraction)),
-                held_since: None,
             });
         }
     }
@@ -867,7 +861,6 @@ fn materialize_mines_with(
                 time_ms: t,
                 lane,
                 damage: *slot,
-                exploded: false,
             });
         }
     }
@@ -2613,10 +2606,10 @@ mod tests {
                 });
                 if channels.starts_with('D') {
                     assert_eq!(game.miss, 0);
-                    assert!(game.chart().mines.iter().all(|mine| mine.exploded));
+                    assert!((0..game.chart().mines.len()).all(|i| game.mine_exploded(i)));
                 } else {
                     assert_eq!(game.perfect, if long { 18 } else { 9 });
-                    assert!(game.chart().notes.iter().all(|note| note.hit));
+                    assert!(game.note_states().iter().all(|note| note.hit));
                 }
             }
         }

@@ -48,7 +48,6 @@ pub(super) fn merge(
             lane: first.lane,
             keysound: Some(keysound),
             end_ms: (first.length > 0).then(|| timeline.time(pulse + u64::from(first.length))),
-            ..Note::default()
         });
     }
     Ok(())

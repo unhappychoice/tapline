@@ -1245,14 +1245,14 @@ mod tests {
                 game.hit(0, 1000.0);
                 game.check_misses(5000.0 + delay);
                 assert_eq!(game.perfect, 1);
-                assert!(game.chart().notes[0].held_since.is_some());
+                assert!(game.note_state(0).held_since.is_some());
                 let mut now = 5000.0 + delay + 16.0;
                 while now < game.chart().duration_ms {
                     game.check_misses(now);
                     now += 16.0;
                 }
-                assert!(game.chart().notes[0].hit);
-                assert!(game.chart().notes[0].held_since.is_none());
+                assert!(game.note_state(0).hit);
+                assert!(game.note_state(0).held_since.is_none());
                 assert_eq!(game.perfect, 2);
                 assert_eq!(game.miss, 0);
             }
@@ -1286,7 +1286,7 @@ mod tests {
             game.hit(0, 1000.0);
             game.check_misses(5496.0);
             assert_eq!(game.perfect, 2);
-            assert!(game.chart().notes[0].hit);
+            assert!(game.note_state(0).hit);
         }
         chart.notes[0].time_ms = 5000.0;
         chart.notes[0].end_ms = None;
