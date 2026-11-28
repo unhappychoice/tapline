@@ -1,3 +1,4 @@
+use crate::chart::Modifier;
 use crate::game::Game;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -60,6 +61,8 @@ pub struct ResultRecord {
     pub clear: bool,
     pub random_seed: Option<u64>,
     pub auto_keysound: bool,
+    #[serde(default)]
+    pub modifier: Modifier,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -163,6 +166,7 @@ impl Store {
             clear: game.gauge.is_clear(),
             random_seed: identity.random_seed,
             auto_keysound,
+            modifier: game.chart().modifier,
         };
         self.records
             .entry(identity.key.clone())

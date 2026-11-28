@@ -51,6 +51,7 @@ fn help_flag_documents_every_public_flag() {
         "--synth",
         "--auto-ks",
         "--audio-lead-ms",
+        "--modifier",
     ] {
         assert!(
             stdout.contains(flag),

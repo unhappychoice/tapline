@@ -37,6 +37,8 @@ Chain hits for combo, chase accuracy, panic-quit with Esc.
 - Search charts by title, subtitle, or artist, filter by lane count, and hear
   previews when the chart provides one.
 - Practice with the built-in four-lane chart at an adjustable tempo.
+- Shuffle (`--modifier random`) or reverse (`--modifier mirror`) each
+  player's key lanes for replay value on memorized charts.
 - Track local personal bests for score, accuracy, max combo, and clears.
 
 ## Install
@@ -94,6 +96,23 @@ tapline --file song.bms --audio-lead-ms 60 # BGM-only pre-play
 locked to what you see. `--audio-lead-ms` shifts every scheduled sound
 (BGM + auto keysounds) that many milliseconds earlier — start around
 `50–120` on WSL2 and tune by ear.
+
+### Play modifiers
+
+`--modifier random` shuffles each player's key lanes once per play;
+`--modifier mirror` reverses them. `--modifier off` (the default) keeps the
+chart's original layout. Scratch lanes and double-play side boundaries are
+never touched, so key bindings and keysounds stay where they are — only
+which lane each note lands in changes. Retrying with `R` keeps the same
+shuffle; returning to the selector and loading a chart again draws a new one.
+The active modifier appears in the HUD next to BPM and lane count. Set
+`TAPLINE_MODIFIER_SEED` to the same unsigned 64-bit integer to reproduce a
+RANDOM shuffle.
+
+```sh
+tapline --file song.bms --modifier random
+tapline --file song.bms --modifier mirror
+```
 
 ## Song discovery
 
@@ -416,9 +435,10 @@ Records are keyed by SHA-256 of the chart file contents and its format, so movin
 a chart preserves progress and editing it starts a new record. BMS random branches
 share bests; the latest result retains its random seed for reproduction with
 `TAPLINE_RANDOM_SEED`. Auto-keysound plays share records because note judgments
-still require input; the latest result records whether it was enabled. Built-in
-practice records are separate for each BPM. Countdown and audio settings do not
-split records.
+still require input; the latest result records whether it was enabled. RANDOM and
+MIRROR plays likewise share records with unmodified plays; the latest result
+records which modifier, if any, was active. Built-in practice records are
+separate for each BPM. Countdown and audio settings do not split records.
 
 Results are stored in `results.json` inside:
 

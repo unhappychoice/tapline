@@ -25,5 +25,6 @@ mod interval_index;
 mod keymap;
 mod mine_visibility;
 mod preview;
+mod random_seed;
 mod scroll;
 mod search;

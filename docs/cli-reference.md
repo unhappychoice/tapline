@@ -55,6 +55,20 @@ tapline --file song.bms --auto-ks --audio-lead-ms 80
 tapline --built-in --bpm 90 --countdown-ms 500
 ```
 
+## Play modifiers
+
+| Option | Default | Behavior |
+| ------ | ------- | -------- |
+| `--modifier <off\|random\|mirror>` | `off` | Leave the chart's key-lane layout unchanged, shuffle it once per play, or reverse it. |
+
+Both `random` and `mirror` only permute each player's `Key`-role lanes;
+scratch lanes and double-play side boundaries are fixed points, and key
+bindings and keysounds stay with their lane. Retrying with `R` keeps the
+same shuffle; loading a chart again (including from the selector) draws a
+new one. The active modifier appears in the HUD. Set `TAPLINE_MODIFIER_SEED`
+to reproduce a `random` shuffle, the same way `TAPLINE_RANDOM_SEED`
+reproduces a BMS branch draw.
+
 ## Note display
 
 Use `--scroll-speed <SCROLL_SPEED>` to set the note scroll multiplier for
@@ -98,6 +112,7 @@ prints `audio backend unavailable` to standard error and exits with status `1`.
 | `TAPLINE_SONGS_DIR` | First directory checked during [automatic chart discovery](#chart-selection). If the path is missing or is not a directory, discovery continues with the next candidate. |
 | `TAPLINE_DATA_DIR` | Directory for `results.json`, overriding the platform default. |
 | `TAPLINE_RANDOM_SEED` | Unsigned 64-bit integer used for BMS branch selection. If unset or invalid, tapline generates a seed. Reuse the same seed with an unchanged chart to reproduce the branch in the selector or with `--file`. |
+| `TAPLINE_MODIFIER_SEED` | Unsigned 64-bit integer used for `--modifier random` lane shuffling. If unset or invalid, tapline generates a seed. Reuse the same seed to reproduce the same shuffle. |
 
 Without `TAPLINE_DATA_DIR`, tapline looks for `results.json` in these directories:
 

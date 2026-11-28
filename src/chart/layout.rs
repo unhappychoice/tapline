@@ -1,4 +1,5 @@
 use super::keys_for;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Player {
@@ -10,6 +11,26 @@ pub enum Player {
 pub enum LaneRole {
     Key,
     Scratch,
+}
+
+/// A play option that permutes the `Key`-role lanes of a chart once per play,
+/// leaving `Scratch` lanes and player boundaries untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Modifier {
+    #[default]
+    Off,
+    Random,
+    Mirror,
+}
+
+impl std::fmt::Display for Modifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Modifier::Off => "off",
+            Modifier::Random => "random",
+            Modifier::Mirror => "mirror",
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +85,35 @@ impl Lane {
         layout
     }
 
+    /// Builds a permutation mapping each original lane index to its lane
+    /// index under `modifier`. `Scratch` lanes and player boundaries are
+    /// always fixed points; only each player's `Key` lanes are shuffled
+    /// (`Modifier::Random`) or reversed (`Modifier::Mirror`), independently
+    /// per player side so double-play sides don't mirror each other.
+    pub fn permutation(lanes: &[Self], modifier: Modifier, seed: u64) -> Vec<usize> {
+        let mut perm: Vec<usize> = (0..lanes.len()).collect();
+        if modifier == Modifier::Off {
+            return perm;
+        }
+        for (side, player) in [Player::One, Player::Two].into_iter().enumerate() {
+            let key_indexes: Vec<usize> = lanes
+                .iter()
+                .enumerate()
+                .filter(|(_, lane)| lane.player == player && lane.role == LaneRole::Key)
+                .map(|(index, _)| index)
+                .collect();
+            let shuffled = if modifier == Modifier::Random {
+                shuffled_indexes(&key_indexes, seed, side as u64)
+            } else {
+                key_indexes.iter().copied().rev().collect()
+            };
+            for (&from, &to) in key_indexes.iter().zip(&shuffled) {
+                perm[from] = to;
+            }
+        }
+        perm
+    }
+
     pub fn bindings(lanes: &[Self]) -> Vec<Vec<char>> {
         let double = lanes.iter().any(|lane| lane.player == Player::Two);
         [Player::One, Player::Two]
@@ -99,6 +149,34 @@ impl Lane {
 
 fn single_keys(keys: &str) -> Vec<Vec<char>> {
     keys.chars().map(|key| vec![key]).collect()
+}
+
+/// Golden-ratio constant used to decorrelate per-side RNG state from a
+/// shared seed, mirroring the offset BMS branch resolution uses.
+const RNG_OFFSET: u64 = 0x9E3779B97F4A7C15;
+
+fn xorshift_next(state: &mut u64) -> u64 {
+    let mut x = *state;
+    if x == 0 {
+        x = 0xdead_beef;
+    }
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    x
+}
+
+/// Fisher-Yates shuffle of `indexes`, seeded deterministically from `seed`
+/// and `side` so each player's lanes shuffle independently.
+fn shuffled_indexes(indexes: &[usize], seed: u64, side: u64) -> Vec<usize> {
+    let mut shuffled = indexes.to_vec();
+    let mut rng = seed.wrapping_add(RNG_OFFSET.wrapping_mul(side.wrapping_add(1)));
+    for i in (1..shuffled.len()).rev() {
+        let j = (xorshift_next(&mut rng) % (i as u64 + 1)) as usize;
+        shuffled.swap(i, j);
+    }
+    shuffled
 }
 
 #[cfg(test)]

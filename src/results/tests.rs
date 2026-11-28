@@ -12,7 +12,13 @@ fn directory() -> PathBuf {
 }
 
 fn game(score: u32, combo: u32, perfect: u32, miss: u32) -> Game {
-    let mut game = Game::new(crate::chart::built_in(120.0, 0.0));
+    game_with_modifier(score, combo, perfect, miss, Modifier::Off)
+}
+
+fn game_with_modifier(score: u32, combo: u32, perfect: u32, miss: u32, modifier: Modifier) -> Game {
+    let mut chart = crate::chart::built_in(120.0, 0.0);
+    chart.apply_modifier(modifier, 0);
+    let mut game = Game::new(chart);
     game.completed = true;
     game.score = score;
     game.max_combo = combo;
@@ -67,6 +73,36 @@ fn best_values_improve_independently_and_latest_keeps_provenance() {
         crate::render::format_progress(&game(1100, 21, 4, 0), Some(record))
             .contains("accuracy +25.00pp")
     );
+}
+
+#[test]
+fn modifier_plays_share_records_and_the_latest_result_keeps_the_modifier() {
+    let mut store = Store::default();
+    let id = Identity::built_in(120.0);
+    store.record(&id, &game(1000, 10, 1, 1), false);
+    assert_eq!(store.get(&id).unwrap().latest.modifier, Modifier::Off);
+
+    let mirrored = game_with_modifier(900, 9, 1, 1, Modifier::Mirror);
+    store.record(&id, &mirrored, false);
+    let record = store.get(&id).unwrap();
+    assert_eq!(record.latest.modifier, Modifier::Mirror);
+    // Modifier plays share the same record as unmodified plays.
+    assert_eq!(record.best.score, 1000);
+}
+
+#[test]
+fn loading_results_without_a_modifier_field_defaults_to_off() {
+    let dir = directory();
+    let path = dir.join("results.json");
+    let id = Identity::built_in(120.0);
+    let json = format!(
+        r#"{{"records":{{"{}":{{"best":{{"score":1,"accuracy":1.0,"max_combo":1,"clear":false}},"latest":{{"score":1,"accuracy":1.0,"max_combo":1,"clear":false,"random_seed":null,"auto_keysound":false}}}}}}}}"#,
+        id.key
+    );
+    std::fs::write(&path, json).unwrap();
+    let store = Store::load(&path).unwrap();
+    assert_eq!(store.get(&id).unwrap().latest.modifier, Modifier::Off);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
