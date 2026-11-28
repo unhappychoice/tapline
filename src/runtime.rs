@@ -859,7 +859,7 @@ mod tests {
                 );
             }
             assert_eq!((game.perfect, game.miss), (0, 0));
-            assert!(!game.chart().notes[0].hit);
+            assert!(!game.note_state(0).hit);
         });
         let now = state.update_size(&bank, &mut game, 21010.0, 99, 24);
         handle_key(
@@ -987,15 +987,15 @@ mod tests {
             );
         }
         assert_eq!((game.perfect, game.miss), (3, 0));
-        assert!(game.chart().notes.iter().all(|note| !note.hit));
+        assert!(game.note_states().iter().all(|note| !note.hit));
 
         let now = state.update_size(&bank, &mut game, 9000.0, 80, 24);
         assert_eq!(now, 4000.0);
         assert_eq!(game.flash.last_judgment_at, now);
         assert_eq!((game.perfect, game.miss), (3, 1));
-        assert!(game.chart().notes[0].hit);
-        assert_eq!(game.chart().notes[1].held_since, Some(3000.0));
-        assert_eq!(game.chart().notes[2].held_since, Some(3000.0));
+        assert!(game.note_state(0).hit);
+        assert_eq!(game.note_state(1).held_since, Some(3000.0));
+        assert_eq!(game.note_state(2).held_since, Some(3000.0));
 
         let now = state.update_size(&bank, &mut game, 10200.0, 80, 24);
         game.advance_completion(now);
@@ -1295,18 +1295,14 @@ mod tests {
             Note {
                 time_ms: 1000.0,
                 lane: 0,
-                hit: false,
                 keysound: Some(1),
                 end_ms: None,
-                held_since: None,
             },
             Note {
                 time_ms: 500.0,
                 lane: 1,
-                hit: false,
                 keysound: Some(2),
                 end_ms: None,
-                held_since: None,
             },
         ];
         let game = Game::new(base_chart(4, notes));
@@ -1320,26 +1316,20 @@ mod tests {
             Note {
                 time_ms: 1000.0,
                 lane: 0,
-                hit: false,
                 keysound: Some(1),
                 end_ms: None,
-                held_since: None,
             },
             Note {
                 time_ms: 500.0,
                 lane: 1,
-                hit: false,
                 keysound: Some(2),
                 end_ms: None,
-                held_since: None,
             },
             Note {
                 time_ms: 800.0,
                 lane: 2,
-                hit: false,
                 keysound: Some(3),
                 end_ms: None,
-                held_since: None,
             },
         ];
         let game = Game::new(base_chart(4, notes));
@@ -1485,10 +1475,8 @@ mod tests {
                 .map(|&time_ms| Note {
                     time_ms,
                     lane: 0,
-                    hit: false,
                     keysound: Some(1),
                     end_ms: None,
-                    held_since: None,
                 })
                 .collect();
             let mut chart = base_chart(4, notes);
@@ -1521,7 +1509,7 @@ mod tests {
                     "keysounds at {now} ms (auto_ks={auto_ks})"
                 );
                 assert_eq!(game.miss, 0);
-                assert!(game.chart().notes.iter().all(|note| !note.hit));
+                assert!(game.note_states().iter().all(|note| !note.hit));
             }
         }
     }
@@ -1640,18 +1628,14 @@ mod tests {
             Note {
                 time_ms: 200.0,
                 lane: 0,
-                hit: false,
                 keysound: Some(1),
                 end_ms: None,
-                held_since: None,
             },
             Note {
                 time_ms: 400.0,
                 lane: 1,
-                hit: false,
                 keysound: Some(2),
                 end_ms: None,
-                held_since: None,
             },
         ];
         let game = Game::new(base_chart(4, notes));
@@ -1693,18 +1677,14 @@ mod tests {
             Note {
                 time_ms: 3000.0,
                 lane: 0,
-                hit: false,
                 keysound: Some(1),
                 end_ms: None,
-                held_since: None,
             },
             Note {
                 time_ms: 3200.0,
                 lane: 0,
-                hit: false,
                 keysound: Some(2),
                 end_ms: None,
-                held_since: None,
             },
         ];
         Game::new(base_chart(4, notes))
@@ -1744,16 +1724,14 @@ mod tests {
         send_key(&mut game, 'f', KeyEventKind::Release, 2600.0);
         assert_eq!((game.perfect, game.miss), (2, 0));
         assert!(game
-            .chart()
-            .notes
+            .note_states()
             .iter()
             .all(|note| note.held_since.is_some()));
 
         send_key(&mut game, 'j', KeyEventKind::Release, 2750.0);
         assert_eq!((game.perfect, game.miss), (2, 2));
         assert!(game
-            .chart()
-            .notes
+            .note_states()
             .iter()
             .all(|note| note.hit && note.held_since.is_none()));
         game.check_misses(3500.0);
@@ -1807,15 +1785,15 @@ mod tests {
                             now,
                         );
                         if index < 6 {
-                            assert!(!game.chart().notes[0].hit);
-                            assert_eq!(game.chart().notes[0].held_since, Some(3000.0));
+                            assert!(!game.note_state(0).hit);
+                            assert_eq!(game.note_state(0).held_since, Some(3000.0));
                             assert_eq!(
                                 (game.perfect, game.great, game.good, game.miss),
                                 (1, 0, 0, 0)
                             );
                         } else {
-                            assert!(game.chart().notes[0].hit);
-                            assert_eq!(game.chart().notes[0].held_since, None);
+                            assert!(game.note_state(0).hit);
+                            assert_eq!(game.note_state(0).held_since, None);
                             let expected = match release_ms {
                                 4000.0 => (1, 0, 0, 1),
                                 5000.0 => (2, 0, 0, 0),
@@ -1870,7 +1848,7 @@ mod tests {
         key(&mut game, 'z', KeyEventKind::Press, 3000.0);
         key(&mut game, '/', KeyEventKind::Press, 3200.0);
         key(&mut game, 'Z', KeyEventKind::Release, 3400.0);
-        assert_eq!(game.chart().notes[0].held_since, Some(3000.0));
+        assert_eq!(game.note_state(0).held_since, Some(3000.0));
         key(&mut game, '/', KeyEventKind::Release, 5000.0);
         assert_eq!((game.perfect, game.miss), (2, 0));
     }
@@ -1906,8 +1884,8 @@ mod tests {
                     now,
                 );
             });
-            assert!(game.chart().notes[0].hit);
-            assert_eq!(game.chart().notes[1].held_since, Some(3000.0));
+            assert!(game.note_state(0).hit);
+            assert_eq!(game.note_state(1).held_since, Some(3000.0));
             assert_eq!((game.perfect, game.miss), (2, 1));
             handle_key(
                 KeyCode::Char(';'),
@@ -1918,7 +1896,7 @@ mod tests {
                 &mut state,
                 5000.0,
             );
-            assert!(game.chart().notes[1].hit);
+            assert!(game.note_state(1).hit);
             assert_eq!((game.perfect, game.miss), (3, 1));
         });
     }
@@ -2137,7 +2115,7 @@ mod tests {
         );
         game.check_misses(5170.0);
         assert_eq!((game.perfect, game.miss, game.combo), (2, 0, 2));
-        assert!(game.chart().notes[0].hit);
+        assert!(game.note_state(0).hit);
     }
 
     #[test]

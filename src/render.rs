@@ -715,11 +715,8 @@ fn draw_notes_and_mines(
     }
 
     let mut bars = Vec::new();
-    for note in game.visible_notes(now_ms, layout.approach_distance) {
-        if note.hit {
-            continue;
-        }
-        let (offset, width, color) = note_style(game, note.lane, note.held_since.is_some());
+    for (note, state) in game.visible_notes(now_ms, layout.approach_distance) {
+        let (offset, width, color) = note_style(game, note.lane, state.held_since.is_some());
         let lx = x0 + 1 + note.lane as u16 * LANE_WIDTH + offset;
         match note.end_ms {
             None => {
@@ -1168,10 +1165,8 @@ mod tests {
             notes: vec![Note {
                 time_ms: 1000.0,
                 lane: 0,
-                hit: false,
                 keysound: None,
                 end_ms: None,
-                held_since: None,
             }],
             duration_ms: 30_000.0,
             lane_count,
@@ -1614,13 +1609,11 @@ mod tests {
                     time_ms: time,
                     lane: 2,
                     damage: 10,
-                    exploded: false,
                 },
                 Mine {
                     time_ms: 1500.0,
                     lane: 3,
                     damage: 10,
-                    exploded: false,
                 },
             ];
 
@@ -1653,7 +1646,7 @@ mod tests {
                 game.release(1, end);
                 game.hit(2, time);
                 assert_eq!((game.perfect, game.great, game.miss), (2, 1, 0));
-                assert!(game.chart().mines[0].exploded);
+                assert!(game.mine_exploded(0));
                 outcomes.push((game.score, game.max_combo, game.gauge.value()));
             }
             assert!(outcomes.windows(2).all(|pair| pair[0] == pair[1]));
@@ -1685,7 +1678,7 @@ mod tests {
             }];
             let game = Game::new(chart);
             let layout = PlayLayout::compute(80, 24, 4).unwrap();
-            let note = game.visible_notes(0.0, APPROACH_MS).next().unwrap();
+            let (note, _) = game.visible_notes(0.0, APPROACH_MS).next().unwrap();
             let range = long_note_scroll_range(
                 &game.scroll.frame(game.chart(), 0.0),
                 note.time_ms,
@@ -1927,17 +1920,23 @@ mod tests {
                 game.hit(2, now);
             }
             game.check_misses(now);
-            let geometry = |note: &Note| {
-                if note.hit {
+            let geometry = |(note, state): (&Note, crate::game::NoteState)| {
+                if state.hit {
                     return None;
                 }
                 let range = match note.end_ms {
                     Some(end) => long_note_screen_range(note.time_ms - now, end - now, &layout),
                     None => note_screen_y(note.time_ms - now, &layout).map(|y| (y, y)),
                 }?;
-                Some((note.lane, range, note.held_since.is_some()))
+                Some((note.lane, range, state.held_since.is_some()))
             };
-            let expected: Vec<_> = game.chart().notes.iter().filter_map(geometry).collect();
+            let expected: Vec<_> = game
+                .chart()
+                .notes
+                .iter()
+                .zip(game.note_states().iter().copied())
+                .filter_map(geometry)
+                .collect();
             let actual: Vec<_> = game
                 .visible_notes(now, APPROACH_MS)
                 .filter_map(geometry)
@@ -1997,8 +1996,8 @@ mod tests {
             for now in [0.0, 500.0, 1060.0, 2000.0, 3500.0, 4000.0, 5900.0, 6200.0] {
                 game.check_misses(now);
                 let scroll = game.scroll.frame(game.chart(), now);
-                let geometry = |note: &Note| {
-                    if note.hit {
+                let geometry = |(note, state): (&Note, crate::game::NoteState)| {
+                    if state.hit {
                         return None;
                     }
                     let span = match note.end_ms {
@@ -2011,10 +2010,16 @@ mod tests {
                         note.time_ms,
                         note.lane,
                         note_bar(span),
-                        note.held_since.is_some(),
+                        state.held_since.is_some(),
                     ))
                 };
-                let expected: Vec<_> = game.chart().notes.iter().filter_map(geometry).collect();
+                let expected: Vec<_> = game
+                    .chart()
+                    .notes
+                    .iter()
+                    .zip(game.note_states().iter().copied())
+                    .filter_map(geometry)
+                    .collect();
                 let actual: Vec<_> = game
                     .visible_notes(now, APPROACH_MS)
                     .filter_map(geometry)

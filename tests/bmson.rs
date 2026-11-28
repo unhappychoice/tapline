@@ -97,7 +97,7 @@ fn judge_rank_scales_taps_releases_and_deadlines() {
     value["info"]["judge_rank"] = json!(50);
     let mut game = Game::new(load_value(value.clone()).unwrap());
     game.hit(0, 1100.0);
-    assert!(!game.chart().notes[0].hit);
+    assert!(!game.note_state(0).hit);
 
     game.hit(1, 1500.0);
     game.release(1, 1850.0);
@@ -110,9 +110,9 @@ fn judge_rank_scales_taps_releases_and_deadlines() {
     assert_eq!(game.miss, 1);
     game.hit(1, 1500.0);
     game.check_misses(1830.0);
-    assert!(!game.chart().notes[1].hit);
+    assert!(!game.note_state(1).hit);
     game.check_misses(1831.0);
-    assert!(game.chart().notes[1].hit);
+    assert!(game.note_state(1).hit);
     assert_eq!(game.perfect, 2);
 }
 

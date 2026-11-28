@@ -29,10 +29,26 @@ pub struct FlashState {
     pub last_miss_at: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoteState {
+    /// Whether the note has been resolved by gameplay.
+    pub hit: bool,
+    /// When the player started holding the note, while the hold is active.
+    pub held_since: Option<f64>,
+}
+
+impl NoteState {
+    fn started(self) -> bool {
+        self.hit || self.held_since.is_some()
+    }
+}
+
 pub struct Game {
     pub(crate) volume: crate::audio::PlaybackVolume,
     pub(crate) scroll: crate::scroll::ScrollMap,
     chart: Chart,
+    note_states: Vec<NoteState>,
+    exploded_mines: Vec<bool>,
     pub gauge: Gauge,
     pub completed: bool,
     pub bga_switch: crate::bga::SwitchPlayback,
@@ -192,6 +208,8 @@ impl Game {
             lane_keysounds,
             keysound_events: events.into_iter().peekable(),
             bga_switch: crate::bga::SwitchPlayback::new(&chart.bga_extensions),
+            note_states: vec![NoteState::default(); chart.notes.len()],
+            exploded_mines: vec![false; chart.mines.len()],
             chart,
             score: 0,
             combo: 0,
@@ -212,7 +230,7 @@ impl Game {
         }
     }
 
-    /// Returns the active chart, including the current note and mine state.
+    /// Returns the reusable chart data for this attempt.
     /// To edit chart data, update a separate chart and construct a new game.
     ///
     /// ```compile_fail,E0596
@@ -230,6 +248,21 @@ impl Game {
     /// ```
     pub fn chart(&self) -> &Chart {
         &self.chart
+    }
+
+    /// Returns the current attempt's note states in chart order.
+    pub fn note_states(&self) -> &[NoteState] {
+        &self.note_states
+    }
+
+    /// Returns the current state of the note at the given chart index.
+    pub fn note_state(&self, index: usize) -> NoteState {
+        self.note_states[index]
+    }
+
+    /// Returns whether the mine at the given chart index has detonated.
+    pub fn mine_exploded(&self, index: usize) -> bool {
+        self.exploded_mines[index]
     }
 
     /// Finish only after the chart duration and all pending judgments have elapsed.
@@ -258,7 +291,7 @@ impl Game {
         let mut best: Option<(usize, f64)> = None;
         for i in self.hit_candidates(lane, now_ms) {
             let n = &self.chart.notes[i];
-            if n.hit || n.held_since.is_some() || n.lane != lane {
+            if self.note_states[i].started() || n.lane != lane {
                 continue;
             }
             if self.chart.ln_mode == LnMode::Ln && n.end_ms.is_some_and(|end| end < now_ms) {
@@ -281,7 +314,7 @@ impl Game {
                 JudgmentWindows::for_scale(self.chart.judgment_scale(self.chart.notes[i].time_ms))
                     .judge(offset_ms.abs());
             if is_ln {
-                self.chart.notes[i].held_since = Some(now_ms);
+                self.note_states[i].held_since = Some(now_ms);
                 self.held_notes.push(i);
                 self.held_notes.sort_unstable();
             } else {
@@ -311,9 +344,9 @@ impl Game {
             {
                 self.mine_visits += 1;
             }
-            let mine = &mut self.chart.mines[i];
-            if !mine.exploded && (mine.time_ms - now_ms).abs() <= MINE_WINDOW {
-                mine.exploded = true;
+            let mine = &self.chart.mines[i];
+            if !self.exploded_mines[i] && (mine.time_ms - now_ms).abs() <= MINE_WINDOW {
+                self.exploded_mines[i] = true;
                 self.gauge.apply_mine(mine.damage);
                 self.combo = 0;
             }
@@ -357,7 +390,6 @@ impl Game {
             Judgment::Miss
         };
         self.mark_hit(i);
-        self.chart.notes[i].held_since = None;
         self.apply(j, now_ms, offset_ms);
     }
 
@@ -376,16 +408,15 @@ impl Game {
                 self.miss_visits += 1;
             }
             self.next_deadline += 1;
-            if !note.hit && note.held_since.is_none() {
+            if !self.note_states[i].started() {
                 self.mark_hit(i);
                 self.apply(Judgment::Miss, now_ms, None);
             }
         }
         while self
-            .chart
-            .notes
+            .note_states
             .get(self.next_miss)
-            .is_some_and(|note| note.hit || note.held_since.is_some())
+            .is_some_and(|state| state.started())
         {
             self.next_miss += 1;
         }
@@ -406,7 +437,6 @@ impl Game {
             }) {
                 self.held_notes.remove(position);
                 self.mark_hit(i);
-                self.chart.notes[i].held_since = None;
                 self.apply(Judgment::Perfect, now_ms, None);
             } else {
                 position += 1;
@@ -415,7 +445,10 @@ impl Game {
     }
 
     fn mark_hit(&mut self, index: usize) {
-        self.chart.notes[index].hit = true;
+        self.note_states[index] = NoteState {
+            hit: true,
+            held_since: None,
+        };
         self.note_index.remove(index);
     }
 
@@ -433,16 +466,20 @@ impl Game {
 
     /// Select unexpired mines inside the current scroll-distance window.
     pub fn visible_mines(&self, now_ms: f64, approach_ms: f64) -> Vec<&crate::chart::Mine> {
-        self.mine_index.visible(
-            &self.chart.mines,
-            &self.scroll.frame(&self.chart, now_ms),
-            now_ms,
-            approach_ms,
-        )
+        self.mine_index
+            .visible(&self.scroll.frame(&self.chart, now_ms), now_ms, approach_ms)
+            .into_iter()
+            .filter(|&i| !self.mine_exploded(i))
+            .map(|i| &self.chart.mines[i])
+            .collect()
     }
 
     /// Select notes whose scroll spans overlap the playfield, including held tails.
-    pub fn visible_notes(&self, now_ms: f64, approach_ms: f64) -> impl Iterator<Item = &Note> {
+    pub fn visible_notes(
+        &self,
+        now_ms: f64,
+        approach_ms: f64,
+    ) -> impl Iterator<Item = (&Note, NoteState)> {
         let frame = self.scroll.frame(&self.chart, now_ms);
         self.note_index
             .matching(|min, max| {
@@ -453,9 +490,8 @@ impl Game {
             .map(|i| {
                 #[cfg(test)]
                 self.render_visits.set(self.render_visits.get() + 1);
-                &self.chart.notes[i]
+                (&self.chart.notes[i], self.note_states[i])
             })
-            .filter(|note| !note.hit)
     }
 
     pub(crate) fn average_offset_ms(&self) -> Option<f64> {
@@ -529,10 +565,8 @@ mod tests {
         Note {
             time_ms,
             lane,
-            hit: false,
             keysound: Some(1),
             end_ms: None,
-            held_since: None,
         }
     }
 
@@ -584,8 +618,8 @@ mod tests {
                             if long {
                                 game.hit(0, 1000.0);
                                 game.release(0, 2000.0 + sign * offset);
-                                assert!(game.chart().notes[0].hit);
-                                assert!(game.chart().notes[0].held_since.is_none());
+                                assert!(game.note_state(0).hit);
+                                assert!(game.note_state(0).held_since.is_none());
                             } else {
                                 game.hit(0, 1000.0 + sign * offset);
                             }
@@ -625,10 +659,10 @@ mod tests {
                     1000.0
                 };
                 game.check_misses(time + delay);
-                assert!(!game.chart().notes[0].hit);
+                assert!(!game.note_state(0).hit);
                 game.check_misses(time + delay + 0.5);
-                assert!(game.chart().notes[0].hit);
-                assert!(game.chart().notes[0].held_since.is_none());
+                assert!(game.note_state(0).hit);
+                assert!(game.note_state(0).held_since.is_none());
                 assert_eq!(
                     game.flash.last_judgment,
                     Some(if held {
@@ -658,7 +692,7 @@ mod tests {
             chart.rank = Some(rank);
             let mut game = Game::new(chart);
             assert_eq!(game.hit(0, 2000.0 + offset), Some(2));
-            assert_eq!(game.chart().notes[1].hit, judged);
+            assert_eq!(game.note_state(1).hit, judged);
             assert_eq!(game.good, u32::from(judged));
             game.check_misses(2500.0);
             assert_eq!(game.miss, if judged { 1 } else { 2 });
@@ -684,7 +718,7 @@ mod tests {
         assert_eq!(g.accuracy(), 100.0);
         assert_eq!(g.gauge.value(), 20.0);
         assert_eq!(g.flash.last_judgment, None);
-        assert!(g.chart().notes.iter().all(|n| !n.hit));
+        assert!(g.note_states().iter().all(|n| !n.hit));
     }
 
     #[test]
@@ -700,7 +734,7 @@ mod tests {
         g.check_misses(2000.0);
         assert_eq!(g.hit(0, 2145.0), Some(2));
         assert_eq!(g.miss, 1);
-        assert!(!g.chart().notes[1].hit);
+        assert!(!g.note_state(1).hit);
         g.check_misses(3200.0);
         assert_eq!(g.hit(0, 4000.0), Some(3));
         assert_eq!(g.miss, 3);
@@ -749,7 +783,7 @@ mod tests {
         assert_eq!(g.hit(0, 1900.0), Some(2));
         g.check_misses(2100.0);
         assert_eq!(g.hit(0, 2500.0), Some(2));
-        assert!(g.chart().notes[1].held_since.is_some());
+        assert!(g.note_state(1).held_since.is_some());
         assert_eq!(g.good, 1);
     }
 
@@ -795,7 +829,7 @@ mod tests {
             let candidates = g.hit_candidates(1, 205_000.0).len();
             let visible: Vec<_> = g
                 .visible_notes(205_000.0, 1000.0)
-                .map(|n| (n.time_ms, n.lane))
+                .map(|(note, _)| (note.time_ms, note.lane))
                 .collect();
             assert_eq!(visible, vec![(200_000.0, 0), (205_000.0, 1)]);
             g.hit(1, 205_000.0);
@@ -845,7 +879,7 @@ mod tests {
 
             let visible: Vec<_> = game
                 .visible_notes(NOW, 1000.0)
-                .map(|note| (note.time_ms, note.held_since.is_some()))
+                .map(|(note, state)| (note.time_ms, state.held_since.is_some()))
                 .collect();
             assert_eq!(visible, [(550_000.0, true), (NOW, false)]);
             assert_eq!(game.render_visits.get(), 2);
@@ -855,7 +889,7 @@ mod tests {
             );
             game.hit(0, NOW);
             assert_eq!(game.perfect, extra + 2);
-            assert!(!game.chart().notes[0].hit);
+            assert!(!game.note_state(0).hit);
         }
     }
 
@@ -930,8 +964,8 @@ mod tests {
         ));
         assert_eq!(g.hit_candidates(0, 1000.0).collect::<Vec<_>>(), [0, 2]);
         g.hit(0, 1000.0);
-        assert!(g.chart().notes[0].hit);
-        assert!(!g.chart().notes[2].hit);
+        assert!(g.note_state(0).hit);
+        assert!(!g.note_state(2).hit);
         g.hit(0, 1000.0);
         assert_eq!(g.good, 2);
     }
@@ -1026,15 +1060,15 @@ mod tests {
         let mut g = Game::new(chart_with(vec![note(1000.0, 1)], 4));
         assert!(g.hit(0, 1000.0).is_none());
         assert_eq!(g.perfect, 0);
-        assert!(!g.chart().notes[0].hit);
+        assert!(!g.note_state(0).hit);
     }
 
     #[test]
     fn hit_picks_the_closest_pending_note_in_the_lane() {
         let mut g = Game::new(chart_with(vec![note(1000.0, 0), note(1100.0, 0)], 4));
         g.hit(0, 1090.0);
-        assert!(g.chart().notes[1].hit);
-        assert!(!g.chart().notes[0].hit);
+        assert!(g.note_state(1).hit);
+        assert!(!g.note_state(0).hit);
     }
 
     #[test]
@@ -1058,8 +1092,8 @@ mod tests {
         let mut g = Game::new(chart_with(vec![note(1000.0, 0), note(2000.0, 0)], 4));
         g.check_misses(1000.0 + MISS_AFTER + 1.0);
         assert_eq!(g.miss, 1);
-        assert!(g.chart().notes[0].hit);
-        assert!(!g.chart().notes[1].hit);
+        assert!(g.note_state(0).hit);
+        assert!(!g.note_state(1).hit);
     }
 
     #[test]
@@ -1117,7 +1151,6 @@ mod tests {
             lane,
             end_ms: Some(end_ms),
             keysound: Some(1),
-            ..Default::default()
         }
     }
 
@@ -1140,7 +1173,6 @@ mod tests {
             time_ms,
             lane,
             damage: 2,
-            exploded: false,
         }
     }
 
@@ -1157,10 +1189,8 @@ mod tests {
         ));
         g.hit(0, 1000.0);
         assert_eq!(
-            g.chart()
-                .mines
-                .iter()
-                .map(|m| m.exploded)
+            (0..g.chart().mines.len())
+                .map(|i| g.mine_exploded(i))
                 .collect::<Vec<_>>(),
             vec![false, true, true, false]
         );
@@ -1176,7 +1206,7 @@ mod tests {
         let mut g = Game::new(chart);
         g.combo = 5;
         g.hit(0, 1000.0);
-        assert!(g.chart().mines.iter().all(|m| m.exploded));
+        assert!((0..g.chart().mines.len()).all(|i| g.mine_exploded(i)));
         assert_eq!(g.gauge.value(), 18.0);
         assert_eq!(g.combo, 1, "mines reset combo before the note judgment");
         assert_eq!(g.score, 301);
@@ -1211,7 +1241,12 @@ mod tests {
             g.hit(4, 1000.0);
             assert_eq!(g.mine_visits, 4, "invalid lanes visit no candidates");
             assert_eq!(g.gauge.value(), 18.0);
-            assert_eq!(g.chart().mines.iter().filter(|m| m.exploded).count(), 2);
+            assert_eq!(
+                (0..g.chart().mines.len())
+                    .filter(|&i| g.mine_exploded(i))
+                    .count(),
+                2
+            );
         });
     }
 
@@ -1221,12 +1256,11 @@ mod tests {
             time_ms: 1000.0,
             lane: 0,
             damage: 40,
-            exploded: false,
         }];
         let mut g = Game::new(chart_with_mines(mines, 4));
         g.hit(0, 1000.0);
         assert_eq!(g.miss, 0);
-        assert!(g.chart().mines[0].exploded);
+        assert!(g.mine_exploded(0));
         assert_eq!(g.gauge.value(), 0.0);
         assert_eq!(g.flash.last_miss_at, None);
         assert_eq!(g.combo, 0);
@@ -1238,12 +1272,11 @@ mod tests {
             time_ms: 1000.0,
             lane: 0,
             damage: 40,
-            exploded: false,
         }];
         let mut g = Game::new(chart_with_mines(mines, 4));
         g.hit(0, 1000.0 + MINE_WINDOW + 10.0);
         assert_eq!(g.miss, 0);
-        assert!(!g.chart().mines[0].exploded);
+        assert!(!g.mine_exploded(0));
     }
 
     #[test]
@@ -1252,12 +1285,11 @@ mod tests {
             time_ms: 1000.0,
             lane: 0,
             damage: 40,
-            exploded: false,
         }];
         let mut g = Game::new(chart_with_mines(mines, 4));
         g.hit(1, 1000.0);
         assert_eq!(g.miss, 0);
-        assert!(!g.chart().mines[0].exploded);
+        assert!(!g.mine_exploded(0));
     }
 
     #[test]
@@ -1266,7 +1298,6 @@ mod tests {
             time_ms: 1000.0,
             lane: 0,
             damage: 40,
-            exploded: false,
         }];
         let mut g = Game::new(chart_with_mines(mines, 4));
         g.hit(0, 1000.0);
@@ -1328,8 +1359,8 @@ mod tests {
         let mut g = Game::new(chart_with(vec![ln(1000.0, 2000.0, 0)], 4));
         g.hit(0, 1000.0);
         assert_eq!(g.perfect, 1, "start still scores like a tap");
-        assert!(!g.chart().notes[0].hit, "hit stays false until release");
-        assert!(g.chart().notes[0].held_since.is_some());
+        assert!(!g.note_state(0).hit, "hit stays false until release");
+        assert!(g.note_state(0).held_since.is_some());
     }
 
     #[test]
@@ -1338,8 +1369,8 @@ mod tests {
         g.hit(0, 1000.0);
         g.release(0, 2000.0);
         assert_eq!(g.perfect, 2, "start + release both perfect");
-        assert!(g.chart().notes[0].hit);
-        assert!(g.chart().notes[0].held_since.is_none());
+        assert!(g.note_state(0).hit);
+        assert!(g.note_state(0).held_since.is_none());
     }
 
     #[test]
@@ -1362,7 +1393,7 @@ mod tests {
             game.release(0, 1990.0);
 
             assert_eq!((game.perfect, game.miss), (perfect, miss), "{mode:?}");
-            assert_eq!(game.chart().notes[2].held_since, Some(1500.0));
+            assert_eq!(game.note_state(2).held_since, Some(1500.0));
             game.check_misses(3000.0);
             assert_eq!((game.perfect, game.miss), (perfect + 1, miss), "{mode:?}");
         }
@@ -1395,7 +1426,7 @@ mod tests {
         g.hit(0, 1000.0);
         g.check_misses(2000.0 + MISS_AFTER + 1.0);
         assert_eq!(g.perfect, 2, "auto-release keeps the perfect tier");
-        assert!(g.chart().notes[0].hit);
+        assert!(g.note_state(0).hit);
     }
 
     #[test]
@@ -1403,7 +1434,7 @@ mod tests {
         let mut g = Game::new(chart_with(vec![ln(1000.0, 2000.0, 0)], 4));
         g.check_misses(1000.0 + MISS_AFTER + 1.0);
         assert_eq!(g.miss, 1);
-        assert!(g.chart().notes[0].hit);
+        assert!(g.note_state(0).hit);
     }
 
     #[test]
@@ -1420,6 +1451,6 @@ mod tests {
         g.hit(1, 1000.0);
         assert_eq!(g.perfect, 2);
         assert_eq!(g.combo, 2);
-        assert!(g.chart().notes.iter().all(|n| n.hit));
+        assert!(g.note_states().iter().all(|n| n.hit));
     }
 }

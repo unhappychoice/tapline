@@ -209,7 +209,7 @@ fn lnmode_completion_preserves_scroll_and_speed_events() {
     game.hit(0, 4000.0);
     game.check_misses(6000.0);
     assert_eq!((game.perfect, game.miss), (2, 0));
-    assert!(game.chart().notes[0].hit);
+    assert!(game.note_state(0).hit);
 }
 
 #[test]
@@ -243,8 +243,8 @@ fn ln_completion_does_not_depend_on_release_timing_or_encoding() {
                 (game.perfect, game.great, game.good, game.miss),
                 (2, 0, 0, 0)
             );
-            assert!(game.chart().notes[0].hit);
-            assert!(game.chart().notes[0].held_since.is_none());
+            assert!(game.note_state(0).hit);
+            assert!(game.note_state(0).held_since.is_none());
         }
     }
 }
@@ -254,9 +254,9 @@ fn ln_completes_at_the_end_without_a_release_event() {
     let mut game = long_note_game("#LNMODE 1", "#00151:0101");
     game.hit(0, 4000.0);
     game.check_misses(5999.0);
-    assert!(!game.chart().notes[0].hit);
+    assert!(!game.note_state(0).hit);
     game.check_misses(6000.0);
-    assert!(game.chart().notes[0].hit);
+    assert!(game.note_state(0).hit);
     game.release(0, 6500.0);
     game.check_misses(7000.0);
     assert_eq!((game.perfect, game.miss, game.combo), (2, 0, 2));
@@ -315,7 +315,7 @@ fn cn_and_hcn_preserve_release_judgments_and_auto_completion() {
         let mut game = long_note_game(header, "#00151:0101");
         game.hit(0, 4000.0);
         game.check_misses(6000.0);
-        assert!(!game.chart().notes[0].hit);
+        assert!(!game.note_state(0).hit);
         game.check_misses(6161.0);
         assert_eq!((game.perfect, game.miss), (2, 0));
     }
@@ -328,7 +328,7 @@ fn ln_with_an_unpressed_start_is_missed_once() {
     game.release(0, 6000.0);
     game.check_misses(7000.0);
     assert_eq!((game.perfect, game.miss), (0, 1));
-    assert!(game.chart().notes[0].hit);
+    assert!(game.note_state(0).hit);
 }
 
 #[test]
@@ -470,7 +470,7 @@ fn cn_and_hcn_use_rank_windows_for_release_and_auto_completion() {
             let mut game = long_note_game(&header, "#00151:0101");
             game.hit(0, 4000.0);
             game.check_misses(6000.0 + miss_delay);
-            assert!(!game.chart().notes[0].hit);
+            assert!(!game.note_state(0).hit);
             game.check_misses(6001.0 + miss_delay);
             assert_eq!((game.perfect, game.miss), (2, 0));
         }
@@ -532,7 +532,7 @@ fn ln_modes_apply_gauge_penalty_once_for_early_release() {
 }
 
 #[test]
-fn active_chart_and_visibility_reflect_tap_hold_and_mine_updates() {
+fn gameplay_state_and_visibility_are_independent_across_attempts() {
     use tapline::chart::{Chart, Mine, Note, ScrollEvent};
 
     let mut game = Game::new(Chart {
@@ -552,7 +552,6 @@ fn active_chart_and_visibility_reflect_tap_hold_and_mine_updates() {
             time_ms: 1000.0,
             lane: 2,
             damage: 10,
-            ..Default::default()
         }],
         scroll: vec![ScrollEvent {
             time_ms: 0.0,
@@ -567,20 +566,41 @@ fn active_chart_and_visibility_reflect_tap_hold_and_mine_updates() {
     game.hit(1, 1000.0);
     game.hit(2, 1000.0);
     assert_eq!(game.perfect, 2);
-    assert!(game.chart().notes[0].hit);
-    assert!(game.chart().mines[0].exploded);
+    assert!(game.note_state(0).hit);
+    assert!(game.mine_exploded(0));
     assert!(game.visible_mines(1000.0, 1000.0).is_empty());
 
     game.check_misses(1250.0);
     let mut visible = game.visible_notes(1250.0, 1000.0);
-    let held = visible.next().unwrap();
+    let (held, state) = visible.next().unwrap();
     assert!(std::ptr::eq(held, &game.chart().notes[1]));
-    assert_eq!(held.held_since, Some(1000.0));
+    assert_eq!(state.held_since, Some(1000.0));
     assert_eq!(visible.count(), 0);
+
+    let mut retry = Game::new(game.chart().clone());
+    assert!(!retry.note_state(0).hit);
+    assert_eq!(retry.note_state(1).held_since, None);
+    assert!(!retry.mine_exploded(0));
+    assert_eq!(retry.visible_notes(1000.0, 1000.0).count(), 2);
+    assert_eq!(retry.visible_mines(1000.0, 1000.0).len(), 1);
+
+    retry.hit(0, 1000.0);
+    retry.hit(1, 1000.0);
+    let gauge_before_mine = retry.gauge.value();
+    retry.hit(2, 1000.0);
+    assert_eq!(retry.gauge.value(), gauge_before_mine - 5.0);
+    assert!(retry.mine_exploded(0));
+    assert!(retry.note_state(0).hit);
+    assert_eq!(retry.note_state(1).held_since, Some(1000.0));
+    retry.release(1, 1500.0);
+    assert_eq!((retry.perfect, retry.miss), (3, 0));
+    assert!(retry.note_state(1).hit);
+    assert_eq!(retry.note_state(1).held_since, None);
+    assert_eq!(game.note_state(1).held_since, Some(1000.0));
 
     game.release(1, 1500.0);
     assert_eq!((game.perfect, game.miss), (3, 0));
-    assert!(game.chart().notes[1].hit);
-    assert_eq!(game.chart().notes[1].held_since, None);
+    assert!(game.note_state(1).hit);
+    assert_eq!(game.note_state(1).held_since, None);
     assert!(game.visible_notes(1500.0, 1000.0).next().is_none());
 }
