@@ -42,18 +42,19 @@ fn selector_search_by_artist_launches_the_matching_chart() {
         .arg(dir.path())
         .env("TAPLINE_DATA_DIR", dir.path());
 
+    let filtered_status = b"1 / 2 matches | Lanes: all | Clear: all | Query: violet";
     let (status, output) = run_interactive(
         command,
         &[
             ("select a chart  ·  2 loaded".as_bytes(), b"/violet"),
             (
-                b"1 / 2 matches | Lanes: all | / editing | Query: violet",
+                b"1 / 2 matches | Lanes: all | Clear: all | / editing | Query: violet",
                 b"\r",
             ),
-            (b"1 / 2 matches | Lanes: all | Query: violet", b"\r"),
+            (filtered_status, b"\r"),
             (b"quit Esc / Q", b"q"),
             (b"R: retry / other: selector", b" "),
-            (b"1 / 2 matches | Lanes: all | Query: violet", b"q"),
+            (filtered_status, b"q"),
         ],
     );
     assert!(status.success(), "{output:?}");

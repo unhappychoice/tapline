@@ -69,9 +69,11 @@ Inside the selector: `↑ ↓` / `j k` to move, `PageUp` / `PageDown` to page,
 Press `/` to edit a live, case-insensitive search across title, subtitle, and
 artist. Type to search, `Backspace` to delete, and `Enter` / `Esc` to finish
 editing without starting a chart or quitting. Press `l` outside search editing
-to cycle through the collection's lane counts and back to all lanes; `c` clears
-both conditions. The selector shows the active conditions and matching count.
-Empty results stop preview playback and cannot be played. Search and lane
+to cycle through the collection's lane counts and back to all lanes, and `v`
+to cycle the clear-status filter (all → cleared → uncleared/unplayed → all,
+based on each chart's personal-best record); `c` clears all three conditions.
+The selector shows the active conditions and matching count. Empty results
+stop preview playback and cannot be played. Search, lane, and clear-status
 conditions persist when returning from play within the same session.
 
 Gameplay requires at least `7 × lane count + 1` columns and 13 rows (99×13
