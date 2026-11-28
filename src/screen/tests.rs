@@ -34,12 +34,12 @@ fn first_present_sends_every_cell() {
 }
 
 #[test]
-fn unchanged_frames_send_no_cells() {
+fn unchanged_frames_send_no_bytes() {
     let mut s = screen(10, 3);
     queue!(s, cursor::MoveTo(2, 1), Print("hello")).unwrap();
     present(&mut s);
     queue!(s, cursor::MoveTo(2, 1), Print("hello")).unwrap();
-    assert_eq!(present(&mut s), "\x1b[?2026h\x1b[0m\x1b[?2026l");
+    assert!(present(&mut s).is_empty());
 }
 
 #[test]
@@ -179,10 +179,11 @@ fn clearing_from_a_wide_continuation_also_blanks_its_leading_half() {
 #[test]
 fn invalidate_resends_every_cell() {
     let mut s = screen(3, 1);
-    queue!(s, Print("abc")).unwrap();
+    queue!(s, Print("ab")).unwrap();
     present(&mut s);
     s.invalidate();
-    assert!(present(&mut s).contains("abc"));
+    assert!(present(&mut s).contains("ab "));
+    assert!(present(&mut s).is_empty());
 }
 
 #[test]
@@ -192,7 +193,7 @@ fn presenting_combining_marks_and_replacing_them_with_a_plain_glyph() {
     assert!(present(&mut s).contains("Cafe\u{301}"));
 
     queue!(s, cursor::MoveTo(0, 0), Print("Cafe\u{301}")).unwrap();
-    assert_eq!(present(&mut s), "\x1b[?2026h\x1b[0m\x1b[?2026l");
+    assert!(present(&mut s).is_empty());
 
     queue!(s, cursor::MoveTo(0, 0), Print("Cafe")).unwrap();
     assert_eq!(
@@ -206,4 +207,84 @@ fn combining_marks_follow_a_wide_glyph_without_advancing_the_cursor() {
     let mut s = screen(3, 1);
     queue!(s, Print("\u{301}日\u{301}\u{308}x")).unwrap();
     assert!(present(&mut s).contains("日\u{301}\u{308}x"));
+}
+
+#[test]
+fn a_single_updated_cell_queues_only_its_index_on_a_large_screen() {
+    let mut s = screen(300, 100);
+    present(&mut s);
+    assert!(present(&mut s).is_empty());
+
+    queue!(
+        s,
+        cursor::MoveTo(250, 80),
+        Print("x"),
+        cursor::MoveTo(250, 80),
+        Print("y")
+    )
+    .unwrap();
+    let index = 80 * 300 + 250;
+    assert!(!s.redraw);
+    assert_eq!(s.touched, [index]);
+    assert!(present(&mut s).contains("\x1b[81;251H\x1b[0my"));
+    assert_eq!(s.front[index].ch, 'y');
+    assert!(s.touched.is_empty());
+    assert!(!s.queued[index]);
+}
+
+#[test]
+fn row_and_screen_clears_erase_previously_presented_cells() {
+    let (mut model, mut mirror) = (screen(12, 4), screen(12, 4));
+    queue!(model, Print("日abc"), cursor::MoveTo(3, 1), Print("def")).unwrap();
+    mirror.write_all(present(&mut model).as_bytes()).unwrap();
+
+    queue!(
+        model,
+        cursor::MoveTo(1, 0),
+        terminal::Clear(terminal::ClearType::UntilNewLine)
+    )
+    .unwrap();
+    assert_eq!(model.touched, [0, 1, 2, 3, 4]);
+    mirror.write_all(present(&mut model).as_bytes()).unwrap();
+    assert_eq!(mirror.back, model.back);
+
+    queue!(model, terminal::Clear(terminal::ClearType::All)).unwrap();
+    assert_eq!(model.touched, [15, 16, 17]);
+    mirror.write_all(present(&mut model).as_bytes()).unwrap();
+    assert_eq!(mirror.back, model.back);
+    assert!(present(&mut model).is_empty());
+}
+
+#[test]
+fn standalone_combining_mark_updates_the_presented_wide_glyph() {
+    let mut s = screen(4, 1);
+    queue!(s, Print("日")).unwrap();
+    present(&mut s);
+
+    queue!(s, Print("\u{301}")).unwrap();
+    assert_eq!(s.touched, [0]);
+    assert!(present(&mut s).contains("日\u{301}"));
+    assert!(present(&mut s).is_empty());
+}
+
+#[test]
+fn failed_flush_forces_a_full_redraw_on_retry() {
+    struct FailingFlush;
+
+    impl Write for FailingFlush {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("flush failed"))
+        }
+    }
+
+    let mut s = screen(4, 1);
+    present(&mut s);
+    queue!(s, Print("x")).unwrap();
+    assert!(s.present(&mut FailingFlush).is_err());
+    assert!(present(&mut s).contains("x   "));
+    assert!(present(&mut s).is_empty());
 }
