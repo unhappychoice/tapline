@@ -173,8 +173,8 @@ fn judgment_changes_and_song_text_share_the_timeline() {
         "#00011:0101\n#000A0:0001\n#00099:0102",
     );
     assert_eq!(c.text_events.len(), 2);
-    assert_eq!(c.text_events[0].text, "Verse");
-    assert_eq!(c.text_events[1].text, "Chorus");
+    assert_eq!(c.text_events[0].text.as_ref(), "Verse");
+    assert_eq!(c.text_events[1].text.as_ref(), "Chorus");
     assert_eq!(c.text_events[0].time_ms, 500.0);
     assert_eq!(c.text_events[1].time_ms, c.exrank_events[0].time_ms);
     assert_eq!(c.judgment_scale(c.text_events[1].time_ms), 0.5);
