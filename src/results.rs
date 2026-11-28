@@ -11,7 +11,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-const LOCK_WAIT_LIMIT: Duration = Duration::from_millis(500);
+// Instrumented coverage binaries spawn and schedule subprocesses much slower than a
+// release build, so this needs enough headroom for 8 concurrent workers to each take
+// their turn with the lock under cargo-llvm-cov.
+const LOCK_WAIT_LIMIT: Duration = Duration::from_secs(10);
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Debug)]

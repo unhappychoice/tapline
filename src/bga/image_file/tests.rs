@@ -25,6 +25,7 @@ fn with_fifo(name: &str, check: impl FnOnce(&Path) + Send + 'static) {
 #[test]
 fn bmson_fifo_and_symlink_headers_without_events_do_not_block_initialization() {
     with_fifo("headers", |fifo| {
+        let _lock = super::load_calls_test_lock();
         let dir = fifo.parent().unwrap();
         symlink(fifo, dir.join("link.png")).unwrap();
         let path = dir.join("chart.bmson");
@@ -37,6 +38,7 @@ fn bmson_fifo_and_symlink_headers_without_events_do_not_block_initialization() {
 
 #[test]
 fn chart_bga_skips_file_and_directory_links_to_other_directories() {
+    let _lock = super::load_calls_test_lock();
     let root = std::env::temp_dir().join(format!("tapline-bga-links-{}", std::process::id()));
     let song = root.join("song");
     std::fs::create_dir_all(song.join("images")).unwrap();
@@ -81,6 +83,7 @@ fn chart_bga_skips_file_and_directory_links_to_other_directories() {
 #[test]
 fn crops_skip_special_files_and_preserve_regular_images() {
     with_fifo("crops", |fifo| {
+        let _lock = super::load_calls_test_lock();
         let dir = fifo.parent().unwrap();
         let link = dir.join("link.png");
         symlink(fifo, &link).unwrap();

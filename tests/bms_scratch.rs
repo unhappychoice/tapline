@@ -42,8 +42,6 @@ fn scratch_long_notes_and_mines_are_playable_on_both_sides() {
                 &format!("{high_keys}#00156:0202\n#00166:0303\n#002D6:64\n#002E6:32"),
                 *count,
             );
-            assert!(chart.p2_notes.is_empty());
-            assert!(chart.p2_mines.is_empty());
             let mut game = Game::new(chart);
             [(*p1, 'A', 2), (*p2, ';', 3)]
                 .iter()
@@ -97,7 +95,6 @@ fn scratch_mines_and_empty_or_unpaired_channels_infer_consistent_modes() {
         let chart = load(channels, 5);
         assert!(chart.notes.is_empty());
         assert!(chart.mines.is_empty());
-        assert!(chart.p2_notes.is_empty());
         assert!(chart.bgm.is_empty());
     });
 }
@@ -144,7 +141,6 @@ fn invisible_scratch_sounds_follow_compacted_and_double_play_lanes() {
     .iter()
     .for_each(|(channels, count, lanes)| {
         let chart = load(channels, *count);
-        assert!(chart.p2_invisible_notes.is_empty());
         assert_eq!(
             chart
                 .invisible_notes
@@ -171,7 +167,6 @@ fn asymmetric_scratch_dp_compacts_each_side_before_merging() {
     .iter()
     .for_each(|(channels, count, lanes)| {
         let chart = load(channels, *count);
-        assert!(chart.p2_notes.is_empty());
         assert_eq!(
             chart.notes.iter().map(|note| note.lane).collect::<Vec<_>>(),
             *lanes

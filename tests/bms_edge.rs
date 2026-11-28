@@ -265,20 +265,13 @@ fn bpm_changes_and_stops_keep_all_event_times_finite() {
     assert!(chart
         .notes
         .iter()
-        .chain(&chart.p2_notes)
         .all(|note| { note.time_ms.is_finite() && note.end_ms.is_none_or(f64::is_finite) }));
-    assert!(chart
-        .mines
-        .iter()
-        .chain(&chart.p2_mines)
-        .all(|mine| mine.time_ms.is_finite()));
+    assert!(chart.mines.iter().all(|mine| mine.time_ms.is_finite()));
     assert!(!chart.invisible_notes.is_empty());
     assert!(chart.invisible_notes.iter().any(|note| note.lane == 4));
-    assert!(chart.p2_invisible_notes.is_empty());
     assert!(chart
         .invisible_notes
         .iter()
-        .chain(&chart.p2_invisible_notes)
         .all(|note| note.time_ms.is_finite()));
     assert!(chart.bgm.iter().all(|event| event.time_ms.is_finite()));
     assert!(chart.bga.iter().all(|event| event.time_ms.is_finite()));
@@ -334,7 +327,7 @@ fn wav_references_that_do_not_exist_are_dropped_from_wav_paths() {
 fn lntype_two_merges_runs_and_preserves_the_first_keysound_on_both_sides() {
     let path = write_text("#BPM 60\n#LNTYPE 2\n#00151:0102030000040000\n#00161:0102030000040000\n");
     let chart = bms::load(&path, 0.0).unwrap();
-    assert!(chart.p2_notes.is_empty());
+    assert_eq!(chart.notes.len(), 4);
     for lane in [0, 4] {
         let notes = chart
             .notes
@@ -357,7 +350,7 @@ fn lntype_two_preserves_base62_keysounds_on_both_sides() {
         "#BASE 62\n#BPM 60\n#LNTYPE 2\n#00151:0A000a00\n#00161:0A000a00\n#00197:0a\n#00198:FF\n",
     );
     let chart = bms::load(&path, 0.0).unwrap();
-    assert!(chart.p2_notes.is_empty());
+    assert_eq!(chart.notes.len(), 4);
     for lane in [0, 4] {
         let notes = chart
             .notes
@@ -470,7 +463,6 @@ fn duplicate_normal_notes_use_the_last_keysound_on_both_sides() {
     for channel in ["11", "21"] {
         let path = write_text(&format!("#BPM 60\n#001{channel}:01\n#001{channel}:02\n"));
         let chart = bms::load(&path, 0.0).unwrap();
-        assert!(chart.p2_notes.is_empty());
         let notes = &chart.notes;
         assert_eq!(notes[0].lane, if channel == "11" { 0 } else { 5 });
         assert_eq!(notes.len(), 1);
@@ -481,14 +473,16 @@ fn duplicate_normal_notes_use_the_last_keysound_on_both_sides() {
 
 #[test]
 fn duplicate_positions_merge_across_different_slot_counts() {
-    let path = write_text("#BPM 60\n#00111:010203\n#00111:000004000500\n#00112:06\n#00211:07\n");
+    let path =
+        write_text("#BPM 60\n#BASE 62\n#00111:0A0203\n#00111:00000a000500\n#00112:06\n#00211:07\n");
     let chart = bms::load(&path, 0.0).unwrap();
     let keysounds: Vec<_> = chart
         .notes
         .iter()
         .map(|note| note.keysound.unwrap())
         .collect();
-    assert_eq!(keysounds, vec![1, 6, 4, 5, 7]);
+    assert_eq!(keysounds, vec![10, 6, 36, 5, 7]);
+    assert!((chart.notes[2].time_ms - (4000.0 + 4000.0 / 3.0)).abs() < 1e-6);
 }
 
 #[test]
@@ -498,7 +492,6 @@ fn duplicate_long_note_endpoints_merge_before_pairing_on_both_sides() {
             "#BPM 60\n#001{channel}:0101\n#001{channel}:02000200\n"
         ));
         let chart = bms::load(&path, 0.0).unwrap();
-        assert!(chart.p2_notes.is_empty());
         let notes = &chart.notes;
         assert_eq!(notes[0].lane, if channel == "51" { 0 } else { 5 });
         assert_eq!(notes.len(), 1);
@@ -511,9 +504,10 @@ fn duplicate_long_note_endpoints_merge_before_pairing_on_both_sides() {
 #[test]
 fn duplicate_landmines_use_the_last_base36_damage_on_both_sides() {
     for channel in ["D1", "E1"] {
-        let path = write_text(&format!("#BPM 60\n#001{channel}:0A\n#001{channel}:ZZ00\n"));
+        let path = write_text(&format!(
+            "#BPM 60\n#BASE 62\n#001{channel}:0A\n#001{channel}:zz00\n"
+        ));
         let chart = bms::load(&path, 0.0).unwrap();
-        assert!(chart.p2_mines.is_empty());
         let mines = &chart.mines;
         assert_eq!(mines[0].lane, if channel == "D1" { 0 } else { 5 });
         assert_eq!(mines.len(), 1);
@@ -588,7 +582,6 @@ fn lntype_two_uses_pms_lanes_without_duplicate_p2_notes() {
     assert_eq!(chart.notes[0].lane, 5);
     assert_eq!(chart.notes[0].time_ms, 4000.0);
     assert_eq!(chart.notes[0].end_ms, Some(7000.0));
-    assert!(chart.p2_notes.is_empty());
 }
 
 #[test]

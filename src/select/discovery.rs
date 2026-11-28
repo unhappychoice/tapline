@@ -21,13 +21,18 @@ impl Discovery {
         let paths: HashSet<_> = charts.iter().map(|chart| chart.path.as_path()).collect();
         self.metadata
             .retain(|path, _| paths.contains(path.as_path()));
-        charts.sort_by(|a, b| {
-            a.title
-                .to_ascii_lowercase()
-                .cmp(&b.title.to_ascii_lowercase())
-                .then_with(|| a.path.cmp(&b.path))
+        let mut keyed_charts: Vec<_> = charts
+            .into_iter()
+            .map(|chart| {
+                #[cfg(test)]
+                tests::TITLE_SORT_KEYS.with(|count| count.set(count.get() + 1));
+                (chart.title.to_ascii_lowercase(), chart)
+            })
+            .collect();
+        keyed_charts.sort_unstable_by(|(a_key, a), (b_key, b)| {
+            a_key.cmp(b_key).then_with(|| a.path.cmp(&b.path))
         });
-        charts
+        keyed_charts.into_iter().map(|(_, chart)| chart).collect()
     }
 
     pub(super) fn invalidate(&mut self, path: &Path) {
