@@ -283,8 +283,7 @@ fn seeded_branches_are_redrawn_and_match_gameplay_each_visit() {
 }
 
 fn progress(charts: &[ChartEntry], path: &Path) -> Vec<String> {
-    let store = Store::load(path).unwrap();
-    super::super::load_progress(charts, Some(&store))
+    super::super::load_progress(charts, Some(path)).0
 }
 
 fn save_result(meta: ChartEntry, path: &Path) {

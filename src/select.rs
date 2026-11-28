@@ -66,6 +66,10 @@ pub struct SelectorState {
     /// the `charts` slice passed to `refresh`. Invalidated on each scan and
     /// reused across search keystrokes within the same collection.
     case_folded_cache: Vec<(String, String, String)>,
+    /// The results store this selector run already loaded to show progress,
+    /// kept so the next completed attempt can merge and save into it
+    /// directly instead of rereading and reparsing the whole file.
+    records: Option<crate::results::Store>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -80,6 +84,12 @@ impl SelectorState {
     pub fn scan(&mut self, root: &Path) -> Vec<ChartEntry> {
         self.case_folded_cache.clear();
         self.discovery.scan(root, &crate::bms::random_seed)
+    }
+
+    /// Returns the results store loaded for this selector run, if any, so a
+    /// completed attempt can reuse it when saving instead of reloading the file.
+    pub fn records_mut(&mut self) -> Option<&mut crate::results::Store> {
+        self.records.as_mut()
     }
 
     pub fn refresh_changed_chart(&mut self, path: &Path) {
@@ -248,9 +258,9 @@ pub fn run_with_state(
         return Ok(None);
     }
     let records_path = crate::results::data_path();
-    let store = records_path.and_then(|path| crate::results::Store::load(&path).ok());
-    let progress = load_progress(charts, store.as_ref());
+    let (progress, store) = load_progress(charts, records_path.as_deref());
     state.set_clears(load_clears(charts, store.as_ref()));
+    state.records = store;
     state.editing = false;
     state.refresh(charts);
     let audio = crate::audio::preview_output(!no_audio);
@@ -322,14 +332,18 @@ fn run_loop(
     }
 }
 
-fn load_progress(charts: &[ChartEntry], store: Option<&crate::results::Store>) -> Vec<String> {
-    let Some(store) = store else {
-        return vec!["[RECORDS UNAVAILABLE]".into(); charts.len()];
+fn load_progress(
+    charts: &[ChartEntry],
+    records_path: Option<&Path>,
+) -> (Vec<String>, Option<crate::results::Store>) {
+    let Some(store) = records_path.and_then(|path| crate::results::Store::load(path).ok()) else {
+        return (vec!["[RECORDS UNAVAILABLE]".into(); charts.len()], None);
     };
-    charts
+    let progress = charts
         .iter()
         .map(|chart| format_progress(store.get(&chart.identity)))
-        .collect()
+        .collect();
+    (progress, Some(store))
 }
 
 fn load_clears(charts: &[ChartEntry], store: Option<&crate::results::Store>) -> Vec<Option<bool>> {
@@ -800,6 +814,39 @@ mod tests {
         assert_eq!(state.handle_key(repeat, &charts), SelectorAction::None);
         assert_eq!(state.handle_key(repeat, &charts), SelectorAction::None);
         assert_eq!(state.handle_key(press, &charts), SelectorAction::Play(0));
+    }
+
+    #[test]
+    fn selector_caches_the_loaded_store_for_a_completed_attempts_save() {
+        let dir = tempdir();
+        let path = dir.join("results.json");
+        let chart = meta("Alpha");
+        let (progress, store) = load_progress(std::slice::from_ref(&chart), Some(&path));
+        assert_eq!(progress, ["[UNPLAYED]"]);
+        let mut state = SelectorState {
+            records: store,
+            ..Default::default()
+        };
+        let store = state
+            .records_mut()
+            .expect("selector should cache the store it loaded");
+        let mut game = crate::game::Game::new(crate::chart::built_in(120.0, 0.0));
+        game.completed = true;
+        game.score = 100;
+        assert!(
+            crate::results::update_cached(store, &path, &chart.identity, &game, false)
+                .unwrap()
+                .is_none()
+        );
+        let best_score = state
+            .records_mut()
+            .unwrap()
+            .get(&chart.identity)
+            .unwrap()
+            .best
+            .score;
+        assert_eq!(best_score, 100);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
