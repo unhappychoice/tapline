@@ -55,8 +55,8 @@ pub struct SelectorState {
     scroll: usize,
     indices: Vec<usize>,
     /// Case-folded title/subtitle/artist for each chart, keyed by index into
-    /// the `charts` slice passed to `refresh`. Invalidated on each scan and
-    /// reused across search keystrokes within the same collection.
+    /// the current visit's chart slice. Invalidated on each visit or scan and
+    /// reused across search keystrokes.
     case_folded_cache: Vec<(String, String, String)>,
 }
 
@@ -221,8 +221,6 @@ pub fn run_with_state(
     }
     let records_path = crate::results::data_path();
     let progress = load_progress(charts, records_path.as_deref());
-    state.editing = false;
-    state.refresh(charts);
     let audio = crate::audio::preview_output(!no_audio);
     let mut preview = audio
         .as_ref()
@@ -256,6 +254,9 @@ fn run_loop(
     mut input: impl FnMut() -> std::io::Result<Option<Event>>,
     mut preview: impl FnMut(Option<usize>, Option<&Path>),
 ) -> Result<Option<ChartEntry>> {
+    state.editing = false;
+    state.case_folded_cache.clear();
+    state.refresh(charts);
     let mut frame = SelectorFrame::default();
     loop {
         let selected = state.selected();
@@ -573,6 +574,76 @@ mod tests {
         KeyEvent::new_with_kind(code, event::KeyModifiers::NONE, kind)
     }
 
+    fn visit(
+        state: &mut SelectorState,
+        charts: &[ChartEntry],
+        keys: impl IntoIterator<Item = KeyCode>,
+    ) -> Option<ChartEntry> {
+        let mut keys = keys.into_iter();
+        run_loop(
+            &mut Vec::new(),
+            charts,
+            state,
+            &vec!["[UNPLAYED]".into(); charts.len()],
+            || Ok((100, 12)),
+            || {
+                Ok(Some(Event::Key(key_event(
+                    keys.next().unwrap(),
+                    KeyEventKind::Press,
+                ))))
+            },
+            |_, _| {},
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn selector_visits_search_current_metadata_after_same_length_replacement() {
+        let mut old = meta("Alpha");
+        old.meta.subtitle = "Acoustic".into();
+        old.meta.artist = "Original".into();
+        let mut new = meta("Beta");
+        new.meta.subtitle = "Remix".into();
+        new.meta.artist = "Updated".into();
+        let mut state = SelectorState::default();
+        assert!(visit(&mut state, &[old], [KeyCode::Esc]).is_none());
+
+        let charts = [new];
+        for (query, expected) in [
+            ("alpha", None),
+            ("acoustic", None),
+            ("original", None),
+            ("BETA", Some("Beta")),
+            ("REMIX", Some("Beta")),
+            ("UPDATED", Some("Beta")),
+        ] {
+            let keys = [KeyCode::Char('c'), KeyCode::Char('/')]
+                .into_iter()
+                .chain(query.chars().map(KeyCode::Char))
+                .chain([KeyCode::Enter, KeyCode::Enter, KeyCode::Esc]);
+            let selected = visit(&mut state, &charts, keys);
+            assert_eq!(
+                selected.as_ref().map(|chart| chart.title.as_str()),
+                expected,
+                "{query}"
+            );
+        }
+    }
+
+    #[test]
+    fn selector_visits_keep_search_matches_aligned_with_reordered_charts() {
+        let mut charts = [meta("Alpha"), meta("Beta")];
+        let mut state = SelectorState {
+            query: "alpha".into(),
+            ..Default::default()
+        };
+        assert!(visit(&mut state, &charts, [KeyCode::Esc]).is_none());
+        charts.swap(0, 1);
+
+        let selected = visit(&mut state, &charts, [KeyCode::Enter, KeyCode::Esc]).unwrap();
+        assert_eq!(selected.path, charts[1].path);
+    }
+
     #[test]
     fn blocked_preview_allows_redraw_navigation_empty_results_and_quit() {
         use std::sync::mpsc;
@@ -598,7 +669,6 @@ mod tests {
         charts[0].meta.preview = Some("alpha.wav".into());
         charts[1].meta.preview = Some("beta.wav".into());
         let mut state = SelectorState::default();
-        state.refresh(&charts);
         let mut out = Vec::new();
         let mut keys = [
             KeyCode::Down,
