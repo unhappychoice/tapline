@@ -148,24 +148,28 @@ fn update_cached_merges_into_the_given_store_when_nothing_else_touched_the_file(
 }
 
 #[test]
-fn update_cached_reloads_instead_of_clobbering_a_concurrent_writers_changes() {
+fn update_cached_preserves_a_concurrent_replacement_with_the_same_mtime() {
     let dir = directory();
     let path = dir.join("results.json");
     let id = Identity::built_in(120.0);
     let other_id = Identity::built_in(99.0);
 
-    let mut store = Store::default();
-    assert!(
-        update_cached(&mut store, &path, &id, &game(100, 2, 2, 1), false)
-            .unwrap()
-            .is_none()
-    );
+    update(&path, &id, &game(100, 2, 2, 1), false).unwrap();
+    update(&path, &other_id, &game(400, 5, 5, 0), false).unwrap();
+    let mut store = Store::load(&path).unwrap();
+    let original = fs::metadata(&path).unwrap();
+    let modified = original.modified().unwrap();
 
-    // Another tapline process records a different chart's result in the meantime,
-    // without our cached `store` knowing about it.
-    let mut other_process = Store::load(&path).unwrap();
-    other_process.record(&other_id, &game(500, 5, 5, 0), false);
-    other_process.save(&path).unwrap();
+    update(&path, &other_id, &game(500, 5, 5, 0), false).unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    let replacement = fs::metadata(&path).unwrap();
+    assert_eq!(replacement.modified().unwrap(), modified);
+    assert_eq!(replacement.len(), original.len());
 
     assert_eq!(
         update_cached(&mut store, &path, &id, &game(200, 3, 3, 1), true)

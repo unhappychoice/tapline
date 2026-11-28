@@ -7,7 +7,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     thread,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 // Instrumented coverage binaries spawn and schedule subprocesses much slower than a
@@ -79,13 +79,8 @@ pub struct Record {
 #[derive(Default, Serialize, Deserialize)]
 pub struct Store {
     records: BTreeMap<String, Record>,
-    /// The results file's mtime as of the last [`Store::load`], or the mtime
-    /// this `Store` itself wrote via [`update_cached`]. `None` means the file
-    /// was missing (or this `Store` was never backed by disk at all, as with
-    /// `Store::default()`). Lets `update_cached` detect a concurrent writer
-    /// without reparsing the whole file on every completed attempt.
     #[serde(skip)]
-    loaded_mtime: Option<SystemTime>,
+    cached_file: Option<CachedFile>,
 }
 
 #[derive(Debug)]
@@ -121,8 +116,7 @@ pub fn update(
 /// (e.g. the one the selector read to show progress) instead of rereading
 /// and reparsing the whole file just to change one entry, as long as nothing
 /// else has written to the file since. Falls back to a fresh [`Store::load`]
-/// under the lock when the file's mtime has moved on, so a concurrent writer
-/// (another tapline process) cannot be silently overwritten.
+/// under the lock when the file no longer matches the cached snapshot.
 pub fn update_cached(
     store: &mut Store,
     path: &Path,
@@ -134,21 +128,65 @@ pub fn update_cached(
         return Ok(store.get(identity).cloned());
     }
     let _lock = lock_results(path).map_err(|_| UpdateError::Lock)?;
-    if mtime(path) != store.loaded_mtime {
-        *store = Store::load(path).map_err(|_| UpdateError::Read)?;
-    }
+    store.refresh(path).map_err(|_| UpdateError::Read)?;
     let previous = store.get(identity).cloned();
     store.record(identity, game, auto_keysound);
-    if store.save(path).is_err() {
-        store.restore(identity, previous.clone());
-        return Err(UpdateError::Write(previous));
+    match store.save_snapshot(path) {
+        Ok(file) => store.cached_file = CachedFile::new(file.metadata(), file),
+        Err(_) => {
+            store.restore(identity, previous.clone());
+            return Err(UpdateError::Write(previous));
+        }
     }
-    store.loaded_mtime = mtime(path);
     Ok(previous)
 }
 
-fn mtime(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path).ok()?.modified().ok()
+struct CachedFile {
+    #[cfg(unix)]
+    // Holding the original inode prevents its reuse while this snapshot is cached.
+    _file: File,
+    #[cfg(unix)]
+    metadata: fs::Metadata,
+}
+
+impl CachedFile {
+    fn new(metadata: io::Result<fs::Metadata>, file: File) -> Option<Self> {
+        #[cfg(unix)]
+        {
+            Some(Self {
+                _file: file,
+                metadata: metadata.ok()?,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            // A retained destination handle can prevent replacement on Windows.
+            drop((metadata, file));
+            None
+        }
+    }
+
+    fn matches(&self, file: &File) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let cached = &self.metadata;
+            file.metadata().is_ok_and(|current| {
+                current.dev() == cached.dev()
+                    && current.ino() == cached.ino()
+                    && current.len() == cached.len()
+                    && current.mtime() == cached.mtime()
+                    && current.mtime_nsec() == cached.mtime_nsec()
+                    && current.ctime() == cached.ctime()
+                    && current.ctime_nsec() == cached.ctime_nsec()
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = file;
+            false
+        }
+    }
 }
 
 fn lock_results(path: &Path) -> io::Result<File> {
@@ -176,19 +214,38 @@ fn lock_results(path: &Path) -> io::Result<File> {
 
 impl Store {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        use std::io::Read;
-        let mut file = match crate::fs_guard::open(path) {
+        let mut store = Self::default();
+        store.refresh(path)?;
+        Ok(store)
+    }
+
+    fn refresh(&mut self, path: &Path) -> anyhow::Result<()> {
+        let file = match crate::fs_guard::open(path) {
             Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default())
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                *self = Self::default();
+                return Ok(());
             }
             Err(error) => return Err(error.into()),
         };
-        let loaded_mtime = file.metadata().ok().and_then(|meta| meta.modified().ok());
+        if !self
+            .cached_file
+            .as_ref()
+            .is_some_and(|cached| cached.matches(&file))
+        {
+            *self = Self::read_snapshot(file)?;
+        }
+        Ok(())
+    }
+
+    fn read_snapshot(mut file: File) -> anyhow::Result<Self> {
+        use std::io::Read;
+
+        let metadata = file.metadata();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         let mut store: Self = serde_json::from_slice(&bytes)?;
-        store.loaded_mtime = loaded_mtime;
+        store.cached_file = CachedFile::new(metadata, file);
         Ok(store)
     }
 
@@ -244,6 +301,10 @@ impl Store {
 
     /// Replaces the file with this snapshot. Use [`update`] to merge a completed run.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        self.save_snapshot(path).map(drop)
+    }
+
+    fn save_snapshot(&self, path: &Path) -> anyhow::Result<File> {
         use std::io::Write;
         let directory = path
             .parent()
@@ -253,8 +314,7 @@ impl Store {
         let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
         temporary.write_all(&serde_json::to_vec_pretty(self)?)?;
         temporary.as_file().sync_all()?;
-        temporary.persist(path).map_err(|error| error.error)?;
-        Ok(())
+        Ok(temporary.persist(path).map_err(|error| error.error)?)
     }
 }
 
