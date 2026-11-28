@@ -425,6 +425,56 @@ mod tests {
         assert_eq!(chart.bpm, 155.0);
     }
 
+    #[test]
+    fn initial_scan_excludes_invalid_charts_and_falls_back_to_practice() {
+        let invalid_charts = [
+            (
+                "overflow.bms",
+                "#BPM 120\n#SCROLL01 1e308\n#SCROLL02 1\n#000SC:01\n#001SC:02\n#00211:0101\n",
+                "BMS scroll rate change overflows to a non-finite position",
+            ),
+            (
+                "layers.bmson",
+                r#"{
+                    "version": "1.0.0",
+                    "info": {"title": "Layers", "artist": "", "init_bpm": 120},
+                    "sound_channels": [
+                        {"name": "tap.wav", "notes": [{"x": 1, "y": 0, "l": 0}]},
+                        {"name": "hold.wav", "notes": [{"x": 1, "y": 0, "l": 240}]}
+                    ]
+                }"#,
+                "Layered notes have unequal lengths",
+            ),
+        ];
+        for (name, source, error) in invalid_charts {
+            let dir = tempfile::tempdir().unwrap();
+            let invalid = dir.path().join(name);
+            std::fs::write(&invalid, source).unwrap();
+            let mut args = base_args();
+            args.dir = Some(dir.path().to_path_buf());
+            let mut out = std::io::stdout();
+            assert!(matches!(
+                choose_chart(&mut out, &args).unwrap(),
+                ChartChoice::BuiltIn
+            ));
+
+            let valid = dir.path().join("valid.bms");
+            std::fs::write(&valid, "#TITLE Valid\n#BPM 120\n#00111:01\n").unwrap();
+            let mut entries = select::scan(dir.path());
+            assert_eq!(entries.len(), 1);
+            let entry = entries.pop().unwrap();
+            assert_eq!(entry.path, valid);
+            let chart = load_chart(&ChartChoice::Selected(Box::new(entry)), &args)
+                .unwrap()
+                .unwrap();
+            assert_eq!(chart.title, "Valid");
+
+            args.file = Some(invalid);
+            let direct = choose_chart(&mut out, &args).unwrap();
+            assert_eq!(load_chart(&direct, &args).err().unwrap().to_string(), error);
+        }
+    }
+
     fn tempdir() -> PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
         static COUNTER: AtomicU32 = AtomicU32::new(0);

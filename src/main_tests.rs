@@ -138,14 +138,22 @@ fn assert_retry_then_exit(args: &Args) {
 
 #[test]
 fn failed_selection_returns_to_selector_then_plays_and_cancels() {
-    let dir = broken_chart_directory("selection");
+    let dir = tempfile::tempdir().unwrap();
+    let failing = dir.path().join("changed.bms");
+    std::fs::write(&failing, "#TITLE Changed\n#BPM 120\n#00111:01\n").unwrap();
     std::fs::write(
-        dir.join("playable.bms"),
+        dir.path().join("playable.bms"),
         "#TITLE Playable\n#BPM 120\n#00111:01\n",
     )
     .unwrap();
-    let charts = tapline::select::scan(&dir);
+    let charts = tapline::select::scan(dir.path());
     assert_eq!(charts.len(), 2);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(failing)
+        .unwrap()
+        .set_len(16 * 1024 * 1024 + 1)
+        .unwrap();
     let mut choices = charts
         .into_iter()
         .map(|entry| ChartChoice::Selected(Box::new(entry)))
@@ -168,15 +176,15 @@ fn failed_selection_returns_to_selector_then_plays_and_cancels() {
             Ok(runtime::ResultAction::Dismiss)
         },
         |_, error| {
-            errors.push(error.to_string());
+            errors.push(format!("{error:#}"));
             Ok(())
         },
     )
     .unwrap();
     assert_eq!(selections, 3);
     assert_eq!(plays, 1);
-    assert_eq!(errors, ["Layered notes have unequal lengths"]);
-    std::fs::remove_dir_all(dir).unwrap();
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].contains("chart exceeds the maximum size"));
 }
 
 #[test]
