@@ -8,6 +8,7 @@ use std::cell::Cell;
 thread_local! {
     static READS: Cell<usize> = const { Cell::new(0) };
     static PARSES: Cell<usize> = const { Cell::new(0) };
+    pub(super) static TITLE_SORT_KEYS: Cell<usize> = const { Cell::new(0) };
 }
 
 pub(crate) fn count_content_read() {
@@ -20,6 +21,37 @@ pub(crate) fn count_metadata_parse() {
 
 fn counts() -> (usize, usize) {
     (READS.get(), PARSES.get())
+}
+
+#[test]
+fn scans_compute_one_title_key_per_chart_and_break_ties_by_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let expected = [
+        ("z-first.bms", "alpha"),
+        ("a-tie.bms", "bravo"),
+        ("b-tie.bms", "BRAVO"),
+        ("c-middle.bms", "Charlie"),
+    ];
+    for (name, title) in expected.into_iter().rev() {
+        std::fs::write(dir.path().join(name), format!("#TITLE {title}\n")).unwrap();
+    }
+    let mut discovery = Discovery::default();
+    for _ in 0..2 {
+        TITLE_SORT_KEYS.set(0);
+        let charts = discovery.scan(dir.path(), &|| 0);
+        let actual: Vec<_> = charts
+            .iter()
+            .map(|chart| {
+                (
+                    chart.path.file_name().unwrap().to_str().unwrap(),
+                    chart.title.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(TITLE_SORT_KEYS.get(), charts.len());
+        assert_eq!(counts(), (expected.len(), expected.len()));
+    }
 }
 
 #[test]

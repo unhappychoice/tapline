@@ -375,9 +375,8 @@ fn invisible_only_lanes_are_available_without_creating_playable_notes() {
     let chart = write_and_load("#BPM 60\n#00039:0Z\n#00049:02\n");
     assert_eq!(chart.lane_count, 7);
     assert!(chart.notes.is_empty());
-    assert!(chart.p2_notes.is_empty());
-    assert_eq!(chart.p2_invisible_notes.len(), 1);
-    assert_eq!(chart.p2_invisible_notes[0].lane, 6);
+    assert_eq!(chart.invisible_notes.len(), 1);
+    assert_eq!(chart.invisible_notes[0].lane, 6);
     let mut game = Game::new(chart);
     assert_eq!(game.hit(6, 1.0), Some(35));
     game.check_misses(5000.0);
@@ -391,7 +390,6 @@ fn invisible_only_lanes_are_available_without_creating_playable_notes() {
 fn double_play_invisible_notes_use_the_second_side_lanes() {
     let chart = write_and_load("#BPM 60\n#00019:01\n#00029:02\n#00039:0003\n#00049:0004\n");
     assert_eq!(chart.lane_count, 14);
-    assert!(chart.p2_invisible_notes.is_empty());
     let mut game = Game::new(chart);
     assert_eq!(game.hit(6, 0.0), Some(1));
     assert_eq!(game.hit(13, 0.0), Some(2));
@@ -415,7 +413,6 @@ fn noncanonical_double_play_offsets_invisible_notes_by_the_first_side_width() {
         ));
         assert_eq!(chart.lane_count, *lanes);
         assert_eq!(chart.keys.len(), *lanes);
-        assert!(chart.p2_invisible_notes.is_empty());
         let mut game = Game::new(chart);
         assert_eq!(game.hit(*last_lane, 0.0), Some(2));
         assert_eq!(game.hit(*last_lane, 2001.0), Some(4));
@@ -450,7 +447,6 @@ fn pms_invisible_notes_follow_the_nine_button_mapping() {
         "ASDF JKL;".chars().map(|key| vec![key]).collect::<Vec<_>>()
     );
     assert!(chart.notes.is_empty());
-    assert!(chart.p2_invisible_notes.is_empty());
     assert_eq!(
         chart
             .invisible_notes

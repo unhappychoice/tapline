@@ -2315,7 +2315,10 @@ mod result_tests {
             .unwrap();
             sender.send((action, frame)).unwrap();
         });
-        let result = receiver.recv_timeout(Duration::from_secs(5));
+        // The worker's own lock wait can take as long as results::LOCK_WAIT_LIMIT (10s)
+        // before it gives up and reports the result as unsaved, so this needs headroom
+        // beyond that limit.
+        let result = receiver.recv_timeout(Duration::from_secs(15));
         drop(lock);
         worker.join().unwrap();
 
