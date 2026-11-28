@@ -7,6 +7,7 @@ use crate::chart::{
 use anyhow::{ensure, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "ogg", "mp3", "flac"];
 
@@ -63,7 +64,7 @@ pub(crate) fn parse_meta(
     } else {
         collect_lane_occupancy(&raw, &pass, P2_LANES)
     };
-    let mode = detect_mode(path, pass.player, &raw, &acc, &p2_acc);
+    let mode = detect_mode(path, pass.player, &acc, &p2_acc);
     let meta = ChartMeta {
         preview: None,
         path: path.to_path_buf(),
@@ -230,7 +231,7 @@ fn build_chart(
     let text_events = collect_text_events(&raw, &timeline, &pass.text_defs, pass.base);
     let exrank_events = collect_exrank_events(&raw, &timeline, &pass.exrank_defs, pass.base);
     let bmp_paths = resolve_bmp_paths(&assets, &pass.bmp_defs);
-    let mode = detect_mode(path, pass.player, &raw, &acc.occupancy, &p2_acc.occupancy);
+    let mode = detect_mode(path, pass.player, &acc.occupancy, &p2_acc.occupancy);
     let lane_count = mode.playable_lane_count(&acc.occupancy, &p2_acc.occupancy);
     let p1_lane_count = mode.side_lane_count(&acc.occupancy);
     let p2_lane_count = mode.side_lane_count(&p2_acc.occupancy);
@@ -427,15 +428,12 @@ fn collect_lane_occupancy(
     lanes: LaneMap,
 ) -> SideOccupancy {
     let note_lines = raw.iter().filter(|(_, ch, _)| is_side_channel(ch, lanes));
-    let raw = merge_note_lines(note_lines, lanes, pass);
+    let merged = merge_note_lines(note_lines, lanes, pass);
     let mut occupancy = SideOccupancy::default();
     let mut long_counts = HashMap::<usize, usize>::new();
-    for (_, ch, data) in &raw {
+    for (_, ch, slots) in &merged {
         let mine = (lanes.mine)(ch);
-        let count = parse_slots(data, if mine.is_some() { 36 } else { pass.base })
-            .into_iter()
-            .filter(|slot| *slot != 0)
-            .count();
+        let count = slots.iter().filter(|slot| **slot != 0).count();
         if let Some(lane) = (lanes.long)(ch) {
             *long_counts.entry(lane).or_default() += count;
         } else if count > 0 {
@@ -463,7 +461,6 @@ fn long_lane_is_populated(endpoint_count: usize, lntype: u8) -> bool {
 struct BmsMode {
     keys_per_side: usize,
     double_play: bool,
-    scratch: bool,
     reserve_seven: bool,
     declared_sides: bool,
 }
@@ -492,7 +489,6 @@ impl BmsMode {
 fn detect_mode(
     path: &Path,
     player: Option<u8>,
-    raw: &[(u32, String, String)],
     acc: &SideOccupancy,
     p2_acc: &SideOccupancy,
 ) -> BmsMode {
@@ -501,7 +497,6 @@ fn detect_mode(
         return BmsMode {
             keys_per_side: 9,
             double_play: false,
-            scratch: false,
             reserve_seven: false,
             declared_sides: false,
         };
@@ -511,14 +506,9 @@ fn detect_mode(
         || (matches!(player, Some(2 | 3))
             && p2_acc.lanes.0.iter().any(|lane| matches!(lane, 5 | 6)));
     let double_play = matches!(player, Some(2 | 3)) || p2_acc.playable;
-    let scratch = raw.iter().any(|(_, ch, data)| {
-        matches!(ch.as_str(), "16" | "26" | "56" | "66" | "D6" | "E6")
-            && parse_slots(data, 36).iter().any(|slot| *slot != 0)
-    });
     BmsMode {
         keys_per_side: if extended { 7 } else { 5 },
         double_play,
-        scratch,
         reserve_seven: extension.eq_ignore_ascii_case("bme"),
         declared_sides: matches!(player, Some(2 | 3)),
     }
@@ -562,7 +552,6 @@ fn p2_mine_channel_to_lane(ch: &str) -> Option<usize> {
 thread_local! {
     static MATERIALIZATION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static DECODED_SLOTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static MERGED_PAYLOAD_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn accumulate_side(
@@ -579,11 +568,10 @@ fn accumulate_side(
     let merged = merge_note_lines(note_lines, lanes, pass);
     let merged = merged.as_slice();
     let mut acc = ChartAcc::default();
-    for (measure, ch, data) in merged {
+    for (measure, ch, slots) in merged {
         if let Some(lane) = (lanes.normal)(ch) {
-            push_normal_slots(&mut acc, lane, *measure, data, timeline, base);
+            push_normal_slots(&mut acc, lane, *measure, slots, timeline);
         } else if let Some(lane) = (lanes.invisible)(ch) {
-            let slots = parse_slots(data, base);
             slots
                 .iter()
                 .enumerate()
@@ -609,46 +597,42 @@ fn accumulate_side(
         promote_lnobj(&mut acc.notes, lnobj);
     }
     if pass.lntype == 2 {
-        materialize_continuous_long_notes(&mut acc, merged, timeline, lanes.long, base);
+        materialize_continuous_long_notes(&mut acc, merged, timeline, lanes.long);
     } else {
-        materialize_long_notes_with(&mut acc, merged, timeline, lanes.long, base);
+        materialize_long_notes_with(&mut acc, merged, timeline, lanes.long);
     }
     materialize_mines_with(&mut acc, merged, timeline, lanes.mine);
     acc
 }
 
+type DecodedNoteRow<'a> = (u32, &'a str, Vec<u32>);
+
 fn merge_note_lines<'a>(
     raw: impl Iterator<Item = &'a (u32, String, String)>,
     lanes: LaneMap,
     pass: &HeaderPass,
-) -> Vec<(u32, String, String)> {
-    let mut seen = HashSet::new();
-    #[cfg(test)]
+) -> Vec<DecodedNoteRow<'a>> {
     let mut merged: Vec<_> = raw
-        .map(|row| {
-            MERGED_PAYLOAD_BYTES.with(|bytes| bytes.set(bytes.get() + row.2.len()));
-            row.clone()
+        .map(|(measure, ch, data)| {
+            let base = if (lanes.mine)(ch).is_some() {
+                36
+            } else {
+                pass.base
+            };
+            (*measure, ch.as_str(), parse_slots(data, base))
         })
         .collect();
-    #[cfg(not(test))]
-    let mut merged: Vec<_> = raw.cloned().collect();
-    for (measure, ch, data) in merged.iter_mut().rev() {
-        let slots = if (lanes.mine)(ch).is_some() {
-            parse_slots(data, 36)
-        } else if (lanes.normal)(ch).is_some()
-            || (pass.lntype != 2 && (lanes.long)(ch).is_some())
-            || (lanes.invisible)(ch).is_some()
-        {
-            parse_slots(data, pass.base)
-        } else {
+    let mut seen = HashSet::new();
+    for (measure, ch, slots) in merged.iter_mut().rev() {
+        if pass.lntype == 2 && (lanes.long)(ch).is_some() {
             continue;
-        };
+        }
         let n = slots.len();
-        for (i, _) in slots.iter().enumerate().filter(|(_, slot)| **slot != 0) {
+        for (i, slot) in slots.iter_mut().enumerate().filter(|(_, slot)| **slot != 0) {
             let divisor = greatest_common_divisor(i, n);
-            let position = (*measure, ch.clone(), i / divisor, n / divisor);
+            let position = (*measure, *ch, i / divisor, n / divisor);
             if !seen.insert(position) {
-                data.replace_range(i * 2..i * 2 + 2, "00");
+                *slot = 0;
             }
         }
     }
@@ -667,11 +651,9 @@ fn push_normal_slots(
     acc: &mut ChartAcc,
     lane: usize,
     measure: u32,
-    data: &str,
+    slots: &[u32],
     timeline: &Timeline,
-    base: u32,
 ) {
-    let slots = parse_slots(data, base);
     let n = slots.len();
     if n == 0 {
         return;
@@ -714,17 +696,15 @@ fn push_bgm_slots(acc: &mut ChartAcc, measure: u32, data: &str, timeline: &Timel
 
 fn materialize_long_notes_with(
     acc: &mut ChartAcc,
-    raw: &[(u32, String, String)],
+    rows: &[DecodedNoteRow<'_>],
     timeline: &Timeline,
     lane_of: fn(&str) -> Option<usize>,
-    base: u32,
 ) {
     let mut per_lane: HashMap<usize, Vec<(f64, u32)>> = HashMap::new();
-    for (measure, ch, data) in raw {
+    for (measure, ch, slots) in rows {
         let Some(lane) = lane_of(ch) else {
             continue;
         };
-        let slots = parse_slots(data, base);
         let n = slots.len();
         if n == 0 {
             continue;
@@ -764,18 +744,16 @@ fn materialize_long_notes_with(
 
 fn materialize_continuous_long_notes(
     acc: &mut ChartAcc,
-    raw: &[(u32, String, String)],
+    rows: &[DecodedNoteRow<'_>],
     timeline: &Timeline,
     lane_of: fn(&str) -> Option<usize>,
-    base: u32,
 ) {
     let mut per_lane: HashMap<usize, Vec<(MeasurePosition, MeasurePosition, u32)>> = HashMap::new();
     // The stable sort keeps the last-defined slot first among equal starts.
-    for (measure, ch, data) in raw.iter().rev() {
+    for (measure, ch, slots) in rows.iter().rev() {
         let Some(lane) = lane_of(ch) else {
             continue;
         };
-        let slots = parse_slots(data, base);
         let n = slots.len();
         per_lane.entry(lane).or_default().extend(
             slots
@@ -843,15 +821,14 @@ impl MeasurePosition {
 
 fn materialize_mines_with(
     acc: &mut ChartAcc,
-    raw: &[(u32, String, String)],
+    rows: &[DecodedNoteRow<'_>],
     timeline: &Timeline,
     lane_of: fn(&str) -> Option<usize>,
 ) {
-    for (measure, ch, data) in raw {
+    for (measure, ch, slots) in rows {
         let Some(lane) = lane_of(ch) else {
             continue;
         };
-        let slots = parse_slots(data, 36);
         let n = slots.len();
         if n == 0 {
             continue;
@@ -938,7 +915,7 @@ fn bga_channel_to_layer(ch: &str) -> Option<BgaLayer> {
 fn collect_text_events(
     raw: &[(u32, String, String)],
     timeline: &Timeline,
-    defs: &HashMap<u32, String>,
+    defs: &HashMap<u32, Arc<str>>,
     base: u32,
 ) -> Vec<TextEvent> {
     let mut events: Vec<_> = raw
@@ -950,7 +927,7 @@ fn collect_text_events(
             slots.into_iter().enumerate().filter_map(move |(i, id)| {
                 defs.get(&id).filter(|_| id != 0).map(|text| TextEvent {
                     time_ms: timeline.time_at(*measure, i as f64 / count as f64),
-                    text: text.clone(),
+                    text: Arc::clone(text),
                 })
             })
         })
@@ -1384,7 +1361,7 @@ struct HeaderPass {
     speed_defs: HashMap<u32, f64>,
     stp_events: Vec<TimingEvent>,
     bmp_defs: HashMap<u32, String>,
-    text_defs: HashMap<u32, String>,
+    text_defs: HashMap<u32, Arc<str>>,
     lnobj: Option<u32>,
     lntype: u8,
     bga_extensions: crate::bga::Extensions,
@@ -1558,7 +1535,7 @@ impl HeaderPass {
                     if rest.len() == 2 {
                         if let Some(id) = parse_id(rest, self.base) {
                             self.text_defs
-                                .insert(id, crate::terminal_text::sanitize(val));
+                                .insert(id, crate::terminal_text::sanitize(val).into());
                         }
                     }
                 } else if let Some((rest, definitions)) = up
@@ -2025,7 +2002,7 @@ mod tests {
         assert_eq!(meta.comment, "Song details");
         let chart = load(&path, 0.0).unwrap();
         assert_eq!(chart.text_events.len(), 1);
-        assert_eq!(chart.text_events[0].text, "Chorus");
+        assert_eq!(chart.text_events[0].text.as_ref(), "Chorus");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2145,11 +2122,30 @@ mod tests {
         let path = dir.join("text.bms");
         std::fs::write(&path, "#BPM 120\n#BPM01 240\n#STOP01 48\n#TEXT01 First\x1b[2J\x07\n#songZZ 日本語\n#TEXT02\n#00299:ZZ02\n#00199:000100XX\n#00102:0.5\n#00108:01\n#00109:01\n#TEXT00 Ignored\n#00099:00\n").unwrap();
         let chart = load(&path, 500.0).unwrap();
-        let texts: Vec<_> = chart.text_events.iter().map(|e| e.text.as_str()).collect();
+        let texts: Vec<_> = chart.text_events.iter().map(|e| e.text.as_ref()).collect();
         assert_eq!(texts, vec!["First[2J", "日本語", ""]);
         let times: Vec<_> = chart.text_events.iter().map(|e| e.time_ms).collect();
         assert_eq!(times, vec![2875.0, 3250.0, 3750.0]);
         assert!(chart.duration_ms > times[2]);
+    }
+
+    #[test]
+    fn repeated_song_text_events_share_the_sanitized_definition() {
+        let dir = tempdir();
+        let path = dir.join("repeated_text.bms");
+        std::fs::write(
+            &path,
+            "#BPM 120\n#TEXT01 日本\x1b\x07語\n#00199:01000100\n#00299:01\n",
+        )
+        .unwrap();
+        let chart = load(&path, 500.0).unwrap();
+        assert_eq!(chart.text_events.len(), 3);
+        for (event, time_ms) in chart.text_events.iter().zip([2500.0, 3500.0, 4500.0]) {
+            assert_eq!(event.time_ms, time_ms);
+            assert_eq!(event.text.as_ref(), "日本語");
+            assert!(Arc::ptr_eq(&event.text, &chart.text_events[0].text));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -2162,7 +2158,7 @@ mod tests {
         )
         .unwrap();
         let chart = load(&path, 500.0).unwrap();
-        assert_eq!(chart.text_events[0].text, "Chorus");
+        assert_eq!(chart.text_events[0].text.as_ref(), "Chorus");
         assert_eq!(chart.text_events[0].time_ms, 2500.0);
         assert_eq!(chart.bga[0].layer, BgaLayer::Overlay2);
         assert_eq!(chart.bga[0].time_ms, chart.text_events[0].time_ms);
@@ -2188,7 +2184,7 @@ mod tests {
         .unwrap();
         let chart = load(&path, 500.0).unwrap();
         assert_eq!(chart.text_events.len(), 1);
-        assert_eq!(chart.text_events[0].text, "Chorus");
+        assert_eq!(chart.text_events[0].text.as_ref(), "Chorus");
         assert_eq!(chart.text_events[0].time_ms, 2500.0);
         assert_eq!(chart.volume_events.len(), 2);
         assert_eq!(chart.volume_events[0].target, VolumeTarget::Bgm);
@@ -2228,7 +2224,7 @@ mod tests {
                 chart
                     .text_events
                     .iter()
-                    .map(|e| e.text.as_str())
+                    .map(|e| e.text.as_ref())
                     .collect::<Vec<_>>(),
                 expected
             );
@@ -2251,7 +2247,7 @@ mod tests {
         .iter()
         .for_each(|line| pass.absorb(line).unwrap());
         assert_eq!(pass.text_defs.len(), 1);
-        assert_eq!(pass.text_defs.get(&1).unwrap(), "Last");
+        assert_eq!(pass.text_defs[&1].as_ref(), "Last");
     }
 
     #[test]
@@ -2398,9 +2394,9 @@ mod tests {
         .unwrap();
         let chart = load(&path, 0.0).unwrap();
         assert_eq!(chart.text_events.len(), 2);
-        assert_eq!(chart.text_events[0].text, "Upper");
+        assert_eq!(chart.text_events[0].text.as_ref(), "Upper");
         assert_eq!(chart.text_events[0].time_ms, chart.notes[0].time_ms);
-        assert_eq!(chart.text_events[1].text, "Lower");
+        assert_eq!(chart.text_events[1].text.as_ref(), "Lower");
         assert_eq!(chart.text_events[1].time_ms, chart.notes[1].time_ms);
         assert_eq!(chart.scroll[0].multiplier, 0.5);
         assert_eq!(chart.speed[0].multiplier, 2.0);
@@ -3262,25 +3258,44 @@ mod tests {
             std::fs::write(&path, format!("#BPM 120\n#00101:{bgm}\n#00111:01\n")).unwrap();
             DECODED_SLOTS.with(|slots| slots.set(0));
             assert_eq!(read_meta_with_seed(&path, 0).unwrap().lane_count, 4);
-            // Only the P1 slot is decoded, once during merge and once during occupancy.
-            DECODED_SLOTS.with(|slots| assert_eq!(slots.get(), 2));
+            // Only the P1 slot is decoded.
+            DECODED_SLOTS.with(|slots| assert_eq!(slots.get(), 1));
             assert_eq!(load_with_seed(&path, 0.0, 0).unwrap().lane_count, 4);
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn loading_never_copies_bgm_payloads_as_bgm_size_grows() {
+    fn loading_decodes_each_slot_of_a_dense_note_row_once() {
+        let dir = tempdir();
+        let path = dir.join("dense-notes.bms");
+        let empty_slots = "00".repeat(9_999);
+        std::fs::write(
+            &path,
+            format!("#BPM 60\n#BASE 62\n#00111:{empty_slots}0a\n"),
+        )
+        .unwrap();
+
+        DECODED_SLOTS.with(|slots| slots.set(0));
+        let chart = load_with_seed(&path, 0.0, 0).unwrap();
+        DECODED_SLOTS.with(|slots| assert_eq!(slots.get(), 10_000));
+        assert_eq!(chart.notes.len(), 1);
+        assert_eq!(chart.notes[0].keysound, Some(36));
+        assert!((chart.notes[0].time_ms - 7999.6).abs() < 1e-6);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn loading_decodes_bgm_and_note_slots_once_as_bgm_size_grows() {
         let dir = tempdir();
         let path = dir.join("dense-bgm-load.bms");
         for count in [1, 10_000] {
             let bgm = "01".repeat(count);
             // Single-play chart: no P2 channels present.
             std::fs::write(&path, format!("#BPM 120\n#00101:{bgm}\n#00111:01\n")).unwrap();
-            MERGED_PAYLOAD_BYTES.with(|bytes| bytes.set(0));
+            DECODED_SLOTS.with(|slots| slots.set(0));
             let chart = load_with_seed(&path, 0.0, 0).unwrap();
-            // Neither side clones the "01" BGM row during duplicate-note merging.
-            MERGED_PAYLOAD_BYTES.with(|bytes| assert_eq!(bytes.get(), 2));
+            DECODED_SLOTS.with(|slots| assert_eq!(slots.get(), count + 1));
             assert_eq!(chart.bgm.len(), count);
             assert_eq!(chart.notes.len(), 1);
         }
@@ -4478,16 +4493,16 @@ Always
     #[test]
     fn mode_detection_combines_extension_player_and_channels() {
         let cases = [
-            ("song.bms", None, "15", 5, false, false),
-            ("song.bme", Some(1), "11", 7, false, false),
-            ("song.BME", Some(3), "11", 7, true, false),
-            ("song.bml", Some(3), "19", 7, true, false),
-            ("song.bms", Some(3), "11", 5, true, false),
-            ("song.bme", Some(2), "26", 7, true, true),
-            ("song.bml", None, "56", 5, false, true),
-            ("song.pms", Some(3), "16", 9, false, false),
+            ("song.bms", None, "15", 5, false),
+            ("song.bme", Some(1), "11", 7, false),
+            ("song.BME", Some(3), "11", 7, true),
+            ("song.bml", Some(3), "19", 7, true),
+            ("song.bms", Some(3), "11", 5, true),
+            ("song.bme", Some(2), "26", 7, true),
+            ("song.bml", None, "56", 5, false),
+            ("song.pms", Some(3), "16", 9, false),
         ];
-        for (name, player, channel, keys_per_side, double_play, scratch) in cases {
+        for (name, player, channel, keys_per_side, double_play) in cases {
             let raw = vec![(1, channel.to_string(), "0101".to_string())];
             let (_, acc, p2_acc) = collect_chart_sides(
                 &raw,
@@ -4498,17 +4513,10 @@ Always
             )
             .unwrap();
             assert_eq!(
-                detect_mode(
-                    Path::new(name),
-                    player,
-                    &raw,
-                    &acc.occupancy,
-                    &p2_acc.occupancy
-                ),
+                detect_mode(Path::new(name), player, &acc.occupancy, &p2_acc.occupancy),
                 BmsMode {
                     keys_per_side,
                     double_play,
-                    scratch,
                     reserve_seven: name.to_ascii_lowercase().ends_with(".bme"),
                     declared_sides: !name.ends_with("pms") && matches!(player, Some(2 | 3)),
                 },

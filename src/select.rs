@@ -20,6 +20,7 @@ use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
 const ROW_LEFT: u16 = 2;
+const LIST_TOP: u16 = 5;
 const MIN_DETAIL_ROWS: u16 = 16;
 const BANNER_HEIGHT: u16 = 4;
 
@@ -58,6 +59,10 @@ pub struct SelectorState {
     /// the current visit's chart slice. Invalidated on each visit or scan and
     /// reused across search keystrokes.
     case_folded_cache: Vec<(String, String, String)>,
+    /// The results store this selector run already loaded to show progress,
+    /// kept so the next completed attempt can merge and save into it
+    /// directly instead of rereading and reparsing the whole file.
+    records: Option<crate::results::Store>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -72,6 +77,12 @@ impl SelectorState {
     pub fn scan(&mut self, root: &Path) -> Vec<ChartEntry> {
         self.case_folded_cache.clear();
         self.discovery.scan(root, &crate::bms::random_seed)
+    }
+
+    /// Returns the results store loaded for this selector run, if any, so a
+    /// completed attempt can reuse it when saving instead of reloading the file.
+    pub fn records_mut(&mut self) -> Option<&mut crate::results::Store> {
+        self.records.as_mut()
     }
 
     pub fn refresh_changed_chart(&mut self, path: &Path) {
@@ -220,7 +231,8 @@ pub fn run_with_state(
         return Ok(None);
     }
     let records_path = crate::results::data_path();
-    let progress = load_progress(charts, records_path.as_deref());
+    let (progress, store) = load_progress(charts, records_path.as_deref());
+    state.records = store;
     let audio = crate::audio::preview_output(!no_audio);
     let mut preview = audio
         .as_ref()
@@ -264,16 +276,28 @@ fn run_loop(
             selected,
             selected.and_then(|i| charts[i].preview.as_deref()),
         );
-        frame.draw_if_changed(out, charts, state, progress, size()?)?;
+        let frame_size = size()?;
+        frame.draw_if_changed(out, charts, state, progress, frame_size)?;
         let Some(input) = input()? else {
             continue;
         };
         match input {
             Event::Resize(..) => frame.invalidate(),
+            Event::Key(key) if list_rows(frame_size.1).is_empty() => {
+                if key.kind == KeyEventKind::Press
+                    && matches!(key.code, KeyCode::Esc | KeyCode::Char('q' | 'Q'))
+                {
+                    return Ok(None);
+                }
+            }
             Event::Key(key) => match state.handle_key(key, charts) {
                 SelectorAction::None => {}
                 SelectorAction::Redraw => frame.invalidate(),
-                SelectorAction::Play(i) => return Ok(Some(charts[i].clone())),
+                SelectorAction::Play(i) => {
+                    if !list_rows(size()?.1).is_empty() {
+                        return Ok(Some(charts[i].clone()));
+                    }
+                }
                 SelectorAction::Quit => return Ok(None),
             },
             _ => {}
@@ -281,14 +305,18 @@ fn run_loop(
     }
 }
 
-fn load_progress(charts: &[ChartEntry], records_path: Option<&Path>) -> Vec<String> {
+fn load_progress(
+    charts: &[ChartEntry],
+    records_path: Option<&Path>,
+) -> (Vec<String>, Option<crate::results::Store>) {
     let Some(store) = records_path.and_then(|path| crate::results::Store::load(path).ok()) else {
-        return vec!["[RECORDS UNAVAILABLE]".into(); charts.len()];
+        return (vec!["[RECORDS UNAVAILABLE]".into(); charts.len()], None);
     };
-    charts
+    let progress = charts
         .iter()
         .map(|chart| format_progress(store.get(&chart.identity)))
-        .collect()
+        .collect();
+    (progress, Some(store))
 }
 
 #[derive(Default)]
@@ -333,6 +361,15 @@ fn chart_banner(chart: &ChartMeta, width: u16) -> Option<Rc<RgbaImage>> {
     artwork::thumbnail(dir, &chart.banner, (width, BANNER_HEIGHT))
 }
 
+fn list_rows(rows: u16) -> std::ops::Range<u16> {
+    let detail_rows = if rows >= MIN_DETAIL_ROWS {
+        BANNER_HEIGHT + 2
+    } else {
+        0
+    };
+    LIST_TOP..rows.saturating_sub(2 + detail_rows)
+}
+
 fn draw_frame(
     out: &mut impl Write,
     charts: &[ChartEntry],
@@ -348,6 +385,19 @@ fn draw_frame(
         terminal::BeginSynchronizedUpdate,
         terminal::Clear(terminal::ClearType::All)
     )?;
+
+    let list = list_rows(rows);
+    if list.is_empty() {
+        let notice = "Resize terminal to show charts. Esc quit";
+        queue!(
+            out,
+            cursor::MoveTo(0, rows.saturating_sub(1) / 2),
+            Print(clip_to_width(notice, cols as usize)),
+            terminal::EndSynchronizedUpdate
+        )?;
+        out.flush()?;
+        return Ok(());
+    }
 
     let title = "T A P L I N E";
     queue!(
@@ -386,19 +436,8 @@ fn draw_frame(
         cursor::MoveTo(ROW_LEFT, 3),
         Print(clip_to_width(&status, row_width))
     )?;
-    let list_top = 5u16;
-    let detail_rows = if rows >= MIN_DETAIL_ROWS {
-        BANNER_HEIGHT + 2
-    } else {
-        0
-    };
-    let list_bottom = rows.saturating_sub(2 + detail_rows);
-    let view_rows = list_bottom.saturating_sub(list_top) as usize;
-    if view_rows == 0 {
-        queue!(out, terminal::EndSynchronizedUpdate)?;
-        out.flush()?;
-        return Ok(());
-    }
+    let list_bottom = list.end;
+    let view_rows = list.len();
 
     if cursor_i < *scroll {
         *scroll = cursor_i;
@@ -407,14 +446,13 @@ fn draw_frame(
         *scroll = cursor_i + 1 - view_rows;
     }
 
-    for row in 0..view_rows {
+    for (row, y) in list.enumerate() {
         let i = *scroll + row;
         if i >= state.indices.len() {
             break;
         }
         let m = &charts[state.indices[i]];
         let selected = i == cursor_i;
-        let y = list_top + row as u16;
         let arrow = if selected { "▸ " } else { "  " };
         let text = format!(
             "{} {}",
@@ -438,10 +476,10 @@ fn draw_frame(
     if state.indices.is_empty() {
         queue!(
             out,
-            cursor::MoveTo(2, list_top),
+            cursor::MoveTo(2, LIST_TOP),
             Print("No matching charts. Edit / search or press c to clear.")
         )?;
-    } else if detail_rows > 0 {
+    } else if rows >= MIN_DETAIL_ROWS {
         draw_details(
             out,
             &charts[state.indices[cursor_i]],
@@ -645,6 +683,72 @@ mod tests {
     }
 
     #[test]
+    fn hidden_list_blocks_selection_until_resize_redraws_it() {
+        use std::cell::Cell;
+
+        let charts = [meta("Alpha"), meta("Beta")];
+        let mut state = SelectorState::default();
+        state.refresh(&charts);
+        state.key(KeyCode::Down, &charts);
+        let mut out = Vec::new();
+        let rows = Cell::new(8);
+        let press = |code| Event::Key(key_event(code, KeyEventKind::Press));
+        let mut inputs = [
+            (7, press(KeyCode::Enter)),
+            (7, press(KeyCode::Up)),
+            (7, press(KeyCode::Enter)),
+            (8, Event::Resize(80, 8)),
+            (8, press(KeyCode::Enter)),
+        ]
+        .into_iter();
+        let selected = run_loop(
+            &mut out,
+            &charts,
+            &mut state,
+            &["[UNPLAYED]".into(), "[UNPLAYED]".into()],
+            || Ok((80, rows.get())),
+            || {
+                let (height, input) = inputs.next().unwrap();
+                rows.set(height);
+                Ok(Some(input))
+            },
+            |_, _| {},
+        )
+        .unwrap()
+        .unwrap();
+        assert!(inputs.next().is_none());
+        assert_eq!(selected.title, "Beta");
+        let output = String::from_utf8(out).unwrap();
+        let (_, after_notice) = output
+            .split_once("Resize terminal to show charts. Esc quit")
+            .unwrap();
+        let (hidden, resized) = after_notice.split_once("T A P L I N E").unwrap();
+        assert!(!hidden.contains('▸'));
+        assert!(resized.contains("▸ [5K NORMAL Lv3 BPM140]  Beta"));
+    }
+
+    #[test]
+    fn escape_quits_with_the_list_hidden_or_visible() {
+        let charts = [meta("Alpha"), meta("Beta")];
+        for rows in [7, 8] {
+            let mut state = SelectorState::default();
+            state.refresh(&charts);
+            let mut input = Some(Event::Key(key_event(KeyCode::Esc, KeyEventKind::Press)));
+            let selected = run_loop(
+                &mut Vec::new(),
+                &charts,
+                &mut state,
+                &["[UNPLAYED]".into(), "[UNPLAYED]".into()],
+                || Ok((80, rows)),
+                || Ok(Some(input.take().unwrap())),
+                |_, _| {},
+            )
+            .unwrap();
+            assert!(selected.is_none());
+        }
+    }
+
+    #[test]
     fn blocked_preview_allows_redraw_navigation_empty_results_and_quit() {
         use std::sync::mpsc;
         const TIMEOUT: Duration = Duration::from_secs(5);
@@ -737,6 +841,39 @@ mod tests {
         assert_eq!(state.handle_key(repeat, &charts), SelectorAction::None);
         assert_eq!(state.handle_key(repeat, &charts), SelectorAction::None);
         assert_eq!(state.handle_key(press, &charts), SelectorAction::Play(0));
+    }
+
+    #[test]
+    fn selector_caches_the_loaded_store_for_a_completed_attempts_save() {
+        let dir = tempdir();
+        let path = dir.join("results.json");
+        let chart = meta("Alpha");
+        let (progress, store) = load_progress(std::slice::from_ref(&chart), Some(&path));
+        assert_eq!(progress, ["[UNPLAYED]"]);
+        let mut state = SelectorState {
+            records: store,
+            ..Default::default()
+        };
+        let store = state
+            .records_mut()
+            .expect("selector should cache the store it loaded");
+        let mut game = crate::game::Game::new(crate::chart::built_in(120.0, 0.0));
+        game.completed = true;
+        game.score = 100;
+        assert!(
+            crate::results::update_cached(store, &path, &chart.identity, &game, false)
+                .unwrap()
+                .is_none()
+        );
+        let best_score = state
+            .records_mut()
+            .unwrap()
+            .get(&chart.identity)
+            .unwrap()
+            .best
+            .score;
+        assert_eq!(best_score, 100);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

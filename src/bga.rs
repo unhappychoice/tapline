@@ -23,7 +23,7 @@ mod presentation;
 #[cfg(test)]
 pub(crate) use presentation::load_bitmaps;
 pub(crate) use presentation::ChartImages;
-pub use presentation::Presentation;
+pub use presentation::{BgaAssetInput, Presentation};
 mod timeline;
 mod video;
 mod video_worker;

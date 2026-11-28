@@ -14,6 +14,17 @@ and lane filters. When the selector reopens after a song, it rescans the
 directory. If the list is still empty, check that the chart files are still
 accessible, then restart tapline to scan again.
 
+## I selected a chart and returned to the selector
+
+If the chart file changed after the selector scanned it, tapline refreshes
+the list before starting play. Select the chart again from the updated list.
+If its title, subtitle, or artist changed, press `c` to clear the active filters
+and look for the updated entry.
+
+If tapline displays `Failed to load chart`, read the error and press any key
+to return to the selector. Check that the chart file still exists and is
+readable before trying again.
+
 ## A large chart is missing from the selector
 
 Tapline skips chart files larger than 16 MiB (16,777,216 bytes) during
