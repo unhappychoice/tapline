@@ -1,6 +1,8 @@
-use super::{bitmaps, ImageBank};
-use crate::chart::Chart;
+use super::{bitmaps, Extensions, ImageBank};
+use crate::chart::{BgaEvent, Chart};
 use std::{
+    collections::HashMap,
+    path::PathBuf,
     sync::mpsc::{self, Receiver, TryRecvError},
     sync::Arc,
 };
@@ -8,6 +10,32 @@ use std::{
 pub struct Presentation {
     pub bank: ImageBank,
     preparation: Preparation<ImageBank>,
+}
+
+/// Owned snapshot of the chart data available to a deferred BGA loader.
+pub struct BgaAssetInput {
+    pub asset_dir: PathBuf,
+    pub bmp_paths: HashMap<u32, PathBuf>,
+    pub bga: Vec<BgaEvent>,
+    pub bga_extensions: Extensions,
+}
+
+impl BgaAssetInput {
+    /// Load the image bank using the bitmap paths stored in the snapshot.
+    pub fn load(&self) -> ImageBank {
+        ImageBank::load(&self.bmp_paths, &self.bga, &self.bga_extensions)
+    }
+}
+
+impl From<&Chart> for BgaAssetInput {
+    fn from(chart: &Chart) -> Self {
+        Self {
+            asset_dir: chart.asset_dir.clone(),
+            bmp_paths: chart.bmp_paths.clone(),
+            bga: chart.bga.clone(),
+            bga_extensions: chart.bga_extensions.clone(),
+        }
+    }
 }
 
 pub(crate) struct ChartImages<'a> {
@@ -36,11 +64,12 @@ impl Presentation {
         }
     }
 
+    /// Start loading when visible and poll for the resulting bank on subsequent calls.
     pub fn prepare_deferred(
         &mut self,
         chart: &Chart,
         visible: bool,
-        load: impl FnOnce(&Chart) -> ImageBank + Send + 'static,
+        load: impl FnOnce(&BgaAssetInput) -> ImageBank + Send + 'static,
     ) {
         if matches!(self.preparation, Preparation::Deferred) && visible {
             self.preparation = Preparation::start(chart, load);
@@ -57,7 +86,12 @@ impl Presentation {
 
     pub(crate) fn with_cached_images(images: &mut ChartImages<'_>, visible: bool) -> Self {
         if visible && matches!(images.preparation, Preparation::Deferred) {
-            images.preparation = Preparation::Ready(load_bitmaps(images.chart));
+            let chart = images.chart;
+            images.preparation = Preparation::Ready(Arc::new(bitmaps::load(
+                &chart.bmp_paths,
+                &chart.bga,
+                &chart.bga_extensions,
+            )));
         }
         let bitmaps = visible.then(|| images.ready()).flatten();
         Self {
@@ -78,7 +112,7 @@ impl Presentation {
         &mut self,
         images: &mut ChartImages<'_>,
         visible: bool,
-        load: impl FnOnce(&Chart) -> Arc<bitmaps::Bitmaps> + Send + 'static,
+        load: impl FnOnce(&BgaAssetInput) -> Arc<bitmaps::Bitmaps> + Send + 'static,
     ) {
         if !matches!(self.preparation, Preparation::Deferred) || !visible {
             return;
@@ -135,13 +169,8 @@ impl<T: Send + 'static> Preparation<T> {
         result.ok()
     }
 
-    fn start(chart: &Chart, load: impl FnOnce(&Chart) -> T + Send + 'static) -> Self {
-        let assets = Chart {
-            bmp_paths: chart.bmp_paths.clone(),
-            bga: chart.bga.clone(),
-            bga_extensions: chart.bga_extensions.clone(),
-            ..Chart::default()
-        };
+    fn start(chart: &Chart, load: impl FnOnce(&BgaAssetInput) -> T + Send + 'static) -> Self {
+        let assets = BgaAssetInput::from(chart);
         let (sender, receiver) = mpsc::channel();
         let worker = std::thread::Builder::new()
             .name("bga-loader".into())
@@ -156,10 +185,10 @@ impl<T: Send + 'static> Preparation<T> {
     }
 }
 
-pub(crate) fn load_bitmaps(chart: &Chart) -> Arc<bitmaps::Bitmaps> {
+pub(crate) fn load_bitmaps(assets: &BgaAssetInput) -> Arc<bitmaps::Bitmaps> {
     Arc::new(bitmaps::load(
-        &chart.bmp_paths,
-        &chart.bga,
-        &chart.bga_extensions,
+        &assets.bmp_paths,
+        &assets.bga,
+        &assets.bga_extensions,
     ))
 }
