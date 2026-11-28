@@ -366,7 +366,7 @@ fn advance_frame(
     if !state.paused {
         fire_scheduled_audio(bank, opts, state, game, now);
     }
-    state.advance_completion(game, now)
+    now >= opts.countdown_ms && state.advance_completion(game, now)
 }
 
 fn draw_frame(
@@ -1078,6 +1078,45 @@ mod tests {
         let mut game = Game::new(base_chart(4, vec![]));
         assert!(!game.advance_completion(29999.0));
         assert!(game.advance_completion(30000.0));
+    }
+
+    #[test]
+    fn short_bgm_only_chart_waits_for_countdown_after_audio_ends() {
+        let (bank, mut output) = audio::playback_test_bank();
+        let options = PlayOptions {
+            synth_mode: false,
+            audio_lead_ms: 2500.0,
+            ..opts(false)
+        };
+        let mut chart = crate::bms::load_bytes(
+            std::path::Path::new("short.bms"),
+            b"#BPM 120\n#WAV02 short.wav\n#00001:02\n",
+            options.countdown_ms,
+            0,
+        )
+        .unwrap();
+        chart.duration_ms = bank.chart_duration_ms(&chart, false, false, options.audio_lead_ms);
+        assert_eq!(chart.duration_ms, 112.0);
+        let mut game = Game::new(chart);
+        let mut state = LoopState::new(Vec::new());
+
+        assert!(!advance_frame(&mut game, &bank, &options, &mut state, 0.0));
+        assert!(output.by_ref().take(2048).any(|sample| sample > 0.0));
+        assert!(output.skip(10_000).take(100).all(|sample| sample == 0.0));
+        assert_eq!(state.audio_end_ms, 112.0);
+
+        for now in [state.audio_end_ms, options.countdown_ms - 1.0] {
+            assert!(!advance_frame(&mut game, &bank, &options, &mut state, now));
+            assert!(!game.completed);
+        }
+        assert!(advance_frame(
+            &mut game,
+            &bank,
+            &options,
+            &mut state,
+            options.countdown_ms,
+        ));
+        assert!(game.completed);
     }
 
     #[test]
