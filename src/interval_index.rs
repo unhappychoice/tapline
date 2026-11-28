@@ -1,25 +1,39 @@
-const EMPTY: (f64, f64) = (f64::INFINITY, f64::NEG_INFINITY);
+/// A per-leaf value a [`SegmentTree`] can merge bottom-up and reset to an
+/// identity element that never matches a query.
+pub(crate) trait SegmentValue: Copy {
+    const EMPTY: Self;
+    fn merge(a: Self, b: Self) -> Self;
+}
 
-/// Bounds over contiguous groups of intervals, queried in insertion order.
-pub(crate) struct IntervalIndex {
-    bounds: Vec<(f64, f64)>,
+impl SegmentValue for (f64, f64) {
+    const EMPTY: Self = (f64::INFINITY, f64::NEG_INFINITY);
+    fn merge(a: Self, b: Self) -> Self {
+        (a.0.min(b.0), a.1.max(b.1))
+    }
+}
+
+/// Segment tree over per-leaf values, queried in insertion order. Internal
+/// nodes hold the merge of their subtree so a top-down traversal can prune
+/// whole subtrees a predicate rejects.
+pub(crate) struct SegmentTree<T: SegmentValue> {
+    bounds: Vec<T>,
     leaves: usize,
     #[cfg(test)]
     pub(crate) visits: std::cell::Cell<usize>,
 }
 
-impl IntervalIndex {
-    pub(crate) fn new(intervals: impl ExactSizeIterator<Item = (f64, f64)>) -> Self {
-        let leaves = intervals.len().next_power_of_two();
-        let mut bounds = vec![EMPTY; leaves * 2];
+impl<T: SegmentValue> SegmentTree<T> {
+    pub(crate) fn new(data: impl ExactSizeIterator<Item = T>) -> Self {
+        let leaves = data.len().next_power_of_two();
+        let mut bounds = vec![T::EMPTY; leaves * 2];
         bounds[leaves..]
             .iter_mut()
-            .zip(intervals)
-            .for_each(|(slot, interval)| {
-                *slot = interval;
+            .zip(data)
+            .for_each(|(slot, item)| {
+                *slot = item;
             });
         for i in (1..leaves).rev() {
-            bounds[i] = merge(bounds[i * 2], bounds[i * 2 + 1]);
+            bounds[i] = T::merge(bounds[i * 2], bounds[i * 2 + 1]);
         }
         Self {
             bounds,
@@ -31,21 +45,22 @@ impl IntervalIndex {
 
     pub(crate) fn remove(&mut self, index: usize) {
         let mut node = self.leaves + index;
-        self.bounds[node] = EMPTY;
+        self.bounds[node] = T::EMPTY;
         while node > 1 {
             node /= 2;
-            self.bounds[node] = merge(self.bounds[node * 2], self.bounds[node * 2 + 1]);
+            self.bounds[node] = T::merge(self.bounds[node * 2], self.bounds[node * 2 + 1]);
         }
     }
 
-    pub(crate) fn matching(&self, overlaps: impl Fn(f64, f64) -> bool) -> Vec<usize> {
+    /// Top-down traversal pruning subtrees for which `prune` returns true,
+    /// returning the leaf indices that survive.
+    pub(crate) fn traverse(&self, prune: impl Fn(T) -> bool) -> Vec<usize> {
         let mut pending = vec![1];
         let mut matching = Vec::new();
         while let Some(node) = pending.pop() {
             #[cfg(test)]
             self.visits.set(self.visits.get() + 1);
-            let (min, max) = self.bounds[node];
-            if min > max || !overlaps(min, max) {
+            if prune(self.bounds[node]) {
                 continue;
             }
             if node < self.leaves {
@@ -58,6 +73,11 @@ impl IntervalIndex {
     }
 }
 
-fn merge(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
-    (a.0.min(b.0), a.1.max(b.1))
+/// Bounds over contiguous groups of intervals.
+pub(crate) type IntervalIndex = SegmentTree<(f64, f64)>;
+
+impl IntervalIndex {
+    pub(crate) fn matching(&self, overlaps: impl Fn(f64, f64) -> bool) -> Vec<usize> {
+        self.traverse(|(min, max)| min > max || !overlaps(min, max))
+    }
 }
