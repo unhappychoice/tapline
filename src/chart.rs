@@ -62,7 +62,7 @@ pub struct BgaEvent {
 #[derive(Debug, Clone)]
 pub struct TextEvent {
     pub time_ms: f64,
-    pub text: String,
+    pub text: Arc<str>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
